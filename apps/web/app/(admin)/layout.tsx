@@ -18,9 +18,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   <Link href="/dashboard" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
                     Dashboard
                   </Link>
-                  <Link href="/candidates" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
-                    Candidates
-                  </Link>
+                  {/* Removed top-level Candidates page; candidate management lives under each Job */}
                   <Link href="/jobs" className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium">
                     Jobs
                   </Link>

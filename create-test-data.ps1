@@ -4,10 +4,10 @@ $ProgressPreference = "SilentlyContinue"
 Write-Host '=== Creating Test Data ===' -ForegroundColor Cyan
 
 $apiUrl = "http://localhost:8000"
-$loginData = @{username="admin@example.com";password="admin123"} | ConvertTo-Json
+$loginData = @{username="admin@example.com";password="admin123"}
 
 Write-Host 'Logging in...' -ForegroundColor Yellow
-$loginResponse = Invoke-RestMethod -Uri "$apiUrl/api/v1/auth/login" -Method POST -ContentType "application/json" -Body $loginData
+$loginResponse = Invoke-RestMethod -Uri "$apiUrl/api/v1/auth/login" -Method POST -ContentType "application/x-www-form-urlencoded" -Body $loginData
 $headers = @{"Authorization"="Bearer $($loginResponse.access_token)";"Content-Type"="application/json"}
 Write-Host 'Login successful!' -ForegroundColor Green
 
@@ -22,7 +22,7 @@ $jobs = @(
 $jobIds = @()
 foreach ($jobItem in $jobs) {
     $jobBody = $jobItem | ConvertTo-Json -Depth 5
-    $job = Invoke-RestMethod -Uri "$apiUrl/api/v1/jobs" -Method POST -Body $jobBody -Headers $headers
+    $job = Invoke-RestMethod -Uri "$apiUrl/api/v1/jobs" -Method POST -ContentType "application/json" -Body $jobBody -Headers $headers
     $jobIds += $job.id
     Write-Host ('Created job: ' + $job.title) -ForegroundColor Green
 }
@@ -36,17 +36,12 @@ foreach ($name in $candidates) {
     $email = ('test' + $candidateCount + '@example.com')
     $jobId = $jobIds[$candidateCount % $jobIds.Count]
     
-    $candidateBody = @{
-        name = $name
-        email = $email
-        phone = "+90 532 123 45" + (10 + $candidateCount).ToString().PadLeft(2,'0')
-        job_id = $jobId
-        experience_years = 3 + ($candidateCount % 4)
-        skills = "JavaScript, React, Python"
-        notes = "Test candidate"
-    } | ConvertTo-Json
-    
-    $candidate = Invoke-RestMethod -Uri "$apiUrl/api/v1/candidates" -Method POST -Body $candidateBody -Headers $headers
+    $candidateBody = @{ name = $name; email = $email; expires_in_days = 7 } | ConvertTo-Json
+    $candidate = Invoke-RestMethod -Uri "$apiUrl/api/v1/candidates" -Method POST -ContentType "application/json" -Body $candidateBody -Headers $headers
+
+    # Link candidate to job via interview record
+    $interviewBody = @{ job_id = $jobId; candidate_id = $candidate.id; status = "pending" } | ConvertTo-Json
+    $interview = Invoke-RestMethod -Uri "$apiUrl/api/v1/interviews" -Method POST -ContentType "application/json" -Body $interviewBody -Headers $headers
     Write-Host ('Created candidate: ' + $name) -ForegroundColor Green
     
     # Send interview link

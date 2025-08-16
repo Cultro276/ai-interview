@@ -2,17 +2,20 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { useDashboard } from "@/context/DashboardContext";
 
 export default function NewJobPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const router = useRouter();
+  const { refreshData } = useDashboard();
   const submit = async () => {
     if (!title) { alert("Title is required"); return; }
     await apiFetch("/api/v1/jobs", {
       method: "POST",
       body: JSON.stringify({ title, description }),
     });
+    await refreshData();
     router.push("/jobs");
   };
   return (

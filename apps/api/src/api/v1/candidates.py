@@ -93,13 +93,16 @@ async def resume_download_url(
     cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    if not cand.resume_url or not cand.resume_url.startswith("s3://"):
+    if not cand.resume_url:
         raise HTTPException(status_code=404, detail="No resume available for this candidate")
-    # Parse s3://bucket/key
-    parsed = urlparse(cand.resume_url)
-    key = parsed.path.lstrip("/")
-    url = generate_presigned_get_url(key, expires=expires_in)
-    return {"url": url}
+    # Support both s3:// and https presigned URLs stored directly
+    if cand.resume_url.startswith("s3://"):
+        parsed = urlparse(cand.resume_url)
+        key = parsed.path.lstrip("/")
+        url = generate_presigned_get_url(key, expires=expires_in)
+        return {"url": url}
+    # Already a public/proxied URL
+    return {"url": cand.resume_url}
 
 
 @router.put("/{cand_id}", response_model=CandidateRead)

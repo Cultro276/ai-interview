@@ -42,24 +42,24 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Save conversation message to database
+  // Save conversation message to database (no-redirect for unauthenticated candidate)
   const saveConversationMessage = async (role: "assistant" | "user" | "system", content: string) => {
     if (!interviewId) return;
-    
     try {
       sequenceNumberRef.current += 1;
-      await apiFetch("/api/v1/conversations/messages", {
+      const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+      await fetch(`${base}/api/v1/conversations/messages`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           interview_id: interviewId,
-          role: role,
-          content: content,
-          sequence_number: sequenceNumberRef.current
-        })
+          role,
+          content,
+          sequence_number: sequenceNumberRef.current,
+        }),
       });
-      console.log(`Saved ${role} message:`, content.substring(0, 50) + "...");
     } catch (error) {
-      console.error("Failed to save conversation message:", error);
+      // best-effort only in candidate UI
     }
   };
 
@@ -136,10 +136,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
         console.log("Video size", videoBlob.size, "bytes", "Audio size", audioBlob.size);
 
-        if (videoBlob.size === 0 || audioBlob.size === 0) {
-          console.error("Recording resulted in 0-byte blob – aborting upload");
-          return;
-        }
+        // Proceed even if one of the blobs is empty; we'll still mark completion
 
         const uploadOne = async (blob: Blob, kind: "video" | "audio") => {
           const fileName = `${kind}-${Date.now()}.webm`;
@@ -147,29 +144,62 @@ export default function InterviewPage({ params }: { params: { token: string } })
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ token, file_name: fileName, content_type: blob.type }),
-          }).then((r) => r.json());
-          await fetch(presign.url, { method: "PUT", body: blob, headers: { "Content-Type": blob.type } }).then(async r => {
+          }).then(async (r) => {
+            if (!r.ok) {
+              const text = await r.text();
+              throw new Error(`Presign failed ${r.status}: ${text}`);
+            }
+            return r.json();
+          });
+          await fetch(presign.presigned_url || presign.url, { method: "PUT", body: blob, headers: { "Content-Type": blob.type } }).then(async r => {
             if(!r.ok){
               const text = await r.text();
               throw new Error(`S3 upload failed ${r.status}: ${text}`);
             }
           });
-          return `s3://${presign.key}`;
+          const baseUrl = (presign.presigned_url || presign.url).split('?')[0];
+          return baseUrl.startsWith('http') ? baseUrl : `s3://${presign.key}`;
         };
 
-        const [videoUrl, audioUrl] = await Promise.all([
-          uploadOne(videoBlob, "video"),
-          uploadOne(audioBlob, "audio"),
-        ]);
+        let videoUrl: string | null = null;
+        let audioUrl: string | null = null;
+        try {
+          if (videoBlob.size > 0) {
+            videoUrl = await uploadOne(videoBlob, "video");
+          }
+        } catch (e) {
+          console.error("Video upload failed", e);
+        }
+        try {
+          if (audioBlob.size > 0) {
+            audioUrl = await uploadOne(audioBlob, "audio");
+          }
+        } catch (e) {
+          console.error("Audio upload failed", e);
+        }
 
         // Save URLs to interview (no auth needed)
-        await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
+        const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ video_url: videoUrl, audio_url: audioUrl }),
         });
+        try {
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data && typeof data.id === 'number') setInterviewId(data.id);
+          }
+        } catch {}
       } catch (err) {
         console.error("Upload error", err);
+        // Try to at least mark interview completed without media
+        try {
+          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ video_url: null, audio_url: null }),
+          });
+        } catch {}
       }
     };
 

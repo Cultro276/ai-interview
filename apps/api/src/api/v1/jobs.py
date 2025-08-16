@@ -120,12 +120,16 @@ async def bulk_upload_candidates(
         base = (f.filename or "candidate").rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
         name = base.title()[:255]
 
-        # Upload resume to S3 under separate prefix
+        # Upload resume to S3 under separate prefix (dev fallback if S3 is not configured)
         # Use "cvs/{YYYY}/{MM}/{job_id}/..." rather than uploads/
         date_prefix = datetime.utcnow().strftime("%Y/%m")
         safe_name = (f.filename or "resume").replace("/", "-")
         key = f"cvs/{date_prefix}/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
-        resume_url = put_object_bytes(key, content, f.content_type or "application/octet-stream")
+        try:
+            resume_url = put_object_bytes(key, content, f.content_type or "application/octet-stream")
+        except Exception:
+            # Smooth-dev: allow missing S3 by skipping resume storage
+            resume_url = None
 
         # Create candidate
         cand = Candidate(

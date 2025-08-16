@@ -42,9 +42,15 @@ export default function JobCandidatesPage() {
     }
   };
 
+  const isValidEmail = (email: string) => /.+@.+\..+/.test(email);
+
   const createSingleCandidate = async () => {
     if (!singleName || !singleEmail) {
       alert("Name and Email are required");
+      return;
+    }
+    if (!isValidEmail(singleEmail)) {
+      alert("Please enter a valid email address");
       return;
     }
     setCreating(true);

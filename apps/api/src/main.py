@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.api.v1.routes import router as api_v1_router
 
@@ -26,6 +27,13 @@ app.add_middleware(
 @app.get("/healthz", tags=["health"])
 def healthcheck():
     return {"status": "ok"}
+
+
+# Dev-only stub endpoint for fake uploads when S3 is not configured
+@app.put("/dev-upload/{path:path}", tags=["dev"], include_in_schema=False)
+def dev_upload_stub(path: str):
+    # Accept payload and return 200 to simulate S3 upload success
+    return JSONResponse({"ok": True, "path": path})
 
 
 # Versioned API

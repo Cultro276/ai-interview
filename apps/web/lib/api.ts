@@ -32,12 +32,24 @@ export async function apiFetch<T>(
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
-    let detail = "Error";
+    let message = "Error";
     try {
       const err = await res.json();
-      detail = err.detail || JSON.stringify(err);
+      if (typeof err?.detail === "string") {
+        message = err.detail;
+      } else if (Array.isArray(err?.detail)) {
+        // FastAPI validation errors: map to readable string
+        message = err.detail
+          .map((e: any) => {
+            const loc = Array.isArray(e?.loc) ? e.loc.join(".") : e?.loc;
+            return [loc, e?.msg].filter(Boolean).join(": ");
+          })
+          .join(", ");
+      } else if (err) {
+        message = JSON.stringify(err);
+      }
     } catch {}
-    throw new Error(detail);
+    throw new Error(message);
   }
   return res.status === 204 ? ({} as T) : res.json();
 } 
