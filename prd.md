@@ -149,6 +149,10 @@ Hirevision, yapay zeka destekli mülakat sistemi ile işe alım sürecini otomat
 - Upload: S3 multipart (5–15 MB parçalar), ETag doğrulama; object key standardı: `cvs/{YYYY}/{MM}/{job_id}/{timestamp}_{safe_name}`.
 - Token: kısa TTL + rotation; link paylaşımına karşı IP/UA bağlama opsiyonu; rate‑limit ve replay detection.
 
+### Frontend İlerleme (Güncel)
+- Toast sistemi eklendi (ToastProvider + Toaster); admin sayfalarda `alert()` yerine toast kullanımı.
+- Aday istemcisi: presign upload çağrısına `token` parametresi eklendi; yükleme sonrası `/api/v1/interviews/{token}/media` ile kayıt URL’leri işleniyor.
+
 ---
 
 ## Onay Sonrası Başlatılacak İşler (Sprint 1 Görevleri)

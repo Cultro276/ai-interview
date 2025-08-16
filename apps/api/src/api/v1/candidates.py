@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from src.auth import current_active_user
 from src.db.models.user import User
@@ -35,6 +35,7 @@ async def create_candidate(
     current_user: User = Depends(current_active_user)
 ):
     candidate_data = candidate_in.dict(exclude={'expires_in_days'})
+    # Email required but not strictly validated; accept as-is
     candidate = Candidate(**candidate_data, user_id=current_user.id)
     candidate.token = uuid4().hex
     candidate.expires_at = datetime.utcnow() + timedelta(days=candidate_in.expires_in_days)
@@ -45,7 +46,10 @@ async def create_candidate(
         await session.rollback()
         raise HTTPException(status_code=400, detail="Email already registered")
     await session.refresh(candidate)
-    print(f"[MAIL MOCK] To: {candidate.email} – Link: http://localhost:3000/interview/{candidate.token}")
+    # Otomatik e-posta gönderimi (mock): gerçek hayatta SES/Sendgrid entegrasyonu kullanılacak
+    print("[MAIL MOCK] To:", candidate.email)
+    print("Subject:", "Interview Invitation")
+    print("Body:", f"Please join your interview using this link (valid {candidate_in.expires_in_days} days): http://localhost:3000/interview/{candidate.token}")
     return candidate
 
 

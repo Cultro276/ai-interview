@@ -97,7 +97,8 @@ class JobRead(JobBase):
 
 class CandidateBase(BaseModel):
     name: str = Field(..., max_length=255)
-    email: EmailStr
+    # Email is required but no strict format validation (free-form string)
+    email: str
     resume_url: Optional[str] = None
 
 
@@ -114,6 +115,8 @@ class CandidateUpdate(BaseModel):
 class CandidateRead(CandidateBase):
     id: int
     user_id: int
+    token: str
+    expires_at: datetime
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -2,9 +2,11 @@
 import { useEffect, useState, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import { speak, listen } from "@/lib/voice";
+import { useToast } from "@/context/ToastContext";
 
 export default function InterviewPage({ params }: { params: { token: string } }) {
   const { token } = params;
+  const { success, error: toastError, info } = useToast();
   const [status, setStatus] = useState<
     | "loading"
     | "invalid"
@@ -27,6 +29,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const videoChunksRef = useRef<Blob[]>([]);
   const audioChunksRef = useRef<Blob[]>([]);
   const recStartTimeRef = useRef<number>(0);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const elapsedTimerRef = useRef<any>(null);
   // intro confirmation checkbox
   const [ready, setReady] = useState(false);
   const [devicesOk, setDevicesOk] = useState(false);
@@ -118,92 +122,96 @@ export default function InterviewPage({ params }: { params: { token: string } })
     }
   }, [status, stream]);
 
-  // Stop recording & upload when interview finishes
+  // Upload media when interview finishes (effect declared early to avoid conditional returns before hooks)
   useEffect(() => {
     if (status !== "finished") return;
 
-    const upload = async () => {
+    const uploadMedia = async () => {
       try {
-        // Simple stop
-        mediaRecorderRef.current?.stop();
-        audioRecorderRef.current?.stop();
-        
-        // Wait for chunks
-        await new Promise(r => setTimeout(r, 1000));
+        console.log("Starting media upload...");
+
+        // Stop recorders and wait for data
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+          await new Promise((resolve) => {
+            mediaRecorderRef.current!.addEventListener("stop", resolve, { once: true });
+          });
+        }
+        if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
+          audioRecorderRef.current.stop();
+          await new Promise((resolve) => {
+            audioRecorderRef.current!.addEventListener("stop", resolve, { once: true });
+          });
+        }
 
         const videoBlob = new Blob(videoChunksRef.current, { type: "video/webm" });
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
 
-        console.log("Video size", videoBlob.size, "bytes", "Audio size", audioBlob.size);
+        if (videoBlob.size === 0 && audioBlob.size === 0) {
+          console.log("No media data to upload");
+        }
 
-        // Proceed even if one of the blobs is empty; we'll still mark completion
-
-        const uploadOne = async (blob: Blob, kind: "video" | "audio") => {
-          const fileName = `${kind}-${Date.now()}.webm`;
-          const presign = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/tokens/presign-upload`, {
+        const getPresign = async (blob: Blob, kind: "video" | "audio") => {
+          return apiFetch<{ presigned_url?: string; url?: string; key?: string }>("/api/v1/tokens/presign-upload", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token, file_name: fileName, content_type: blob.type }),
-          }).then(async (r) => {
-            if (!r.ok) {
-              const text = await r.text();
-              throw new Error(`Presign failed ${r.status}: ${text}`);
-            }
-            return r.json();
+            body: JSON.stringify({
+              token,
+              file_name: `interview-${token}-${kind}-${Date.now()}.webm`,
+              content_type: blob.type,
+            }),
           });
-          await fetch(presign.presigned_url || presign.url, { method: "PUT", body: blob, headers: { "Content-Type": blob.type } }).then(async r => {
-            if(!r.ok){
-              const text = await r.text();
-              throw new Error(`S3 upload failed ${r.status}: ${text}`);
-            }
-          });
-          const baseUrl = (presign.presigned_url || presign.url).split('?')[0];
-          return baseUrl.startsWith('http') ? baseUrl : `s3://${presign.key}`;
         };
 
         let videoUrl: string | null = null;
         let audioUrl: string | null = null;
-        try {
-          if (videoBlob.size > 0) {
-            videoUrl = await uploadOne(videoBlob, "video");
+
+        if (videoBlob.size > 0) {
+          try {
+            const presign = await getPresign(videoBlob, "video");
+            const target = presign.presigned_url || presign.url!;
+            await fetch(target, { method: "PUT", body: videoBlob, headers: { "Content-Type": videoBlob.type } });
+            videoUrl = target.split("?")[0];
+          } catch (e) {
+            console.error("Video upload failed", e);
           }
-        } catch (e) {
-          console.error("Video upload failed", e);
         }
-        try {
-          if (audioBlob.size > 0) {
-            audioUrl = await uploadOne(audioBlob, "audio");
+        if (audioBlob.size > 0) {
+          try {
+            const presign = await getPresign(audioBlob, "audio");
+            const target = presign.presigned_url || presign.url!;
+            await fetch(target, { method: "PUT", body: audioBlob, headers: { "Content-Type": audioBlob.type } });
+            audioUrl = target.split("?")[0];
+          } catch (e) {
+            console.error("Audio upload failed", e);
           }
-        } catch (e) {
-          console.error("Audio upload failed", e);
         }
 
-        // Save URLs to interview (no auth needed)
-        const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
+        // Save media URLs to interview record and get interview ID
+        const interviewRecord = await apiFetch<{ id: number }>(`/api/v1/interviews/${token}/media`, {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ video_url: videoUrl, audio_url: audioUrl }),
         });
+        setInterviewId(interviewRecord.id);
+        success("Kayıt başarıyla yüklendi. Değerlendirme kısa sürede hazır olacak.");
+
+        // Save system message about interview completion
         try {
-          if (resp.ok) {
-            const data = await resp.json();
-            if (data && typeof data.id === 'number') setInterviewId(data.id);
-          }
-        } catch {}
-      } catch (err) {
-        console.error("Upload error", err);
-        // Try to at least mark interview completed without media
-        try {
-          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ video_url: null, audio_url: null }),
+          await apiFetch("/api/v1/conversations/messages", {
+            method: "POST",
+            body: JSON.stringify({
+              interview_id: interviewRecord.id,
+              role: "system",
+              content: `Interview completed. Media uploaded: video=${videoUrl ? "yes" : "no"}, audio=${audioUrl ? "yes" : "no"}`,
+              sequence_number: sequenceNumberRef.current + 1,
+            }),
           });
         } catch {}
+      } catch (error) {
+        console.error("Media upload flow failed:", error);
       }
     };
 
-    upload();
+    uploadMedia();
   }, [status, token]);
 
   // Query permission states once we reach test step
@@ -314,6 +322,15 @@ export default function InterviewPage({ params }: { params: { token: string } })
       rec.start();
       mediaRecorderRef.current = rec;
 
+      // start elapsed timer
+      recStartTimeRef.current = Date.now();
+      if (elapsedTimerRef.current) {
+        clearInterval(elapsedTimerRef.current);
+      }
+      elapsedTimerRef.current = window.setInterval(() => {
+        setElapsedMs(Date.now() - recStartTimeRef.current);
+      }, 500);
+
       // 2) Audio-only recorder (clone only audio tracks)
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length) {
@@ -329,6 +346,12 @@ export default function InterviewPage({ params }: { params: { token: string } })
     } catch (e) {
       console.error("MediaRecorder error:", e);
     }
+    return () => {
+      if (elapsedTimerRef.current) {
+        clearInterval(elapsedTimerRef.current);
+        elapsedTimerRef.current = null;
+      }
+    };
   }, [status, stream]);
 
   if (status === "loading") return <p>Doğrulanıyor…</p>;
@@ -393,7 +416,15 @@ export default function InterviewPage({ params }: { params: { token: string } })
     return (
       <div style={{ padding: "2rem", textAlign: "center" }}>
         <p>İzin alınamadı: {permissionError}</p>
-        <button onClick={() => setStatus("permissions")}>Tekrar Dene</button>
+        <div style={{ fontSize: 14, color: "#64748b", marginTop: 8 }}>
+          <p>Çözüm önerileri:</p>
+          <ul style={{ textAlign: "left", display: "inline-block", marginTop: 6 }}>
+            <li>- Tarayıcı ayarlarından site için Kamera ve Mikrofon iznini "İzin ver" yapın.</li>
+            <li>- Sekmeyi yenileyin ve isteği tekrar onaylayın.</li>
+            <li>- Başka bir tarayıcıda (Chrome/Edge) tekrar deneyin.</li>
+          </ul>
+        </div>
+        <button style={{ marginTop: 12 }} onClick={() => setStatus("permissions")}>Tekrar Dene</button>
       </div>
     );
 
@@ -444,6 +475,9 @@ export default function InterviewPage({ params }: { params: { token: string } })
           {phase === "thinking" && "Yanıt işleniyor…"}
           {phase === "idle" && "Görüşme yakında başlayacak…"}
         </p>
+        <p style={{ marginTop: "0.5rem", fontSize: 12, color: "#64748b" }}>
+          Kayıt süresi: {(elapsedMs / 1000).toFixed(1)} sn
+        </p>
         {/* Geçici Bitir butonu */}
         <button
           style={{ marginTop: "1rem", padding: "0.5rem 1rem" }}
@@ -464,6 +498,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
       <div style={{ padding: "2rem", textAlign: "center" }}>
         <h2>Teşekkürler!</h2>
         <p>Görüşmemize katıldığınız için teşekkür ederiz. Değerlendirmeniz yakında yapılacaktır.</p>
+        <AutoRedirect seconds={5} />
       </div>
     );
 
@@ -505,6 +540,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
         const videoPresignedUrl = videoBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
           method: "POST",
           body: JSON.stringify({
+            token,
             file_name: `interview-${token}-video-${Date.now()}.webm`,
             content_type: "video/webm"
           })
@@ -513,6 +549,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
         const audioPresignedUrl = audioBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
           method: "POST",
           body: JSON.stringify({
+            token,
             file_name: `interview-${token}-audio-${Date.now()}.webm`,
             content_type: "audio/webm"
           })
@@ -587,3 +624,17 @@ export default function InterviewPage({ params }: { params: { token: string } })
 }
 
 // --- Conversation side effects (hooks must be after component definition) --- 
+
+function AutoRedirect({ seconds }: { seconds: number }) {
+  const [left, setLeft] = useState(seconds);
+  useEffect(() => {
+    const id = setInterval(() => setLeft((s) => (s > 0 ? s - 1 : 0)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    if (left === 0 && typeof window !== "undefined") {
+      window.location.href = "/";
+    }
+  }, [left]);
+  return <p style={{ marginTop: 8, fontSize: 12, color: "#64748b" }}>Ana sayfaya yönlendiriliyor… {left}s</p>;
+}

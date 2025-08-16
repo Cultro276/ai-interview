@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
+import { useToast } from "@/context/ToastContext";
 import { apiFetch } from "@/lib/api";
 
 export default function JobCandidatesPage() {
@@ -10,12 +11,14 @@ export default function JobCandidatesPage() {
   const { candidates, interviews, loading, refreshData } = useDashboard();
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<"idle"|"working">("idle");
   const [expiresDays, setExpiresDays] = useState(7);
   const [singleFile, setSingleFile] = useState<File | null>(null);
   const [singleName, setSingleName] = useState("");
   const [singleEmail, setSingleEmail] = useState("");
   const [creating, setCreating] = useState(false);
   const [singleExpiry, setSingleExpiry] = useState(7);
+  const { success, error: toastError, info } = useToast();
 
   const jobCandidateIds = interviews
     .filter((i) => i.job_id === jobId)
@@ -25,6 +28,7 @@ export default function JobCandidatesPage() {
   const onUpload = async () => {
     if (!files.length) return;
     setUploading(true);
+    setUploadProgress("working");
     try {
       const form = new FormData();
       files.forEach((f) => form.append("files", f));
@@ -34,23 +38,21 @@ export default function JobCandidatesPage() {
         body: form,
       });
       await refreshData();
-      alert("Upload completed.");
+      success("Bulk upload completed");
     } catch (e: any) {
-      alert(e.message || "Upload failed");
+      toastError(e.message || "Upload failed");
     } finally {
       setUploading(false);
+      setUploadProgress("idle");
     }
   };
 
-  const isValidEmail = (email: string) => /.+@.+\..+/.test(email);
+  // Accept entered string as email without strict validation to reduce friction
+  const isValidEmail = (_: string) => true;
 
   const createSingleCandidate = async () => {
-    if (!singleName || !singleEmail) {
-      alert("Name and Email are required");
-      return;
-    }
-    if (!isValidEmail(singleEmail)) {
-      alert("Please enter a valid email address");
+    if (!singleName) {
+      toastError("Name is required");
       return;
     }
     setCreating(true);
@@ -66,9 +68,9 @@ export default function JobCandidatesPage() {
       setSingleName("");
       setSingleEmail("");
       await refreshData();
-      alert("Candidate created and linked to job.");
+      success("Candidate created. Invitation email sent (mock)");
     } catch (e: any) {
-      alert(e.message || "Create failed");
+      toastError(e.message || "Create failed");
     } finally {
       setCreating(false);
     }
@@ -77,9 +79,9 @@ export default function JobCandidatesPage() {
   const sendLink = async (candId: number) => {
     try {
       await apiFetch(`/api/v1/candidates/${candId}/send-link?expires_in_days=${expiresDays}`, { method: "POST" });
-      alert("Link sent (mock)");
+      info("Link sent (mock)");
     } catch (e: any) {
-      alert(e.message);
+      toastError(e.message);
     }
   };
 
@@ -87,9 +89,9 @@ export default function JobCandidatesPage() {
     try {
       const ids = jobCandidates.map(c => c.id);
       await Promise.all(ids.map(id => apiFetch(`/api/v1/candidates/${id}/send-link?expires_in_days=${expiresDays}`, { method: "POST" })));
-      alert("All links sent (mock)");
+      info("All links sent (mock)");
     } catch (e: any) {
-      alert(e.message || "Failed to send all links");
+      toastError(e.message || "Failed to send all links");
     }
   };
 
@@ -98,7 +100,7 @@ export default function JobCandidatesPage() {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/resume-download-url`);
       window.open(url, "_blank");
     } catch (e: any) {
-      alert(e.message || "Download failed");
+      toastError(e.message || "Download failed");
     }
   };
 
@@ -151,6 +153,11 @@ export default function JobCandidatesPage() {
         >
           {uploading ? "Uploading…" : "Upload & Parse"}
         </button>
+        {uploadProgress === "working" && (
+          <div className="mt-2 h-1 w-full bg-gray-100 rounded">
+            <div className="h-1 w-2/3 bg-blue-400 animate-pulse rounded" />
+          </div>
+        )}
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8">

@@ -22,9 +22,12 @@
   - `Jobs > [job] > Candidates` sayfasında tekil aday oluşturma + bulk CV yükleme UX (mevcut akışın cilası: hata/success toasts, progress bar).
 - Admin: Candidate detay minimal kartı
   - Aday satırında `Send Link` aksiyonu (mevcut endpoint), TTL opsiyonu, toast feedback.
+  - E-posta zorunludur (format kontrolü yok). Aday oluşturulunca davet e-postası otomatik gönderilir (Resend API entegrasyonu).
 - Candidate App: Interview giriş
   - `interview/[token]` sayfasında token verify, izin/cihaz testi, kayıt başlat butonu.
-  - Upload: presign al → `fetch PUT` ile yükle → başarıyla bitince kayıt URL'si UI'da gösterilir.
+  - Upload: presign al → `fetch PUT` ile yükle → başarıyla bitince kayıt URL'si UI'da gösterilir; başarı tostu.
+  - İzin reddi ekranında kullanıcıya yol gösteren yönergeler.
+  - Mülakat bittikten sonra 5 sn sayaç ve otomatik ana sayfaya yönlendirme (iptal edilebilir tasarım notu).
 
 ### Sprint B (Hafta 3–4)
 - Admin: Conversation & Analysis görünümü
@@ -32,12 +35,17 @@
   - `Conversation` sekmesi: gönderilmiş soru/cevapların listesi (server verisi veya local echo).
 - Candidate App: Transcript stub
   - Kayıt sonrası transcript metninin manuel girildiği/gösterildiği basit form (POST/GET transcript uçlarına).
+  - Admin Interviews sayfasında Transcript paneli eklendi; backend hazır olana dek localStorage fallback ile çalışır.
 
 ### Sprint C (Hafta 5–6)
 - Metrics mini dashboard
-  - Admin `Dashboard` sayfasında latency, error rate gösterimi (cards + sparkline basit SVG ya da sayı).
+  - Admin `Dashboard` sayfasında latency, error rate gösterimi (cards). Basit fetch: `/api/v1/metrics`.
 - UX cilaları
   - Form doğrulama, boş durum ekranları, yükleme durumları, hataların kullanıcı dostu gösterimi.
+  - Jobs sayfasına arama/filtre.
+  - Jobs sayfasında inline Edit modal ve PUT akışı (başarı/ hata tostu + refresh).
+  - Interviews Transcript panelinde "Copy" butonu.
+  - İşveren verimliliği: arama sorgusunun localStorage ile kalıcılığı (Jobs sayfası).
 
 ---
 
@@ -46,6 +54,8 @@
 - `app/(admin)/jobs/new/page.tsx` (form)
 - `app/(admin)/jobs/[id]/candidates/page.tsx` (tekil + bulk upload)
 - `app/(admin)/dashboard/page.tsx` (metrics)
+- `app/(admin)/reports/page.tsx` (raporlar – job bazlı sıralama)
+  - “Decision” rozetleri: Proceed/Consider/Review basit kurala göre (≥75/≥60/<60)
 - `app/interview/[token]/page.tsx` (aday istemci)
 
 ---
@@ -64,15 +74,18 @@
   - GET `/api/v1/interviews/{id}/transcript` → { interview_id, text }
 - Metrics:
   - GET `/api/v1/metrics` → { upload_p95_ms, analysis_p95_ms, error_rate }
+  - (Gelecek) `POST /api/v1/metrics/log-upload` → { token|interview_id, kind, duration_ms, size_bytes, success }
 
 ---
 
 ## Kabul Kriterleri
-- `Jobs` akışı: oluştur, listele, `Candidates` alt sayfasında tekil oluştur ve bulk yükleme; tüm hatalar toasts ile gösterilir.
+- `Jobs` akışı: oluştur, listele, `Candidates` alt sayfasında tekil oluştur ve bulk yükleme; tüm hatalar toasts ile gösterilir (ToastProvider + Toaster eklendi).
 - `Send Link` aksiyonu çalışır ve konsola link yazılır (mock mail).
 - Aday istemci: token doğrulanır, kayıt dosyası presign ile yüklenir, başarı mesajı görünür.
 - `Run Analysis`: 2s altında sonuçlanır ve skor/özet kartı güncellenir.
 - Transcript formu POST/GET ile çalışır ve metin geri çağrılır.
+- Reports: Job seçimi yapılınca o işteki adaylar overall skora göre (en iyi→en kötü) sıralanır; tüm işler için “All Jobs” görünümü desteklenir.
+  - Decision sütunu görünür; Proceed/Consider/Review.
 
 ---
 
@@ -96,5 +109,14 @@
 - PR: küçük ve atomik; açıklama + ekran görüntüsü/GIF.
 - Commit: Conventional Commits.
 - Sync: `git pull --rebase origin main` → `git push -u origin <branch>` → PR → review → squash merge.
+
+---
+
+## Teknik Notlar (güncel)
+- `apps/web/app/interview/[token]/page.tsx`: presign çağrısına `token` alanı eklendi; upload sonrası `/interviews/{token}/media` ile URL’ler kaydediliyor.
+- Toast sistemi eklendi: `ToastContext` + `Toaster`; admin sayfalardaki `alert()` kullanımları toasta çevrildi.
+- Admin `Dashboard` → Metrics kartları `/api/v1/metrics` ile yenileniyor.
+- Bulk upload için indeterminate progress bar eklendi.
+- Aday ekranına kayıt süresi göstergesi eklendi.
 
 

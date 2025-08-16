@@ -26,8 +26,13 @@ interface Interview {
   candidate_id: number;
   status: string;
   created_at: string;
+  completed_at?: string;
   audio_url?: string;
   video_url?: string;
+  overall_score?: number;
+  communication_score?: number;
+  technical_score?: number;
+  cultural_fit_score?: number;
   candidate?: Candidate;
   job?: Job;
 }

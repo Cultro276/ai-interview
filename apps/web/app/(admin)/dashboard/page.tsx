@@ -1,8 +1,12 @@
 "use client";
 import { useDashboard } from "@/context/DashboardContext";
+import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 export default function DashboardPage() {
   const { candidates, jobs, interviews, loading, refreshData } = useDashboard();
+  const [metrics, setMetrics] = useState<{ upload_p95_ms?: number; analysis_p95_ms?: number; error_rate?: number } | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
   
   // Get job statistics
   const getJobStats = (jobId: number) => {
@@ -43,6 +47,47 @@ export default function DashboardPage() {
         >
           Refresh Data
         </button>
+      </div>
+
+      {/* Recruiter-friendly Metrics Row */}
+      <div className="bg-white p-6 rounded-lg shadow border border-gray-200 mb-8">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-lg font-medium text-gray-900">System Health (Recruiter View)</h3>
+          <button
+            onClick={async () => {
+              setMetricsLoading(true);
+              try {
+                const data = await apiFetch<{ upload_p95_ms: number; analysis_p95_ms: number; error_rate: number }>("/api/v1/metrics");
+                setMetrics(data);
+              } catch {
+                setMetrics(null);
+              } finally {
+                setMetricsLoading(false);
+              }
+            }}
+            className="px-3 py-1 text-sm bg-gray-100 text-gray-800 rounded-md hover:bg-gray-200"
+          >
+            {metricsLoading ? "Loading…" : "Refresh Metrics"}
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">Bu değerler, adayların yaşadığı hız ve başarıyı yansıtır: daha düşük süreler ve daha düşük hata oranı = daha pürüzsüz deneyim.</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="p-4 border border-gray-200 rounded-md">
+            <p className="text-sm font-medium text-gray-700">Aday Yükleme Hızı (P95)</p>
+            <p className="text-2xl font-semibold text-gray-900">{metrics?.upload_p95_ms != null ? `${Math.round(metrics.upload_p95_ms/1000)} sn` : "—"}</p>
+            <p className="text-xs text-gray-500 mt-1">Adayların dosya yüklemeyi %95 olasılıkla bitirdiği süre. Hedef ≤ 10 sn.</p>
+          </div>
+          <div className="p-4 border border-gray-200 rounded-md">
+            <p className="text-sm font-medium text-gray-700">Analiz Tamamlama Süresi (P95)</p>
+            <p className="text-2xl font-semibold text-gray-900">{metrics?.analysis_p95_ms != null ? `${Math.round(metrics.analysis_p95_ms/1000)} sn` : "—"}</p>
+            <p className="text-xs text-gray-500 mt-1">Mülakat sonrası raporun hazır olma süresi. Hedef ≤ 60 sn.</p>
+          </div>
+          <div className="p-4 border border-gray-200 rounded-md">
+            <p className="text-sm font-medium text-gray-700">Hata Oranı</p>
+            <p className="text-2xl font-semibold text-gray-900">{metrics?.error_rate != null ? `${(metrics.error_rate * 100).toFixed(2)}%` : "—"}</p>
+            <p className="text-xs text-gray-500 mt-1">Başarısız işlem yüzdesi. Hedef ≤ %1.</p>
+          </div>
+        </div>
       </div>
 
       {/* Overview Cards */}

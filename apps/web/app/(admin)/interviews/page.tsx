@@ -1,5 +1,6 @@
 "use client";
 import { useDashboard } from "@/context/DashboardContext";
+import { useToast } from "@/context/ToastContext";
 import { apiFetch } from "@/lib/api";
 import { useState } from "react";
 
@@ -33,10 +34,15 @@ export default function InterviewsPage() {
   const [analysis, setAnalysis] = useState<InterviewAnalysis | null>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const { error: toastError, success, info } = useToast();
+  const [transcriptText, setTranscriptText] = useState("");
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptSaving, setTranscriptSaving] = useState(false);
 
   const viewConversation = async (interviewId: number) => {
     setSelectedInterview(interviewId);
     setLoadingConversation(true);
+    setTranscriptText("");
     try {
       // Get conversation messages
       const messages = await apiFetch<ConversationMessage[]>(`/api/v1/conversations/messages/${interviewId}`);
@@ -52,7 +58,7 @@ export default function InterviewsPage() {
       }
     } catch (error) {
       console.error("Failed to load conversation:", error);
-      alert("Failed to load conversation data");
+      toastError("Failed to load conversation data");
     } finally {
       setLoadingConversation(false);
     }
@@ -70,9 +76,45 @@ export default function InterviewsPage() {
       const analysisData = await apiFetch<InterviewAnalysis>(`/api/v1/conversations/analysis/${interviewId}`);
       setAnalysis(analysisData);
     } catch (e: any) {
-      alert(e.message || "Failed to (re)generate analysis");
+      toastError(e.message || "Failed to (re)generate analysis");
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const loadTranscript = async (interviewId: number) => {
+    setTranscriptLoading(true);
+    try {
+      const data = await apiFetch<{ interview_id: number; text: string }>(`/api/v1/interviews/${interviewId}/transcript`);
+      setTranscriptText(data.text || "");
+      success("Transcript loaded");
+    } catch (e: any) {
+      const local = typeof window !== 'undefined' ? localStorage.getItem(`transcript:${interviewId}`) : null;
+      if (local) {
+        setTranscriptText(local);
+        info("Loaded transcript from local cache");
+      } else {
+        toastError(e.message || "Transcript not available yet");
+      }
+    } finally {
+      setTranscriptLoading(false);
+    }
+  };
+
+  const saveTranscript = async (interviewId: number) => {
+    setTranscriptSaving(true);
+    try {
+      await apiFetch(`/api/v1/interviews/${interviewId}/transcript`, {
+        method: "POST",
+        body: JSON.stringify({ text: transcriptText, provider: "manual" }),
+      });
+      success("Transcript saved");
+      if (typeof window !== 'undefined') localStorage.removeItem(`transcript:${interviewId}`);
+    } catch (e: any) {
+      if (typeof window !== 'undefined') localStorage.setItem(`transcript:${interviewId}`, transcriptText || "");
+      info("Transcript saved locally (backend pending)");
+    } finally {
+      setTranscriptSaving(false);
     }
   };
 
@@ -172,7 +214,7 @@ export default function InterviewsPage() {
             </div>
 
             {/* Analysis Panel */}
-            <div className="lg:col-span-1">
+            <div className="lg:col-span-1 space-y-6">
               <div className="bg-white border border-gray-200 rounded-lg">
                 <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                   <h3 className="text-lg font-medium text-gray-900">AI Analysis</h3>
@@ -258,10 +300,72 @@ export default function InterviewsPage() {
                           <p className="text-sm text-gray-600 mt-1">{analysis.weaknesses}</p>
                         </div>
                       )}
+
+                      {/* Recommendation badge */}
+                      {typeof analysis.overall_score === 'number' && (
+                        <div>
+                          <span className="text-sm font-medium text-gray-700">Recommended Decision</span>
+                          <div className="mt-1">
+                            {(() => {
+                              const s = analysis.overall_score || 0;
+                              const dec = s >= 75 ? 'Proceed' : s >= 60 ? 'Consider' : 'Review';
+                              const cls = s >= 75 ? 'bg-green-100 text-green-800' : s >= 60 ? 'bg-yellow-100 text-yellow-800' : 'bg-rose-100 text-rose-800';
+                              return <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${cls}`}>{dec}</span>;
+                            })()}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="text-gray-500">No analysis available. Analysis will be generated automatically after interview completion.</p>
                   )}
+                </div>
+              </div>
+              {/* Transcript Stub */}
+              <div className="bg-white border border-gray-200 rounded-lg">
+                <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                  <h3 className="text-lg font-medium text-gray-900">Transcript (Manual)</h3>
+                  {selectedInterview && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => loadTranscript(selectedInterview)}
+                        disabled={transcriptLoading}
+                        className="px-3 py-1 text-sm bg-gray-100 text-gray-800 rounded-md hover:bg-gray-200 disabled:opacity-50"
+                      >
+                        {transcriptLoading ? "Loading…" : "Load"}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(transcriptText || "");
+                            success("Transcript copied");
+                          } catch {
+                            toastError("Copy failed");
+                          }
+                        }}
+                        className="px-3 py-1 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+                      >
+                        Copy
+                      </button>
+                      <button
+                        onClick={() => saveTranscript(selectedInterview)}
+                        disabled={transcriptSaving}
+                        className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {transcriptSaving ? "Saving…" : "Save"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="p-6">
+                  <textarea
+                    value={transcriptText}
+                    onChange={(e) => setTranscriptText(e.target.value)}
+                    rows={10}
+                    placeholder="Paste or type transcript here…"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                  />
+                  <p className="text-xs text-gray-500 mt-2">This is a temporary manual transcript input. When backend transcript API is live, data will be stored server-side.</p>
                 </div>
               </div>
             </div>

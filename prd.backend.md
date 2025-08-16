@@ -6,7 +6,7 @@
 
 ## Out of Scope (bu fazda)
 - Gerçek ASR entegrasyonu (VAD/diarization/noise reduce prod kalitesi). Şimdilik transcript elle upload/patch.
-- Gerçek e‑posta sağlayıcı (SES/Sendgrid); mock log ile ilerlenir.
+- E‑posta sağlayıcı: Resend API ile e‑posta gönderimi (env: RESEND_API_KEY, MAIL_FROM, MAIL_FROM_NAME).
 
 ## Mimari Notlar
 - FastAPI `apps/api/src` altında `v1` router'lar. Çok kiracılı (user_id scoped) veri erişimi.
@@ -30,6 +30,7 @@
 - Metrics & Health
   - GET `/healthz` (mevcut)
   - GET `/api/v1/metrics` → basit JSON: { upload_p95, analysis_p95, errors_by_type }
+  - (Opsiyonel) `POST /api/v1/metrics/log-upload` → { interview_id|token, kind, duration_ms, size_bytes, success }
 
 ### Sprint B (Hafta 3–4)
 - Invite/Token Geliştirmeleri
@@ -96,6 +97,10 @@ Response: { "interview_id": number, "text": string } | 404
 ```
 GET /api/v1/metrics
 Response: { "upload_p95_ms": number, "analysis_p95_ms": number, "error_rate": number }
+
+POST /api/v1/metrics/log-upload
+Body: { interview_id?: number, token?: string, kind: "video"|"audio", duration_ms: number, size_bytes?: number, success: boolean }
+Response: { ok: true }
 ```
 
 ---
