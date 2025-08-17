@@ -50,7 +50,8 @@ async def presign_upload(req: UploadPresignRequest, session: AsyncSession = Depe
     # verify token using existing logic
     cand = (await session.execute(select(Candidate).where(Candidate.token == req.token))).scalar_one_or_none()
     now_utc = datetime.now(timezone.utc)
-    if not cand or cand.expires_at <= now_utc:
+    # Single-use enforcement: if token already used (interview completed), block new uploads
+    if not cand or cand.expires_at <= now_utc or cand.used_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
 
     # Build server-side file name: "{first_last}_{kind}_{YYYYMMDDHHMMSS}.{ext}"

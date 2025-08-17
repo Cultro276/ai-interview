@@ -77,6 +77,8 @@ async def create_candidate(
         )
     except Exception:
         pass
+    # Always log the invite link for local testing
+    print(f"[INVITE LINK] http://localhost:3000/interview/{candidate.token}")
     return candidate
 
 
@@ -113,7 +115,49 @@ async def resend_link(
         f"Bağlantı {effective_expiry or 7} gün geçerlidir."
     )
     await send_email_resend(cand.email, subj, body)
+    # Always log the invite link for local testing
+    print(f"[INVITE LINK] {link}")
     return {"detail":"sent"}
+
+
+class FinalInviteRequest(BaseModel):
+    subject: str | None = None
+    body_text: str | None = None
+
+
+@router.post("/{cand_id}/notify-final")
+async def notify_final(
+    cand_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+    payload: FinalInviteRequest | None = None,
+):
+    cand = (
+        await session.execute(
+            select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    subj = (payload.subject if payload else None) or "Final Interview Invitation"
+    body = (payload.body_text if payload else None) or (
+        f"Merhaba {cand.name},\n\nFinal görüşmeye davet etmek isteriz. Uygun olduğunuz zamanları paylaşabilir misiniz?\n\nSaygılarımızla"
+    )
+    await send_email_resend(cand.email, subj, body)
+    return {"detail": "final_invite_sent"}
+
+
+@router.get("/{cand_id}/invite-link")
+async def get_invite_link(
+    cand_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    url = f"http://localhost:3000/interview/{cand.token}"
+    return {"url": url, "token": cand.token, "expires_at": cand.expires_at}
 
 
 @router.get("/{cand_id}/resume-download-url")

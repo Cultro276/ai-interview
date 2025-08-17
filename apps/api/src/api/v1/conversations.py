@@ -9,6 +9,7 @@ from src.db.models.user import User
 from src.db.models.conversation import ConversationMessage, InterviewAnalysis
 from src.db.models.interview import Interview
 from src.db.models.job import Job
+from src.db.models.candidate import Candidate
 from src.db.session import get_session
 from src.api.v1.schemas import (
     ConversationMessageCreate, 
@@ -18,6 +19,7 @@ from src.api.v1.schemas import (
 )
 from src.services.analysis import generate_rule_based_analysis
 from src.core.metrics import collector, Timer
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -52,7 +54,7 @@ async def create_message(
 
 # Candidate-safe message creation that does not require admin JWT
 class PublicConversationMessageCreate(ConversationMessageCreate):
-    pass
+    token: str
 
 
 @public_router.post("/messages-public", response_model=ConversationMessageRead, status_code=status.HTTP_201_CREATED)
@@ -60,15 +62,27 @@ async def create_message_public(
     message_in: PublicConversationMessageCreate,
     session: AsyncSession = Depends(get_session),
 ):
-    # Verify interview exists. No ownership check (candidate flow) but we restrict fields strictly.
-    interview = await session.execute(
-        select(Interview).where(Interview.id == message_in.interview_id)
-    )
-    interview = interview.scalar_one_or_none()
-    if not interview:
+    # Verify candidate token is valid and belongs to the interview's candidate
+    cand = (
+        await session.execute(select(Candidate).where(Candidate.token == message_in.token))
+    ).scalar_one_or_none()
+    now_utc = datetime.now(timezone.utc)
+    if not cand or cand.expires_at <= now_utc or cand.used_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
+
+    interview = (
+        await session.execute(select(Interview).where(Interview.id == message_in.interview_id))
+    ).scalar_one_or_none()
+    if not interview or interview.candidate_id != cand.id:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    message = ConversationMessage(**message_in.dict())
+    payload = {
+        "interview_id": message_in.interview_id,
+        "role": message_in.role,
+        "content": message_in.content,
+        "sequence_number": message_in.sequence_number,
+    }
+    message = ConversationMessage(**payload)
     session.add(message)
     await session.commit()
     await session.refresh(message)

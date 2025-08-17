@@ -2,6 +2,8 @@
 import { useEffect, useState, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import { speak, listen } from "@/lib/voice";
+import { Steps } from "@/components/ui/Steps";
+import { Button } from "@/components/ui/Button";
 
 export default function InterviewPage({ params }: { params: { token: string } }) {
   const { token } = params;
@@ -56,6 +58,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           role,
           content,
           sequence_number: sequenceNumberRef.current,
+          token,
         }),
       });
     } catch (error) {
@@ -81,6 +84,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           role: "system",
           content: systemMessage,
           sequence_number: 0,
+          token,
         }),
       });
     } catch (error) {
@@ -177,7 +181,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           "/api/v1/interview/next-question",
           {
             method: "POST",
-            body: JSON.stringify({ history: [...history, { role: "user", text: full }] }),
+            body: JSON.stringify({ history: [...history, { role: "user", text: full }], interview_id: interviewId }),
           },
         )
           .then((res) => {
@@ -339,8 +343,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
         });
         setInterviewId(interviewRecord.id);
         console.log("Interview ID captured:", interviewRecord.id);
-
-        await saveConversationMessage("system", `Interview completed. Media uploaded: video=${videoUrl ? 'yes' : 'no'}, audio=${audioUrl ? 'yes' : 'no'}`);
+        // Do not send further public messages after media upload, since the server marks
+        // the candidate token as used at this point and will reject new messages (400).
       } catch (error) {
         console.error("Media upload failed:", error);
       }
@@ -353,21 +357,22 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
   if (status === "consent") {
     return (
-      <div style={{ padding: "2rem", maxWidth: "600px", margin: "0 auto" }}>
-        <h1>KVKK Aydınlatma Metni</h1>
-        <p>
-          Bu video mülâkat sırasında kaydedilen görüntü ve ses verileriniz, işe alım
-          sürecinin yürütülmesi amacıyla işlenecek ve saklanacaktır.
+      <div className="max-w-xl mx-auto p-6">
+        <Steps steps={["Aydınlatma", "İzinler", "Cihaz Testi", "Tanıtım", "Mülakat"]} current={0} className="mb-6" />
+        <h1 className="text-2xl font-semibold mb-2">KVKK Aydınlatma Metni</h1>
+        <p className="text-gray-700">
+          Bu video mülâkat sırasında kaydedilen görüntü ve ses verileriniz, işe alım sürecinin yürütülmesi amacıyla işlenecek ve saklanacaktır.
         </p>
-        <label style={{ display: "block", margin: "1rem 0" }}>
+        <label className="block my-4">
           <input
             type="checkbox"
+            className="mr-2"
             checked={accepted}
             onChange={(e) => setAccepted(e.target.checked)}
           />
-          &nbsp; KVKK metnini okudum ve kabul ediyorum.
+          KVKK metnini okudum ve kabul ediyorum.
         </label>
-        <button disabled={!accepted} onClick={() => setStatus("permissions")}>Devam Et</button>
+        <Button disabled={!accepted} onClick={() => setStatus("permissions")}>Devam Et</Button>
       </div>
     );
   }
@@ -377,9 +382,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
   if (status === "test")
     return (
-      <div style={{ padding: "2rem", textAlign: "center" }}>
-        <h2>Cihaz Testi</h2>
-        <div style={{ marginBottom: "1rem" }}>
+      <div className="p-6 text-center">
+        <Steps steps={["Aydınlatma", "İzinler", "Cihaz Testi", "Tanıtım", "Mülakat"]} current={2} className="mb-6 justify-center" />
+        <h2 className="text-xl font-semibold">Cihaz Testi</h2>
+        <div className="my-3">
           <strong>Tarayıcı İzinleri</strong>
           <p>Kamera: {camPerm || "?"} | Mikrofon: {micPerm || "?"}</p>
         </div>
@@ -387,83 +393,84 @@ export default function InterviewPage({ params }: { params: { token: string } })
         {/* Camera preview */}
         <video
           ref={videoRef}
-          style={{ width: 240, height: 180, borderRadius: 8, objectFit: "cover", background: "#000" }}
+          className="w-[240px] h-[180px] rounded-md object-cover bg-black mx-auto"
           playsInline
           autoPlay
           muted
         />
-        <div style={{ marginTop: "1rem" }}>
-          <label>
+        <div className="mt-4">
+          <label className="inline-flex items-center">
             <input
               type="checkbox"
+              className="mr-2"
               checked={devicesOk}
               onChange={(e) => setDevicesOk(e.target.checked)}
             />
-            &nbsp; Kameramı görüyorum ve mikrofonum çalışıyor.
+            Kameramı görüyorum ve mikrofonum çalışıyor.
           </label>
         </div>
-        <button style={{ marginTop: "1.5rem" }} disabled={!devicesOk} onClick={() => setStatus("intro")}>İleri</button>
+        <Button className="mt-6" disabled={!devicesOk} onClick={() => setStatus("intro")}>İleri</Button>
       </div>
     );
 
   if (status === "permissionsDenied")
     return (
-      <div style={{ padding: "2rem", textAlign: "center" }}>
+      <div className="p-6 text-center">
         <p>İzin alınamadı: {permissionError}</p>
-        <button onClick={() => setStatus("permissions")}>Tekrar Dene</button>
+        <Button className="mt-4" onClick={() => setStatus("permissions")}>Tekrar Dene</Button>
       </div>
     );
 
   // Intro step – show interview explanation and extra consent
   if (status === "intro") {
     return (
-      <div style={{ padding: "2rem", maxWidth: "600px", margin: "0 auto" }}>
-        <h2>Mülâkat Hakkında</h2>
+      <div className="max-w-xl mx-auto p-6">
+        <Steps steps={["Aydınlatma", "İzinler", "Cihaz Testi", "Tanıtım", "Mülakat"]} current={3} className="mb-6" />
+        <h2 className="text-xl font-semibold mb-2">Mülâkat Hakkında</h2>
         <p>
-          Birazdan yapay zekâ destekli sesli bir görüşme başlayacak. Karşınızdaki avatar
-          soruları sesli olarak soracak; siz de kameraya bakarak sesli yanıt vereceksiniz.
-          Yanıtlarınız otomatik olarak metne dönüştürülecek ve sonraki sorular buna göre
-          oluşturulacak.
+          Birazdan yapay zekâ destekli sesli bir görüşme başlayacak. Karşınızdaki avatar soruları sesli olarak soracak; siz de kameraya bakarak sesli yanıt vereceksiniz. Yanıtlarınız otomatik olarak metne dönüştürülecek ve sonraki sorular buna göre oluşturulacak.
         </p>
-        <label style={{ display: "block", margin: "1rem 0" }}>
+        <label className="block my-4">
           <input
             type="checkbox"
+            className="mr-2"
             checked={ready}
             onChange={(e) => setReady(e.target.checked)}
           />
-          &nbsp; Sürecin işleyişini anladım ve başlamak istiyorum.
+          Sürecin işleyişini anladım ve başlamak istiyorum.
         </label>
-        <button disabled={!ready} onClick={() => setStatus("interview")}>Görüşmeyi Başlat</button>
+        <Button disabled={!ready} onClick={() => setStatus("interview")}>Görüşmeyi Başlat</Button>
       </div>
     );
   }
 
   if (status === "interview")
     return (
-      <div style={{ padding: "2rem", textAlign: "center" }}>
-        <div style={{ display: "flex", gap: "2rem", justifyContent: "center" }}>
+      <div className="p-6 text-center">
+        <Steps steps={["Aydınlatma", "İzinler", "Cihaz Testi", "Tanıtım", "Mülakat"]} current={4} className="mb-6 justify-center" />
+        <div className="flex gap-8 justify-center">
           {/* Avatar placeholder */}
-          <div style={{ width: 160, height: 160, borderRadius: "50%", background: "#eee" }} />
+          <div className="w-40 h-40 rounded-full bg-gray-200" />
 
           {/* Candidate preview */}
           <video
             ref={videoRef}
-            style={{ width: 160, height: 160, borderRadius: "50%", objectFit: "cover" }}
+            className="w-40 h-40 rounded-full object-cover"
             playsInline
             autoPlay
             muted
           />
         </div>
 
-        <p style={{ marginTop: "1.5rem" }}>
+        <p className="mt-6">
           {phase === "speaking" && "Soru soruluyor…"}
           {phase === "listening" && "Dinleniyor…"}
           {phase === "thinking" && "Yanıt işleniyor…"}
           {phase === "idle" && "Görüşme yakında başlayacak…"}
         </p>
         {/* Geçici Bitir butonu */}
-        <button
-          style={{ marginTop: "1rem", padding: "0.5rem 1rem" }}
+        <Button
+          className="mt-3"
           onClick={() => {
             setTimeout(() => {
               setPhase("idle");
@@ -472,130 +479,17 @@ export default function InterviewPage({ params }: { params: { token: string } })
           }}
         >
           Mülakatı Bitir (Test)
-        </button>
+        </Button>
       </div>
     );
 
   if (status === "finished")
     return (
-      <div style={{ padding: "2rem", textAlign: "center" }}>
-        <h2>Teşekkürler!</h2>
-        <p>Görüşmemize katıldığınız için teşekkür ederiz. Değerlendirmeniz yakında yapılacaktır.</p>
+      <div className="p-6 text-center">
+        <h2 className="text-xl font-semibold">Teşekkürler!</h2>
+        <p className="text-gray-700 mt-2">Görüşmemize katıldığınız için teşekkür ederiz. Değerlendirmeniz yakında yapılacaktır.</p>
       </div>
     );
-
-  // Upload media when interview finishes
-  useEffect(() => {
-    if (status !== "finished") return;
-    
-    const uploadMedia = async () => {
-      try {
-        console.log("Starting media upload...");
-        
-        // Stop recorders and get final data (force flush last chunk)
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-          try { mediaRecorderRef.current.requestData?.(); } catch {}
-          mediaRecorderRef.current.stop();
-          await new Promise(resolve => {
-            mediaRecorderRef.current!.addEventListener("stop", resolve, { once: true });
-          });
-        }
-        
-        if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
-          try { audioRecorderRef.current.requestData?.(); } catch {}
-          audioRecorderRef.current.stop();
-          await new Promise(resolve => {
-            audioRecorderRef.current!.addEventListener("stop", resolve, { once: true });
-          });
-        }
-        
-        // Create blobs from chunks (infer type from first chunk if present)
-        const videoType = videoChunksRef.current[0]?.type || "video/webm";
-        const audioType = audioChunksRef.current[0]?.type || "audio/webm";
-        const videoBlob = new Blob(videoChunksRef.current, { type: videoType });
-        const audioBlob = new Blob(audioChunksRef.current, { type: audioType });
-        
-        console.log("Video blob size:", videoBlob.size, "Audio blob size:", audioBlob.size);
-        
-        // Even if there is no media, we will still mark interview as completed
-        // so that rule-based analysis can be generated from conversation only.
-        
-        // Get presigned URLs
-        const videoPresignedUrl = videoBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
-          method: "POST",
-          body: JSON.stringify({
-            token,
-            file_name: `interview-${token}-video-${Date.now()}.webm`,
-            content_type: videoType,
-          })
-        }) : null;
-        
-        const audioPresignedUrl = audioBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
-          method: "POST",
-          body: JSON.stringify({
-            token,
-            file_name: `interview-${token}-audio-${Date.now()}.webm`,
-            content_type: audioType,
-          })
-        }) : null;
-        
-        // Upload to S3
-        const uploads = [];
-        
-        if (videoPresignedUrl && videoBlob.size > 0) {
-          uploads.push(
-            fetch(videoPresignedUrl.presigned_url, {
-              method: "PUT",
-              body: videoBlob,
-              headers: { "Content-Type": videoType }
-            })
-          );
-        }
-        
-        if (audioPresignedUrl && audioBlob.size > 0) {
-          uploads.push(
-            fetch(audioPresignedUrl.presigned_url, {
-              method: "PUT", 
-              body: audioBlob,
-              headers: { "Content-Type": audioType }
-            })
-          );
-        }
-        
-        if (uploads.length > 0) {
-          const results = await Promise.allSettled(uploads);
-          results.forEach((r, i) => console.log("upload result", i, r.status));
-        }
-        
-        // Save media URLs to interview record and get interview ID
-        const videoUrl = videoPresignedUrl ? videoPresignedUrl.presigned_url.split('?')[0] : null;
-        const audioUrl = audioPresignedUrl ? audioPresignedUrl.presigned_url.split('?')[0] : null;
-        
-        const interviewRecord = await apiFetch<{ id: number }>(`/api/v1/interviews/${token}/media`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            video_url: videoUrl,
-            audio_url: audioUrl
-          })
-        });
-        
-        // Now we have the interview ID! Save it and initialize conversation tracking
-        setInterviewId(interviewRecord.id);
-        console.log("Interview ID captured:", interviewRecord.id);
-        
-        // Save system message about interview completion
-        await saveConversationMessage(
-          "system",
-          `Interview completed. Media uploaded: video=${videoUrl ? 'yes' : 'no'}, audio=${audioUrl ? 'yes' : 'no'}`,
-        );
-        
-      } catch (error) {
-        console.error("Media upload failed:", error);
-      }
-    };
-    
-    uploadMedia();
-  }, [status, token]);
 
   return null; // fallback
 }

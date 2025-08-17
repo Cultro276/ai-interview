@@ -3,6 +3,9 @@ import { useDashboard } from "@/context/DashboardContext";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { Button } from "@/components/ui/Button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/EmptyState";
 
 export default function JobsPage() {
   const { jobs, candidates, interviews, loading } = useDashboard();
@@ -39,7 +42,7 @@ export default function JobsPage() {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading jobs...</p>
         </div>
       </div>
@@ -50,18 +53,17 @@ export default function JobsPage() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Job Positions</h1>
-        <Link
-          href="/jobs/new"
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-        >
-          Create New Job
+        <Link href="/jobs/new">
+          <Button>Create New Job</Button>
         </Link>
       </div>
-      
+      {jobs.length === 0 && (
+        <EmptyState title="No jobs yet" description="Create your first job to invite candidates and start interviewing." actionLabel="Create Job" onAction={() => (window.location.href = "/jobs/new")} />
+      )}
       <div className="grid gap-6">
         {jobs.map((job) => {
           const stats = getJobStats(job.id);
-          // Sort candidates by a proxy score (completed interviews first). For real AI score, would need analysis aggregation API.
+          // Sort candidates by completed first while waiting for leaderboard API
           const sortedCandidates = [...stats.jobCandidates].sort((a, b) => {
             const ia = interviewByCandidate.get(a.id);
             const ib = interviewByCandidate.get(b.id);
@@ -71,7 +73,7 @@ export default function JobsPage() {
           });
           return (
             <div key={job.id} className="bg-white border border-gray-200 rounded-lg p-6">
-              <div className="flex justify-between items-start mb-4">
+              <div className="flex justify_between items-start mb-4">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">{job.title}</h3>
                   <p className="text-gray-600 mt-1">{job.description}</p>
@@ -80,12 +82,43 @@ export default function JobsPage() {
                   </p>
                 </div>
                 <div className="flex space-x-2">
-                  <a href={`/jobs/${job.id}/candidates`} className="px-3 py-1 text-blue-600 border border-blue-600 rounded hover:bg-blue-50">
-                    View Candidates
-                  </a>
-                  <button className="px-3 py-1 text-gray-600 border border-gray-300 rounded hover:bg-gray-50">
-                    Edit
-                  </button>
+                  <Link href={`/jobs/${job.id}/candidates`}>
+                    <Button variant="outline" size="sm">View Candidates</Button>
+                  </Link>
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button variant="ghost" size="sm">Edit</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Edit Job</DialogTitle>
+                      </DialogHeader>
+                      <form className="space-y-3" onSubmit={async (e)=>{
+                        e.preventDefault();
+                        const form = e.target as HTMLFormElement;
+                        const title = (form.elements.namedItem('title') as HTMLInputElement).value;
+                        const description = (form.elements.namedItem('description') as HTMLTextAreaElement).value;
+                        try {
+                          await apiFetch(`/api/v1/jobs/${job.id}`, { method: 'PUT', body: JSON.stringify({ title, description }) });
+                          window.location.reload();
+                        } catch (err) {
+                          alert((err as any)?.message || 'Update failed');
+                        }
+                      }}>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
+                          <input name="title" defaultValue={job.title} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                          <textarea name="description" defaultValue={job.description} rows={6} className="w-full px-3 py-2 border border-gray-300 rounded-md" />
+                        </div>
+                        <div className="flex justify-end">
+                          <Button type="submit">Save</Button>
+                        </div>
+                      </form>
+                    </DialogContent>
+                  </Dialog>
                 </div>
               </div>
               {/* Candidate list preview sorted */}
@@ -105,7 +138,7 @@ export default function JobsPage() {
               
               <div className="grid grid-cols-4 gap-4 pt-4 border-t border-gray-100">
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-blue-600">{stats.totalCandidates}</p>
+                  <p className="text-2xl font-bold text-brand-600">{stats.totalCandidates}</p>
                   <p className="text-sm text-gray-500">Candidates</p>
                 </div>
                 <div className="text-center">

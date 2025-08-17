@@ -1,26 +1,11 @@
+import { MarketingNav } from "@/components/marketing/Nav";
+import { MarketingFooter } from "@/components/marketing/Footer";
+import { Button } from "@/components/ui/Button";
+
 export default function PricingPage() {
   return (
     <div className="min-h-screen bg-white">
-      {/* Navigation */}
-      <nav className="flex items-center justify-between px-6 py-4 bg-white shadow-sm">
-        <div className="text-2xl font-bold text-gray-900">
-          <a href="/">Hirevision</a>
-        </div>
-        <div className="hidden md:flex space-x-8">
-          <a href="/" className="text-gray-600 hover:text-gray-900">Features</a>
-          <a href="/pricing" className="text-blue-600 font-semibold">Pricing</a>
-          <a href="/contact" className="text-gray-600 hover:text-gray-900">Contact</a>
-          <a href="/blog" className="text-gray-600 hover:text-gray-900">Blog</a>
-        </div>
-        <div className="flex space-x-4">
-          <a href="/login" className="px-4 py-2 text-blue-600 border border-blue-600 rounded-lg hover:bg-blue-50">
-            Login
-          </a>
-          <button className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-            Request Demo
-          </button>
-        </div>
-      </nav>
+      <MarketingNav active="pricing" />
 
       {/* Hero Section */}
       <section className="px-6 py-20 text-center">
@@ -54,9 +39,7 @@ export default function PricingPage() {
                 <li className="text-gray-600">Storage 500MB</li>
                 <li className="text-gray-600">AI Models: 5/month</li>
               </ul>
-              <button className="w-full px-6 py-3 text-blue-600 border border-blue-600 rounded-lg hover:bg-blue-50 font-semibold">
-                Get Started
-              </button>
+              <Button className="w-full" variant="outline">Get Started</Button>
             </div>
 
             {/* Pro Plan */}
@@ -79,9 +62,7 @@ export default function PricingPage() {
                 <li className="text-gray-600">Storage 1GB</li>
                 <li className="text-gray-600">AI Models: 15/month</li>
               </ul>
-              <button className="w-full px-6 py-3 text-white bg-blue-600 rounded-lg hover:bg-blue-700 font-semibold">
-                Get Started
-              </button>
+              <Button className="w-full">Get Started</Button>
             </div>
 
             {/* Team Plan */}
@@ -99,9 +80,7 @@ export default function PricingPage() {
                 <li className="text-gray-600">Storage 5GB</li>
                 <li className="text-gray-600">AI Models: 25/month</li>
               </ul>
-              <button className="w-full px-6 py-3 text-blue-600 border border-blue-600 rounded-lg hover:bg-blue-50 font-semibold">
-                Get Started
-              </button>
+              <Button className="w-full" variant="outline">Get Started</Button>
             </div>
           </div>
         </div>
@@ -169,9 +148,7 @@ export default function PricingPage() {
       <section className="px-6 py-16 bg-gray-50">
         <div className="max-w-4xl mx-auto text-center">
           <h3 className="text-xl font-bold text-gray-900 mb-4">Not finding what you're looking for?</h3>
-          <button className="px-8 py-3 text-white bg-blue-600 rounded-lg hover:bg-blue-700 font-semibold">
-            Contact Sales
-          </button>
+          <Button>Contact Sales</Button>
         </div>
       </section>
 
@@ -189,48 +166,7 @@ export default function PricingPage() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="px-6 py-16 bg-gray-900 text-white">
-        <div className="max-w-6xl mx-auto">
-          <div className="grid md:grid-cols-4 gap-8 mb-8">
-            <div>
-              <h3 className="text-xl font-bold mb-4">Hirevision</h3>
-              <p className="text-gray-400">Significantly enhance your screening and recruitment procedures.</p>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-4">Product</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="/">Features</a></li>
-                <li><a href="/pricing">Pricing</a></li>
-                <li>Use case</li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-4">Resources</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="/blog">Blog</a></li>
-                <li>Apps</li>
-                <li>Learn</li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-4">Company</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li>Our Story</li>
-                <li>Our Team</li>
-                <li><a href="/contact">Contact Us</a></li>
-              </ul>
-            </div>
-          </div>
-          <div className="border-t border-gray-800 pt-8 flex justify-between items-center">
-            <p className="text-gray-400">Hirevision • Copyright © 2023</p>
-            <div className="flex space-x-4 text-gray-400">
-              <span>Terms of service</span>
-              <span>Privacy policy</span>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <MarketingFooter />
     </div>
   );
 } 

@@ -9,10 +9,11 @@ from src.db.models.job import Job
 from src.db.session import get_session
 from src.auth import current_active_user
 from src.db.models.user import User
-from src.api.v1.schemas import JobCreate, JobRead, JobUpdate
+from src.api.v1.schemas import JobCreate, JobRead, JobUpdate, CandidateCreate, CandidateRead
 from src.db.models.candidate import Candidate
 from src.db.models.interview import Interview
 from src.db.models.candidate_profile import CandidateProfile
+from src.db.models.conversation import InterviewAnalysis
 from src.core.s3 import put_object_bytes
 from datetime import datetime, timedelta
 import re
@@ -161,3 +162,117 @@ async def bulk_upload_candidates(
         created_ids.append(cand.id)
 
     return BulkUploadResponse(created=len(created_ids), candidates=created_ids) 
+
+
+# --- Single candidate creation bound to a job ---
+
+
+@router.post("/{job_id}/candidates", response_model=CandidateRead, status_code=status.HTTP_201_CREATED)
+async def create_candidate_for_job(
+    job_id: int,
+    cand_in: CandidateCreate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Ensure job belongs to current user
+    job = (
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    ).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Create candidate (mimic candidates.create flow)
+    from uuid import uuid4
+    from src.core.mail import send_email_resend
+    expires_days = cand_in.expires_in_days or 7
+    candidate = Candidate(
+        user_id=current_user.id,
+        name=cand_in.name,
+        email=cand_in.email,
+        resume_url=cand_in.resume_url,
+        status="pending",
+        token=uuid4().hex,
+        expires_at=datetime.utcnow() + timedelta(days=expires_days),
+    )
+    session.add(candidate)
+    await session.flush()
+
+    # Link to job via Interview
+    interview = Interview(job_id=job.id, candidate_id=candidate.id, status="pending")
+    session.add(interview)
+    await session.commit()
+    await session.refresh(candidate)
+
+    # Best-effort invite email
+    try:
+        await send_email_resend(
+            candidate.email,
+            "Interview Invitation",
+            (
+                f"Merhaba {candidate.name},\n\n"
+                f"Mülakatınızı başlatmak için bağlantı:\nhttp://localhost:3000/interview/{candidate.token}\n\n"
+                f"Bağlantı {expires_days} gün geçerlidir."
+            ),
+        )
+    except Exception:
+        pass
+    print(f"[INVITE LINK] http://localhost:3000/interview/{candidate.token}")
+    return candidate
+
+
+# --- Leaderboard for a job ---
+
+
+class LeaderboardItem(BaseModel):
+    candidate_id: int
+    candidate_name: str | None
+    interview_id: int
+    overall_score: float | None = None
+    communication_score: float | None = None
+    technical_score: float | None = None
+    cultural_fit_score: float | None = None
+
+
+@router.get("/{job_id}/leaderboard", response_model=List[LeaderboardItem])
+async def job_leaderboard(
+    job_id: int,
+    limit: int = 100,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Verify ownership
+    job = (
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    ).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = await session.execute(
+        select(
+            Interview.id.label("interview_id"),
+            Candidate.id.label("candidate_id"),
+            Candidate.name.label("candidate_name"),
+            InterviewAnalysis.overall_score,
+            InterviewAnalysis.communication_score,
+            InterviewAnalysis.technical_score,
+            InterviewAnalysis.cultural_fit_score,
+        )
+        .join(Candidate, Interview.candidate_id == Candidate.id)
+        .outerjoin(InterviewAnalysis, InterviewAnalysis.interview_id == Interview.id)
+        .where(Interview.job_id == job.id)
+        .order_by(InterviewAnalysis.overall_score.desc().nullslast(), Interview.id.desc())
+        .limit(limit)
+    )
+    rows = result.all()
+    return [
+        LeaderboardItem(
+            interview_id=r.interview_id,
+            candidate_id=r.candidate_id,
+            candidate_name=r.candidate_name,
+            overall_score=r.overall_score,
+            communication_score=r.communication_score,
+            technical_score=r.technical_score,
+            cultural_fit_score=r.cultural_fit_score,
+        )
+        for r in rows
+    ]

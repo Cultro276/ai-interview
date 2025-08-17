@@ -1,26 +1,10 @@
+import { MarketingNav } from "@/components/marketing/Nav";
+import { MarketingFooter } from "@/components/marketing/Footer";
+
 export default function BlogPage() {
   return (
     <div className="min-h-screen bg-white">
-      {/* Navigation */}
-      <nav className="flex items-center justify-between px-6 py-4 bg-white shadow-sm">
-        <div className="text-2xl font-bold text-gray-900">
-          <a href="/">Hirevision</a>
-        </div>
-        <div className="hidden md:flex space-x-8">
-          <a href="/" className="text-gray-600 hover:text-gray-900">Features</a>
-          <a href="/pricing" className="text-gray-600 hover:text-gray-900">Pricing</a>
-          <a href="/contact" className="text-gray-600 hover:text-gray-900">Contact</a>
-          <a href="/blog" className="text-blue-600 font-semibold">Blog</a>
-        </div>
-        <div className="flex space-x-4">
-          <a href="/login" className="px-4 py-2 text-blue-600 border border-blue-600 rounded-lg hover:bg-blue-50">
-            Login
-          </a>
-          <button className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-            Request Demo
-          </button>
-        </div>
-      </nav>
+      <MarketingNav active="blog" />
 
       {/* Hero Section */}
       <section className="px-6 py-20 text-center">
@@ -193,48 +177,7 @@ export default function BlogPage() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="px-6 py-16 bg-gray-900 text-white">
-        <div className="max-w-6xl mx-auto">
-          <div className="grid md:grid-cols-4 gap-8 mb-8">
-            <div>
-              <h3 className="text-xl font-bold mb-4">Hirevision</h3>
-              <p className="text-gray-400">Significantly enhance your screening and recruitment procedures.</p>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-4">Product</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="/">Features</a></li>
-                <li><a href="/pricing">Pricing</a></li>
-                <li>Use case</li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-4">Resources</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="/blog">Blog</a></li>
-                <li>Apps</li>
-                <li>Learn</li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-4">Company</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li>Our Story</li>
-                <li>Our Team</li>
-                <li><a href="/contact">Contact Us</a></li>
-              </ul>
-            </div>
-          </div>
-          <div className="border-t border-gray-800 pt-8 flex justify-between items-center">
-            <p className="text-gray-400">Hirevision • Copyright © 2023</p>
-            <div className="flex space-x-4 text-gray-400">
-              <span>Terms of service</span>
-              <span>Privacy policy</span>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <MarketingFooter />
     </div>
   );
 } 

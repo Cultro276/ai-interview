@@ -19,7 +19,7 @@ GEMINI_API_KEY = settings.gemini_api_key
 MODEL_NAME = "gemini-2.5-flash"
 
 
-def _sync_generate(history: List[dict[str, str]]):
+def _sync_generate(history: List[dict[str, str]], job_context: str | None = None):
     """Blocking Gemini request executed in a thread."""
 
     if not _GENAI_AVAILABLE:
@@ -33,6 +33,10 @@ def _sync_generate(history: List[dict[str, str]]):
         "If the candidate has answered sufficiently AND you have asked at least 5 questions, respond with the single word FINISHED. "
         "Otherwise respond with only the next question sentence."
     )
+    if job_context:
+        system_prompt += (
+            "\n\nJob description (context for tailoring questions):\n" + job_context[:1500]
+        )
 
     convo_text = system_prompt + "\n\n"
     for turn in history:
@@ -52,12 +56,19 @@ def _sync_generate(history: List[dict[str, str]]):
     return {"question": text, "done": False}
 
 
-def _fallback_generate(history: List[dict[str, str]]) -> dict[str, str]:
+def _fallback_generate(history: List[dict[str, str]], job_context: str | None = None) -> dict[str, str]:
     """Deterministic local fallback when Gemini is not configured.
 
     Asks up to 5 generic Turkish interview questions based on history length.
     """
-    canned = [
+    # Optionally bias a couple of context-aware questions if job_context exists
+    context_biased = []
+    if job_context:
+        context_biased = [
+            "İlanın gereksinimlerine göre en güçlü olduğunuz alanlar nelerdir?",
+            "İş tanımındaki sorumluluklara benzer bir projede deneyiminizden bahseder misiniz?",
+        ]
+    canned = context_biased + [
         "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?",
         "Bu pozisyonda başarılı olmak için hangi teknik becerilerin kritik olduğunu düşünüyorsunuz?",
         "Zorlayıcı bir problemi nasıl çözdüğünüze dair somut bir örnek verebilir misiniz?",
@@ -70,13 +81,13 @@ def _fallback_generate(history: List[dict[str, str]]) -> dict[str, str]:
     return {"question": canned[asked], "done": False}
 
 
-async def generate_question(history: List[dict[str, str]]) -> dict[str, str]:
+async def generate_question(history: List[dict[str, str]], job_context: str | None = None) -> dict[str, str]:
     # If API key or library missing, use fallback for smooth local dev
     if not GEMINI_API_KEY or not _GENAI_AVAILABLE:
-        return _fallback_generate(history)
+        return _fallback_generate(history, job_context)
 
     try:
-        return await to_thread.run_sync(_sync_generate, history)
+        return await to_thread.run_sync(_sync_generate, history, job_context)
     except Exception:
         # Last-resort fallback
-        return _fallback_generate(history)
+        return _fallback_generate(history, job_context)

@@ -8,6 +8,7 @@ from src.auth import current_active_user
 from src.db.models.user import User
 from src.db.models.job import Job
 from src.db.models.interview import Interview
+from src.db.models.candidate import Candidate
 from src.db.session import get_session
 from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUpdate, InterviewMediaUpdate
 from src.services.analysis import generate_rule_based_analysis
@@ -21,8 +22,29 @@ candidate_router = APIRouter(prefix="/interviews")
 
 
 @router.post("/", response_model=InterviewRead, status_code=status.HTTP_201_CREATED)
-async def create_interview(int_in: InterviewCreate, session: AsyncSession = Depends(get_session)):
-    interview = Interview(**int_in.dict())
+async def create_interview(
+    int_in: InterviewCreate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Enforce tenant boundaries: job and candidate must belong to the current user
+    job = (
+        await session.execute(
+            select(Job).where(Job.id == int_in.job_id, Job.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    cand = (
+        await session.execute(
+            select(Candidate).where(Candidate.id == int_in.candidate_id, Candidate.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    interview = Interview(job_id=job.id, candidate_id=cand.id, status=int_in.status)
     session.add(interview)
     await session.commit()
     await session.refresh(interview)
@@ -87,8 +109,20 @@ async def get_interview_by_token(token: str, session: AsyncSession = Depends(get
 
 
 @router.patch("/{int_id}/status", response_model=InterviewRead)
-async def update_status(int_id: int, status_in: InterviewStatusUpdate, session: AsyncSession = Depends(get_session)):
-    interview = (await session.execute(select(Interview).where(Interview.id == int_id))).scalar_one_or_none()
+async def update_status(
+    int_id: int,
+    status_in: InterviewStatusUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Ensure the interview belongs to a job owned by the current user
+    interview = (
+        await session.execute(
+            select(Interview)
+            .join(Job, Interview.job_id == Job.id)
+            .where(Interview.id == int_id, Job.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     interview.status = status_in.status
@@ -111,9 +145,13 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
         await session.execute(select(Interview).where(Interview.candidate_id==cand.id).order_by(Interview.created_at.desc()))
     ).scalar_one_or_none()
     if not interview:
-        # Create new interview if none exists (first job as placeholder)
+        # Create new interview if none exists. Choose a job that belongs to the same tenant (cand.user_id)
         from src.db.models.job import Job
-        job = (await session.execute(select(Job).limit(1))).scalar_one_or_none()
+        job = (
+            await session.execute(
+                select(Job).where(Job.user_id == cand.user_id).order_by(Job.created_at.desc())
+            )
+        ).scalar_one_or_none()
         if not job:
             raise HTTPException(status_code=400, detail="No job available to attach interview")
         interview = Interview(job_id=job.id, candidate_id=cand.id, status="completed")
@@ -123,6 +161,8 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
         interview.audio_url = media_in.audio_url
     if media_in.video_url:
         interview.video_url = media_in.video_url
+    # Mark status completed when media uploaded
+    interview.status = "completed"
     # Mark completion metadata
     from datetime import datetime, timezone
     interview.completed_at = datetime.now(timezone.utc)

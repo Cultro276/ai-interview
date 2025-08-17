@@ -4,6 +4,10 @@ import { useParams } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
+import { Button } from "@/components/ui/Button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function JobCandidatesPage() {
   const params = useParams();
@@ -57,13 +61,9 @@ export default function JobCandidatesPage() {
     }
     setCreating(true);
     try {
-      const cand = await apiFetch<any>("/api/v1/candidates/", {
+      await apiFetch<any>(`/api/v1/jobs/${jobId}/candidates`, {
         method: "POST",
         body: JSON.stringify({ name: singleName, email: singleEmail, expires_in_days: singleExpiry }),
-      });
-      await apiFetch("/api/v1/interviews", {
-        method: "POST",
-        body: JSON.stringify({ job_id: jobId, candidate_id: cand.id, status: "pending" }),
       });
       setSingleName("");
       setSingleEmail("");
@@ -79,7 +79,8 @@ export default function JobCandidatesPage() {
   const sendLink = async (candId: number) => {
     try {
       await apiFetch(`/api/v1/candidates/${candId}/send-link?expires_in_days=${expiresDays}`, { method: "POST" });
-      info("Link sent (mock)");
+      const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/invite-link`);
+      info(`Link sent. Click to open: ${url}`);
     } catch (e: any) {
       toastError(e.message);
     }
@@ -94,7 +95,7 @@ export default function JobCandidatesPage() {
         await Promise.all(batch.map(id => apiFetch(`/api/v1/candidates/${id}/send-link?expires_in_days=${expiresDays}`, { method: "POST" })));
         info(`Sent ${Math.min(i + 10, ids.length)}/${ids.length}`);
       }
-      info("All links sent (mock)");
+      info("All links sent");
     } catch (e: any) {
       toastError(e.message || "Failed to send all links");
     }
@@ -115,49 +116,50 @@ export default function JobCandidatesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Job Candidates</h1>
-        <a href="/jobs" className="text-blue-600">← Back to Jobs</a>
+        <a href="/jobs" className="text-brand-700">← Back to Jobs</a>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Bulk Upload CVs</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-medium text-gray-900">Bulk Upload CVs</h3>
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="outline">Send Links to All</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Send Invitation Links</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Link Expiry</label>
+                  <Select value={String(expiresDays)} onValueChange={(v) => setExpiresDays(Number(v))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[1,3,7,14,30].map((d) => (
+                        <SelectItem key={d} value={String(d)}>{d} day{d>1?'s':''}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button onClick={sendAll}>Send Link to All</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
         <div className="grid gap-4 md:grid-cols-3">
           <div className="md:col-span-2">
-            <input
-              type="file"
-              multiple
-              accept=".pdf,.doc,.docx,.txt"
-              onChange={(e) => setFiles(Array.from(e.target.files || []))}
-              className="block w-full text-sm text-gray-600"
-            />
-            {files.length > 0 && (
-              <p className="text-sm text-gray-500 mt-2">{files.length} file(s) selected</p>
-            )}
+            <input type="file" multiple accept=".pdf,.doc,.docx,.txt" onChange={(e) => setFiles(Array.from(e.target.files || []))} className="block w-full text-sm text-gray-600" />
+            {files.length > 0 && (<p className="text-sm text-gray-500 mt-2">{files.length} file(s) selected</p>)}
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Link Expiry (days)</label>
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={expiresDays}
-              onChange={(e) => setExpiresDays(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md"
-            />
-            <button
-              onClick={sendAll}
-              className="mt-2 w-full px-3 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-700"
-            >
-              Send Link to All
-            </button>
+          <div className="flex items-end">
+            <Button onClick={onUpload} disabled={uploading || files.length === 0}>
+              {uploading ? "Uploading…" : "Upload & Parse"}
+            </Button>
           </div>
         </div>
-        <button
-          onClick={onUpload}
-          disabled={uploading || files.length === 0}
-          className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-        >
-          {uploading ? "Uploading…" : "Upload & Parse"}
-        </button>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8">
@@ -195,13 +197,9 @@ export default function JobCandidatesPage() {
           </div>
         </div>
         <div className="flex gap-3 mt-4">
-          <button
-            onClick={createSingleCandidate}
-            disabled={creating}
-            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
-          >
+          <Button onClick={createSingleCandidate} disabled={creating}>
             {creating ? "Creating…" : "Create Candidate"}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -225,18 +223,23 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {c.resume_url ? (
-                    <button onClick={() => downloadCv(c.id)} className="text-blue-600 hover:text-blue-800">View CV</button>
+                    <Button variant="ghost" onClick={() => downloadCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">View CV</Button>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <button
-                    onClick={() => sendLink(c.id)}
-                    className="text-blue-600 hover:text-blue-900 mr-4"
-                  >
-                    Send Link
-                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline">Actions</Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => sendLink(c.id)}>Send Link</DropdownMenuItem>
+                      {c.resume_url && (
+                        <DropdownMenuItem onClick={() => downloadCv(c.id)}>View CV</DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </td>
               </tr>
             ))}

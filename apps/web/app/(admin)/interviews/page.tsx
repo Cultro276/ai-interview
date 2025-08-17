@@ -2,6 +2,9 @@
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
 import { useState } from "react";
+import { Button } from "@/components/ui/Button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 
 interface ConversationMessage {
   id: number;
@@ -33,6 +36,9 @@ export default function InterviewsPage() {
   const [analysis, setAnalysis] = useState<InterviewAnalysis | null>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [sendingFinal, setSendingFinal] = useState(false);
+  const [transcript, setTranscript] = useState<string>("");
+  const [savingTranscript, setSavingTranscript] = useState(false);
 
   const viewConversation = async (interviewId: number) => {
     setSelectedInterview(interviewId);
@@ -76,6 +82,29 @@ export default function InterviewsPage() {
     }
   };
 
+  const loadTranscript = async (interviewId: number) => {
+    try {
+      const res = await apiFetch<{ interview_id: number; text: string }>(`/api/v1/interviews/${interviewId}/transcript`);
+      setTranscript(res?.text || "");
+    } catch (e) {
+      setTranscript("");
+    }
+  };
+
+  const saveTranscript = async (interviewId: number) => {
+    setSavingTranscript(true);
+    try {
+      await apiFetch(`/api/v1/interviews/${interviewId}/transcript`, {
+        method: "POST",
+        body: JSON.stringify({ text: transcript, provider: "manual" }),
+      });
+    } catch (e) {
+      // toast can be added via ToastContext if desired
+    } finally {
+      setSavingTranscript(false);
+    }
+  };
+
   const downloadCv = async (candidateId: number) => {
     try {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candidateId}/resume-download-url`);
@@ -85,11 +114,23 @@ export default function InterviewsPage() {
     }
   };
 
+  const sendFinalInvite = async (candidateId: number) => {
+    setSendingFinal(true);
+    try {
+      await apiFetch(`/api/v1/candidates/${candidateId}/notify-final`, { method: "POST" });
+      alert("Final interview invite sent");
+    } catch (e: any) {
+      alert(e.message || "Failed to send final invite");
+    } finally {
+      setSendingFinal(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading interviews...</p>
         </div>
       </div>
@@ -105,25 +146,58 @@ export default function InterviewsPage() {
           <h1 className="text-2xl font-bold text-gray-900">Interview Conversation</h1>
           <div className="flex items-center gap-3">
             {cand && cand.resume_url && (
-              <button
+              <Button
                 onClick={() => downloadCv(cand.id)}
-                className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700"
+                className="bg-emerald-600 hover:bg-emerald-700"
+                size="sm"
               >
                 Download CV
-              </button>
+              </Button>
             )}
-            <button
-              onClick={() => setSelectedInterview(null)}
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-medium"
-            >
+            {cand && (
+              <Button
+                onClick={() => sendFinalInvite(cand.id)}
+                disabled={sendingFinal}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"
+                size="sm"
+              >
+                {sendingFinal ? "Sending…" : "Send Final Invite"}
+              </Button>
+            )}
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" onClick={() => loadTranscript(selectedInterview!)}>Transcript</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Transcript</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <textarea
+                    value={transcript}
+                    onChange={(e) => setTranscript(e.target.value)}
+                    rows={8}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    placeholder="Paste or edit transcript text here"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" onClick={() => loadTranscript(selectedInterview!)}>Reload</Button>
+                    <Button onClick={() => saveTranscript(selectedInterview!)} disabled={savingTranscript}>
+                      {savingTranscript ? "Saving…" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+            <Button onClick={() => setSelectedInterview(null)} variant="secondary" size="sm">
               ← Back to Interviews
-            </button>
+            </Button>
           </div>
         </div>
 
         {loadingConversation ? (
           <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600 mx-auto mb-4"></div>
             <p>Loading conversation...</p>
           </div>
         ) : (
@@ -144,7 +218,7 @@ export default function InterviewsPage() {
                           key={message.id}
                           className={`p-3 rounded-lg ${
                             message.role === "assistant"
-                              ? "bg-blue-50 border-l-4 border-blue-400"
+                              ? "bg-brand-25 border-l-4 border-brand-400"
                               : message.role === "user"
                               ? "bg-green-50 border-l-4 border-green-400"
                               : "bg-gray-50 border-l-4 border-gray-400"
@@ -152,7 +226,7 @@ export default function InterviewsPage() {
                         >
                           <div className="flex justify-between items-start mb-2">
                             <span className={`text-sm font-medium ${
-                              message.role === "assistant" ? "text-blue-700" :
+                              message.role === "assistant" ? "text-brand-700" :
                               message.role === "user" ? "text-green-700" : "text-gray-700"
                             }`}>
                               {message.role === "assistant" ? "🤖 AI" : 
@@ -175,15 +249,24 @@ export default function InterviewsPage() {
             <div className="lg:col-span-1">
               <div className="bg-white border border-gray-200 rounded-lg">
                 <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                  <h3 className="text-lg font-medium text-gray-900">AI Analysis</h3>
+                  <h3 className="text-lg font_medium text-gray-900">AI Analysis</h3>
                   {selectedInterview && (
-                    <button
-                      onClick={() => regenerateAnalysis(selectedInterview)}
-                      disabled={generating}
-                      className="px-3 py-1 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-                    >
-                      {generating ? "Generating…" : "Regenerate"}
-                    </button>
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button disabled={generating} size="sm">{generating ? "Generating…" : "Regenerate"}</Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>Regenerate analysis?</DialogTitle>
+                        </DialogHeader>
+                        <div className="flex justify-end gap-2">
+                          <Button variant="ghost">Cancel</Button>
+                          <Button onClick={() => regenerateAnalysis(selectedInterview)} disabled={generating}>
+                            {generating ? "Generating…" : "Confirm"}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
                   )}
                 </div>
                 <div className="p-6">
@@ -208,7 +291,7 @@ export default function InterviewsPage() {
                           <div className="mt-1">
                             <div className="w-full bg-gray-200 rounded-full h-2">
                               <div 
-                                className="bg-blue-600 h-2 rounded-full" 
+                                className="bg-brand-600 h-2 rounded-full" 
                                 style={{ width: `${analysis.overall_score}%` }}
                               ></div>
                             </div>
@@ -220,7 +303,7 @@ export default function InterviewsPage() {
                       {analysis.communication_score && (
                         <div>
                           <span className="text-sm font-medium text-gray-700">Communication</span>
-                          <p className="text-lg font-semibold text-blue-600">{analysis.communication_score}/100</p>
+                          <p className="text-lg font-semibold text-brand-600">{analysis.communication_score}/100</p>
                         </div>
                       )}
                       
@@ -331,7 +414,7 @@ export default function InterviewsPage() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                     <button 
                       onClick={() => viewConversation(interview.id)}
-                      className="text-blue-600 hover:text-blue-900 mr-4"
+                      className="text-brand-700 hover:text-brand-900 mr-4"
                     >
                       View Info
                     </button>
