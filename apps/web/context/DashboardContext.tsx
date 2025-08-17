@@ -52,28 +52,40 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   const loadData = async () => {
     try {
-      const [candidatesData, jobsData, interviewsData] = await Promise.all([
-        apiFetch<Candidate[]>("/api/v1/candidates"),
-        apiFetch<Job[]>("/api/v1/jobs"),
-        apiFetch<Interview[]>("/api/v1/interviews"),
+      // Skip API calls if there is no auth token (e.g., on /login)
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      if (!token) {
+        setDataLoaded(true);
+        setLoading(false);
+        return;
+      }
+      const [candidatesRes, jobsRes, interviewsRes] = await Promise.allSettled([
+        apiFetch<Candidate[]>("/api/v1/candidates/"),
+        apiFetch<Job[]>("/api/v1/jobs/"),
+        apiFetch<Interview[]>("/api/v1/interviews/"),
       ]);
-      setCandidates(candidatesData || []);
-      setJobs(jobsData || []);
-      setInterviews(interviewsData || []);
-      
-      // Save to session storage as backup
+
+      const nextCandidates = candidatesRes.status === "fulfilled" ? (candidatesRes.value || []) : candidates;
+      const nextJobs = jobsRes.status === "fulfilled" ? (jobsRes.value || []) : jobs;
+      const nextInterviews = interviewsRes.status === "fulfilled" ? (interviewsRes.value || []) : interviews;
+
+      setCandidates(nextCandidates);
+      setJobs(nextJobs);
+      setInterviews(nextInterviews);
+
+      // Save to session storage as backup (always persist the latest known-good values)
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('dashboardData', JSON.stringify({
-          candidates: candidatesData || [],
-          jobs: jobsData || [],
-          interviews: interviewsData || []
+          candidates: nextCandidates,
+          jobs: nextJobs,
+          interviews: nextInterviews,
         }));
       }
-      
+
       setDataLoaded(true);
     } catch (error) {
       console.error("Failed to load data:", error);
-      
+
       // Try to load from session storage on error
       if (typeof window !== 'undefined') {
         const savedData = sessionStorage.getItem('dashboardData');
@@ -84,11 +96,11 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             setJobs(savedJobs || []);
             setInterviews(savedInterviews || []);
           } catch (e) {
-            //
+            // ignore JSON parse error
           }
         }
       }
-      
+
       setDataLoaded(true);
     } finally {
       setLoading(false);
@@ -102,7 +114,15 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!dataLoaded) {
-      
+      // If no token, don't attempt initial load
+      if (typeof window !== 'undefined') {
+        const token = localStorage.getItem('token');
+        if (!token) {
+          setDataLoaded(true);
+          setLoading(false);
+          return;
+        }
+      }
       // Try to load from session storage first
       if (typeof window !== 'undefined') {
         const savedData = sessionStorage.getItem('dashboardData');

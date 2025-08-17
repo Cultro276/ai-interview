@@ -1,4 +1,4 @@
-import Router from "next/router";
+// Avoid importing next/router in App Router; redirect via window
 
 export async function apiFetch<T>(
   url: string,
@@ -28,7 +28,7 @@ export async function apiFetch<T>(
     headers,
   });
   if (res.status === 401) {
-    if (typeof window !== "undefined") Router.push("/login");
+    if (typeof window !== "undefined") window.location.href = "/login";
     throw new Error("Unauthorized");
   }
   if (!res.ok) {

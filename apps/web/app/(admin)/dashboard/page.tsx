@@ -1,8 +1,11 @@
 "use client";
 import { useDashboard } from "@/context/DashboardContext";
+import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 export default function DashboardPage() {
   const { candidates, jobs, interviews, loading, refreshData } = useDashboard();
+  const [metrics, setMetrics] = useState<{ upload_p95_ms: number; analysis_p95_ms: number; error_rate: number } | null>(null);
   
   // Get job statistics
   const getJobStats = (jobId: number) => {
@@ -21,6 +24,12 @@ export default function DashboardPage() {
       pendingInterviews: jobInterviews.length - completedInterviews.length
     };
   };
+
+  useEffect(() => {
+    apiFetch<any>("/api/v1/metrics")
+      .then((m) => setMetrics(m))
+      .catch(() => setMetrics(null));
+  }, []);
 
   if (loading) {
     return (
@@ -101,6 +110,22 @@ export default function DashboardPage() {
               <p className="text-2xl font-bold text-gray-900">{interviews.filter(i => i.status === "completed").length}</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Metrics Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+          <div className="text-sm text-gray-600">Upload P95</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">{metrics ? `${metrics.upload_p95_ms} ms` : "—"}</div>
+        </div>
+        <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+          <div className="text-sm text-gray-600">Analysis P95</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">{metrics ? `${metrics.analysis_p95_ms} ms` : "—"}</div>
+        </div>
+        <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
+          <div className="text-sm text-gray-600">Error Rate</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">{metrics ? `${(metrics.error_rate * 100).toFixed(2)}%` : "—"}</div>
         </div>
       </div>
 

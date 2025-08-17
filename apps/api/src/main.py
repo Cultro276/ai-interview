@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.v1.routes import router as api_v1_router
+from src.core.metrics import collector
 
 app = FastAPI(
     title="Interview API",
@@ -14,6 +15,9 @@ app = FastAPI(
 # CORS – local dev origins
 origins = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost",
+    "http://127.0.0.1",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -26,7 +30,7 @@ app.add_middleware(
 
 @app.get("/healthz", tags=["health"])
 def healthcheck():
-    return {"status": "ok"}
+    return {"status": "ok", **collector.snapshot()}
 
 
 # Dev-only stub endpoint for fake uploads when S3 is not configured

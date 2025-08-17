@@ -12,6 +12,7 @@ from src.auth import current_active_user
 from src.db.models.user import User
 from src.api.v1.schemas import CandidateCreate, CandidateRead, CandidateUpdate
 from src.core.s3 import generate_presigned_get_url
+from src.core.mail import send_email_resend
 from urllib.parse import urlparse
 from src.db.models.candidate import Candidate
 from src.db.session import get_session
@@ -25,7 +26,26 @@ async def list_candidates(
     current_user: User = Depends(current_active_user)
 ):
     result = await session.execute(select(Candidate).where(Candidate.user_id == current_user.id))
-    return result.scalars().all()
+    rows: List[Candidate] = list(result.scalars().all())
+    # Sanitize potentially invalid emails to avoid 500 due to response model validation
+    safe_list: List[CandidateRead] = []
+    for cand in rows:
+        email_value = cand.email or ""
+        if "@" not in email_value:
+            email_value = f"invalid+{cand.id}@example.com"
+        try:
+            safe_list.append(CandidateRead.model_validate({
+                "id": cand.id,
+                "user_id": cand.user_id,
+                "name": cand.name,
+                "email": email_value,
+                "resume_url": cand.resume_url,
+                "created_at": cand.created_at,
+            }))
+        except Exception:
+            # As last resort, skip the bad record
+            continue
+    return safe_list
 
 
 @router.post("/", response_model=CandidateRead, status_code=status.HTTP_201_CREATED)
@@ -45,7 +65,18 @@ async def create_candidate(
         await session.rollback()
         raise HTTPException(status_code=400, detail="Email already registered")
     await session.refresh(candidate)
-    print(f"[MAIL MOCK] To: {candidate.email} – Link: http://localhost:3000/interview/{candidate.token}")
+    try:
+        await send_email_resend(
+            candidate.email,
+            "Interview Invitation",
+            (
+                f"Merhaba {candidate.name},\n\n"
+                f"Mülakatınızı başlatmak için bağlantı:\nhttp://localhost:3000/interview/{candidate.token}\n\n"
+                f"Bağlantı {candidate_in.expires_in_days} gün geçerlidir."
+            ),
+        )
+    except Exception:
+        pass
     return candidate
 
 
@@ -74,12 +105,14 @@ async def resend_link(
     if effective_expiry and effective_expiry > 0:
         cand.expires_at = datetime.utcnow() + timedelta(days=effective_expiry)
         await session.commit()
-    subj = payload.subject if payload else None
-    body = payload.body_text if payload else None
-    print("[MAIL MOCK] To:", cand.email)
-    print("Subject:", subj or "Interview Invitation")
-    print("Body:", body or f"Please join your interview using this link: http://localhost:3000/interview/{cand.token}")
-    print(f"Link: http://localhost:3000/interview/{cand.token}")
+    subj = (payload.subject if payload else None) or "Interview Invitation"
+    link = f"http://localhost:3000/interview/{cand.token}"
+    body = (payload.body_text if payload else None) or (
+        f"Merhaba {cand.name},\n\n"
+        f"Mülakatınızı başlatmak için aşağıdaki bağlantıyı kullanın:\n{link}\n\n"
+        f"Bağlantı {effective_expiry or 7} gün geçerlidir."
+    )
+    await send_email_resend(cand.email, subj, body)
     return {"detail":"sent"}
 
 

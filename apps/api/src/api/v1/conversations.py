@@ -16,8 +16,13 @@ from src.api.v1.schemas import (
     InterviewAnalysisCreate,
     InterviewAnalysisRead
 )
+from src.services.analysis import generate_rule_based_analysis
+from src.core.metrics import collector, Timer
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+# Public router for candidate (token) submissions
+public_router = APIRouter(prefix="/conversations", tags=["conversations-public"])  # included without auth in routes
 
 
 # ---- Conversation Messages ----
@@ -38,6 +43,31 @@ async def create_message(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
+    message = ConversationMessage(**message_in.dict())
+    session.add(message)
+    await session.commit()
+    await session.refresh(message)
+    return message
+
+
+# Candidate-safe message creation that does not require admin JWT
+class PublicConversationMessageCreate(ConversationMessageCreate):
+    pass
+
+
+@public_router.post("/messages-public", response_model=ConversationMessageRead, status_code=status.HTTP_201_CREATED)
+async def create_message_public(
+    message_in: PublicConversationMessageCreate,
+    session: AsyncSession = Depends(get_session),
+):
+    # Verify interview exists. No ownership check (candidate flow) but we restrict fields strictly.
+    interview = await session.execute(
+        select(Interview).where(Interview.id == message_in.interview_id)
+    )
+    interview = interview.scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
     message = ConversationMessage(**message_in.dict())
     session.add(message)
     await session.commit()
@@ -87,12 +117,12 @@ async def create_analysis(
     interview = interview.scalar_one_or_none()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
-    
-    analysis = InterviewAnalysis(**analysis_in.dict())
-    session.add(analysis)
-    await session.commit()
-    await session.refresh(analysis)
-    return analysis
+
+    # Always run rule-based analysis to (re)generate content
+    with Timer() as t:
+        result = await generate_rule_based_analysis(session, analysis_in.interview_id)
+    collector.record_analysis_ms(t.ms)
+    return result
 
 
 @router.get("/analysis/{interview_id}", response_model=InterviewAnalysisRead)
@@ -117,10 +147,10 @@ async def get_analysis(
         .where(InterviewAnalysis.interview_id == interview_id)
     )
     analysis = result.scalar_one_or_none()
-    if not analysis:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    return analysis
+    if analysis:
+        return analysis
+    # Auto-generate if missing
+    return await generate_rule_based_analysis(session, interview_id)
 
 
 @router.put("/analysis/{interview_id}", response_model=InterviewAnalysisRead)
@@ -139,24 +169,9 @@ async def update_analysis(
     interview = interview.scalar_one_or_none()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
-    
-    # Get existing analysis
-    result = await session.execute(
-        select(InterviewAnalysis)
-        .where(InterviewAnalysis.interview_id == interview_id)
-    )
-    analysis = result.scalar_one_or_none()
-    
-    if analysis:
-        # Update existing
-        for field, value in analysis_in.dict(exclude_unset=True).items():
-            if field != "interview_id":  # Don't update interview_id
-                setattr(analysis, field, value)
-    else:
-        # Create new
-        analysis = InterviewAnalysis(**analysis_in.dict())
-        session.add(analysis)
-    
-    await session.commit()
-    await session.refresh(analysis)
-    return analysis 
+
+    # Recompute analysis from conversation messages
+    with Timer() as t:
+        result = await generate_rule_based_analysis(session, interview_id)
+    collector.record_analysis_ms(t.ms)
+    return result

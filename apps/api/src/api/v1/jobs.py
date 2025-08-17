@@ -1,10 +1,9 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
-from pydantic import BaseModel, Field
-from sqlalchemy import select, update, delete
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 
 from src.db.models.job import Job
 from src.db.session import get_session
@@ -19,11 +18,6 @@ from datetime import datetime, timedelta
 import re
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
-
-class JobCreate(BaseModel):
-    title: str = Field(..., max_length=255)
-    description: str | None = None
 
 
 @router.get("/", response_model=List[JobRead])

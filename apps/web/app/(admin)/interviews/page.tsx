@@ -335,9 +335,9 @@ export default function InterviewsPage() {
                     >
                       View Info
                     </button>
-                    {interview.audio_url && (
+                    {(interview as any).audio_url && (
                       <a 
-                        href={interview.audio_url} 
+                        href={(interview as any).audio_url} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="text-green-600 hover:text-green-900 mr-4"
@@ -345,9 +345,9 @@ export default function InterviewsPage() {
                         Audio
                       </a>
                     )}
-                    {interview.video_url && (
+                    {(interview as any).video_url && (
                       <a 
-                        href={interview.video_url} 
+                        href={(interview as any).video_url} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="text-purple-600 hover:text-purple-900"

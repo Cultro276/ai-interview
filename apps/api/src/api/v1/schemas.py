@@ -133,6 +133,10 @@ class InterviewRead(BaseModel):
     candidate_id: int
     status: str
     created_at: datetime
+    audio_url: Optional[str] = None
+    video_url: Optional[str] = None
+    completed_at: Optional[datetime] = None
+    completed_ip: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

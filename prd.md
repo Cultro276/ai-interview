@@ -24,8 +24,8 @@ Hirevision, yapay zeka destekli mülakat sistemi ile işe alım sürecini otomat
 - ✅ Multi-tenancy (veri izolasyonu)
 - ✅ Dosya upload sistemi
 - ✅ Admin paneli
-- 🔄 AI analiz sistemi (geliştiriliyor)
-- 🔄 Mülakat kayıt sistemi (geliştiriliyor)
+- ✅ Mülakat kayıt sistemi (dev modunda presign stub ile çalışır)
+- ✅ Konuşma ve rule‑based analiz (otomatik, aday tamamladıktan sonra)
 
 ---
 

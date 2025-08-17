@@ -11,6 +11,8 @@ from src.db.models.interview import Interview
 from src.db.session import get_session
 from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUpdate, InterviewMediaUpdate
 from src.services.analysis import generate_rule_based_analysis
+from src.core.metrics import collector, Timer
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -27,6 +29,30 @@ async def create_interview(int_in: InterviewCreate, session: AsyncSession = Depe
     return interview
 
 
+# --- Transcript stub (manual provider) ---
+
+
+class TranscriptPayload(BaseModel):
+    text: str
+    provider: str
+
+
+_in_memory_transcripts: dict[int, str] = {}
+
+
+@router.post("/{int_id}/transcript")
+async def upload_transcript(int_id: int, payload: TranscriptPayload):
+    _in_memory_transcripts[int_id] = payload.text or ""
+    return {"interview_id": int_id, "length": len(_in_memory_transcripts[int_id])}
+
+
+@router.get("/{int_id}/transcript")
+async def get_transcript(int_id: int):
+    if int_id not in _in_memory_transcripts:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    return {"interview_id": int_id, "text": _in_memory_transcripts[int_id]}
+
+
 @router.get("/", response_model=List[InterviewRead])
 async def list_interviews(
     session: AsyncSession = Depends(get_session),
@@ -39,6 +65,25 @@ async def list_interviews(
         .where(Job.user_id == current_user.id)
     )
     return result.scalars().all()
+
+
+@candidate_router.get("/by-token/{token}", response_model=InterviewRead)
+async def get_interview_by_token(token: str, session: AsyncSession = Depends(get_session)):
+    """Return the most recent interview for the candidate identified by token.
+    This endpoint is public (no auth) for the candidate UI to initialize conversation tracking.
+    """
+    from src.db.models.candidate import Candidate
+    cand = (await session.execute(select(Candidate).where(Candidate.token == token))).scalar_one_or_none()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Invalid token")
+    interview = (
+        await session.execute(
+            select(Interview).where(Interview.candidate_id == cand.id).order_by(Interview.created_at.desc())
+        )
+    ).scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    return interview
 
 
 @router.patch("/{int_id}/status", response_model=InterviewRead)
@@ -87,12 +132,29 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
     except Exception:
         pass
 
+    # Mark candidate token as used after completion
+    try:
+        from src.db.models.candidate import Candidate as _Cand
+        cand_rec = (await session.execute(select(_Cand).where(_Cand.id == cand.id))).scalar_one_or_none()
+        if cand_rec and not cand_rec.used_at:
+            cand_rec.used_at = interview.completed_at
+    except Exception:
+        pass
+
     await session.commit()
     await session.refresh(interview)
 
+    # Metrics: estimate upload latency from presign to completion using candidate token
+    try:
+        collector.record_upload_completion(token)
+    except Exception:
+        pass
+
     # Auto-generate analysis after media is saved
     try:
-        await generate_rule_based_analysis(session, interview.id)
+        with Timer() as t:
+            await generate_rule_based_analysis(session, interview.id)
+        collector.record_analysis_ms(t.ms)
     except Exception as e:
         # Non-blocking
         print("[analysis] generation failed:", e)

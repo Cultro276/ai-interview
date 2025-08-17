@@ -1,4 +1,7 @@
 import './globals.css'
+import { ToastProvider } from "@/context/ToastContext";
+import { Toaster } from "@/components/Toaster";
+import { AuthProvider } from "@/context/AuthContext";
 
 export const metadata = {
   title: 'Hirevision - AI Interview Platform',
@@ -12,7 +15,14 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AuthProvider>
+          <ToastProvider>
+            {children}
+            <Toaster />
+          </ToastProvider>
+        </AuthProvider>
+      </body>
     </html>
   )
 }

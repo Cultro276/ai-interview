@@ -37,6 +37,7 @@ def generate_presigned_put_url(file_name: str, content_type: str, expires: int =
         ExpiresIn=expires,
         HttpMethod="PUT",
     )
+    print(f"[S3 PRESIGN] generated key={key}")
     return {"url": url, "key": key} 
 
 
@@ -50,7 +51,9 @@ def put_object_bytes(key: str, body: bytes, content_type: str) -> str:
         Body=body,
         ContentType=content_type or "application/octet-stream",
     )
-    return f"s3://{settings.s3_bucket}/{key}"
+    url = f"s3://{settings.s3_bucket}/{key}"
+    print(f"[S3 PUT] uploaded {len(body)} bytes to {url}")
+    return url
 
 
 def generate_presigned_get_url(key: str, expires: int = 600) -> str:

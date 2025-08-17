@@ -5,9 +5,11 @@ from .candidates import router as candidates_router
 from .interviews import router as interviews_router
 from .interviews import candidate_router as interviews_candidate_router
 from .conversations import router as conversations_router
+from .conversations import public_router as conversations_public_router
 from .upload import router as upload_router
 from .tokens import router as tokens_router
 from .conversation import router as convo_router
+from .metrics import router as metrics_router
 
 router = APIRouter(tags=["utils"])
 
@@ -23,6 +25,8 @@ router.include_router(candidates_router)
 router.include_router(interviews_router)
 router.include_router(interviews_candidate_router)
 router.include_router(conversations_router)
+router.include_router(conversations_public_router)
 router.include_router(upload_router)
 router.include_router(tokens_router)
 router.include_router(convo_router) 
+router.include_router(metrics_router)

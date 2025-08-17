@@ -3,11 +3,13 @@ import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
+import { useToast } from "@/context/ToastContext";
 
 export default function JobCandidatesPage() {
   const params = useParams();
   const jobId = Number(params?.id);
   const { candidates, interviews, loading, refreshData } = useDashboard();
+  const { success, error: toastError, info } = useToast();
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [expiresDays, setExpiresDays] = useState(7);
@@ -34,9 +36,9 @@ export default function JobCandidatesPage() {
         body: form,
       });
       await refreshData();
-      alert("Upload completed.");
+      success("Upload completed");
     } catch (e: any) {
-      alert(e.message || "Upload failed");
+      toastError(e.message || "Upload failed");
     } finally {
       setUploading(false);
     }
@@ -46,16 +48,16 @@ export default function JobCandidatesPage() {
 
   const createSingleCandidate = async () => {
     if (!singleName || !singleEmail) {
-      alert("Name and Email are required");
+      toastError("Name and Email are required");
       return;
     }
     if (!isValidEmail(singleEmail)) {
-      alert("Please enter a valid email address");
+      toastError("Please enter a valid email address");
       return;
     }
     setCreating(true);
     try {
-      const cand = await apiFetch<any>("/api/v1/candidates", {
+      const cand = await apiFetch<any>("/api/v1/candidates/", {
         method: "POST",
         body: JSON.stringify({ name: singleName, email: singleEmail, expires_in_days: singleExpiry }),
       });
@@ -66,9 +68,9 @@ export default function JobCandidatesPage() {
       setSingleName("");
       setSingleEmail("");
       await refreshData();
-      alert("Candidate created and linked to job.");
+      success("Candidate created and linked to job");
     } catch (e: any) {
-      alert(e.message || "Create failed");
+      toastError(e.message || "Create failed");
     } finally {
       setCreating(false);
     }
@@ -77,19 +79,24 @@ export default function JobCandidatesPage() {
   const sendLink = async (candId: number) => {
     try {
       await apiFetch(`/api/v1/candidates/${candId}/send-link?expires_in_days=${expiresDays}`, { method: "POST" });
-      alert("Link sent (mock)");
+      info("Link sent (mock)");
     } catch (e: any) {
-      alert(e.message);
+      toastError(e.message);
     }
   };
 
   const sendAll = async () => {
     try {
       const ids = jobCandidates.map(c => c.id);
-      await Promise.all(ids.map(id => apiFetch(`/api/v1/candidates/${id}/send-link?expires_in_days=${expiresDays}`, { method: "POST" })));
-      alert("All links sent (mock)");
+      // Batch in chunks of 10 to avoid burst
+      for (let i = 0; i < ids.length; i += 10) {
+        const batch = ids.slice(i, i + 10);
+        await Promise.all(batch.map(id => apiFetch(`/api/v1/candidates/${id}/send-link?expires_in_days=${expiresDays}`, { method: "POST" })));
+        info(`Sent ${Math.min(i + 10, ids.length)}/${ids.length}`);
+      }
+      info("All links sent (mock)");
     } catch (e: any) {
-      alert(e.message || "Failed to send all links");
+      toastError(e.message || "Failed to send all links");
     }
   };
 
@@ -98,7 +105,7 @@ export default function JobCandidatesPage() {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/resume-download-url`);
       window.open(url, "_blank");
     } catch (e: any) {
-      alert(e.message || "Download failed");
+      toastError(e.message || "Download failed");
     }
   };
 

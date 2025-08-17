@@ -27,6 +27,19 @@ class Settings:
     def gemini_api_key(self) -> str | None:
         return os.getenv("GEMINI_API_KEY")
 
+    # Mail (Resend)
+    @property
+    def resend_api_key(self) -> str | None:
+        return os.getenv("RESEND_API_KEY")
+
+    @property
+    def mail_from(self) -> str | None:
+        return os.getenv("MAIL_FROM")
+
+    @property
+    def mail_from_name(self) -> str | None:
+        return os.getenv("MAIL_FROM_NAME")
+
 
 @lru_cache
 def get_settings() -> Settings:

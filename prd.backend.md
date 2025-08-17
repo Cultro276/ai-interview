@@ -19,8 +19,8 @@
 
 ### Sprint A (Hafta 1–2)
 - Conversation API (mevcutsa doğrula, eksikse ekle)
-  - POST `/api/v1/conversation` (mesaj ekle)
-  - GET `/api/v1/conversation/{interview_id}` (mesaj listesi)
+  - POST `/api/v1/conversations/messages` (admin) ve `/api/v1/conversations/messages-public` (candidate) (DONE)
+  - GET `/api/v1/conversations/messages/{interview_id}` (mesaj listesi) (DONE)
 - Analysis Trigger & Read
   - POST `/api/v1/interviews/{id}/analysis:run` → `services/analysis.generate_rule_based_analysis` çağırır
   - GET `/api/v1/interviews/{id}/analysis` → son analiz kaydı
@@ -111,6 +111,7 @@ Response: { "upload_p95_ms": number, "analysis_p95_ms": number, "error_rate": nu
 - Presign üretimi S3 yoksa dev URL ile cevap verir; front bu URL'ye PUT atınca 200 alır.
 - `analysis:run` 2s altında rule‑based sonuç üretir ve `InterviewAnalysis` tablosuna yazar.
 - Transcript uçları metni kaydeder/okur; analiz promptu için ileride kullanılacaktır.
+ - Candidate UI, JWT olmadan konuşma mesajlarını public endpoint'e yazabilir; admin paneli görüşmeleri okuyabilir.
 
 ---
 

@@ -1,5 +1,19 @@
 # Hirevision Frontend PRD (Parallel Work Plan)
 
+## To Do (High Priority)
+- Jobs listesinde yeni işlerin görünmemesi: `DashboardContext` veri çekimi ve hata yönetimi güçlendirilecek; CORS/401/redirect durumlarında kullanıcıya toast gösterilecek. Jobs sayfasına manuel "Refresh" butonu eklenecek. (DONE)
+- API taban adresi: `NEXT_PUBLIC_API_URL` dokümantasyonu ve `.env` örneği eklenecek; yanlış/boş olduğunda anlamlı uyarı. (DONE via docker-compose env)
+- Toast altyapısı: `ToastContext` + `Toaster` projeye eklendi ve `app/layout.tsx` içinde global; tüm sayfalarda kullanılabilir. (DONE)
+- Candidates toplu aksiyon: `Send Link to All` 10’luk batch ile çalışır ve ilerleme bilgisi gösterir. (DONE)
+- Interview akışı: Aday UI public endpointlerle çalışır; konuşma mesajları için `/api/v1/conversations/messages-public`, token → interview eşlemesi için `/api/v1/interviews/by-token/{token}` eklendi. (DONE)
+- Admin navigation: Jobs kartları → Candidates sayfası linkleri mevcut. (DONE)
+
+## To Do (Stability & DX)
+- Global error boundary ve 404/500 özel sayfaları.
+- Loading/skeleton durumları (Jobs/Interviews/Reports).
+- Tipler: `DashboardContext` modelleri (Interview + scores) TypeScript tarafında güçlendirilecek.
+- Test: E2E smoke (create job → create candidate → send link → interview finish → analysis görünümü → reports sıralama).
+
 ## Kapsam ve Amaç
 - Admin paneli `(app/(admin))` ve aday mülakat istemcisi `(app/interview/[token])` akışlarının tamamlanması.
 - Hız, basitlik ve geliştirici deneyimi: Smooth Dev modunda S3/Gemini olmadan da uçtan uca test edilebilir.
@@ -13,6 +27,15 @@
 - API erişimi `apps/web/lib/api.ts` üzerinden; `NEXT_PUBLIC_API_URL` ortam değişkeni.
 
 ---
+
+## Ortam Değişkenleri (.env)
+- Web (Next.js)
+  - `NEXT_PUBLIC_API_URL=http://localhost:8000`
+  - (opsiyonel) `NEXT_PUBLIC_LOG_LEVEL=debug`
+
+- API (bilgi amaçlı – frontend için yalnızca yukarıdaki gereklidir)
+  - `AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET` (yoksa dev-upload stub çalışır)
+  - `RESEND_API_KEY, MAIL_FROM, MAIL_FROM_NAME`
 
 ## Yol Haritası (2 geliştirici paralel)
 
@@ -59,6 +82,10 @@
 - Analysis run/get:
   - POST `/api/v1/interviews/{id}/analysis:run` → InterviewAnalysisRead
   - GET `/api/v1/interviews/{id}/analysis` → InterviewAnalysisRead | 404
+- Interview init (candidate):
+  - GET `/api/v1/interviews/by-token/{token}` → InterviewRead | 404
+- Conversation messages (candidate public):
+  - POST `/api/v1/conversations/messages-public` → ConversationMessageRead
 - Transcript stub:
   - POST `/api/v1/interviews/{id}/transcript` → { interview_id, length }
   - GET `/api/v1/interviews/{id}/transcript` → { interview_id, text }
@@ -66,6 +93,14 @@
   - GET `/api/v1/metrics` → { upload_p95_ms, analysis_p95_ms, error_rate }
 
 ---
+
+## Test Senaryoları (E2E)
+- Giriş → Jobs → New Job ile iş oluştur; Jobs listesinde görünmeli (gerekirse Refresh butonu).
+- Jobs > [job] > Candidates → tekil aday oluştur (email zorunlu) → başarı tostu ve log’da davet linki.
+- Send Link to All → TTL gir, tüm adaylara gönderim (mock) tamamlanır.
+- Aday linkiyle `interview/[token]` akışını tamamla → upload denensin; hata varsa toast + konsol logları görünür.
+- Admin Interviews → seçilen görüşmede analiz ve Decision rozeti görünmeli.
+- Reports → seçilen işte en iyi→en kötü sıralama, Only completed açık, CSV export indirilebilir.
 
 ## Kabul Kriterleri
 - `Jobs` akışı: oluştur, listele, `Candidates` alt sayfasında tekil oluştur ve bulk yükleme; tüm hatalar toasts ile gösterilir.
@@ -75,6 +110,12 @@
 - Transcript formu POST/GET ile çalışır ve metin geri çağrılır.
 
 ---
+
+## Yayın Kontrol Listesi
+- `.env` veya docker-compose içinde `NEXT_PUBLIC_API_URL` doğru (lokalde `http://localhost:8000`).
+- Web ayağa kalktıktan sonra `/dashboard` ve `/jobs` açılabiliyor.
+- CORS hatası yok; 401 durumda login’e yönlendirme çalışıyor.
+- Upload denemesinde hata olursa toast + konsolda detay görünüyor.
 
 ## Görev Dağılımı (1 Frontend Geliştirici)
 - Gün 1: `interview/[token]` verify + upload akışı (voice/video `lib/voice.ts` üzerinden)

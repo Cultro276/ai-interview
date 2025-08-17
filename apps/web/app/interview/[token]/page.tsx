@@ -48,7 +48,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
     try {
       sequenceNumberRef.current += 1;
       const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
-      await fetch(`${base}/api/v1/conversations/messages`, {
+      await fetch(`${base}/api/v1/conversations/messages-public`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -66,18 +66,23 @@ export default function InterviewPage({ params }: { params: { token: string } })
   // Get or create interview record and save initial system message
   const initializeInterview = async () => {
     try {
-      // First, try to get existing interview for this candidate
-      const candidate = await apiFetch<any>(`/api/v1/tokens/candidate?token=${token}`);
-      
-      // For now, we'll create the interview record when we upload media
-      // The interview ID will be available after the first media upload
-      console.log("Interview initialization will happen on media upload");
-      
+      // Fetch existing interview for this candidate by token (created by admin flow)
+      const interview = await apiFetch<{ id: number }>(`/api/v1/interviews/by-token/${token}`);
+      setInterviewId(interview.id);
+      sequenceNumberRef.current = 0;
       // Save system message to indicate interview started
       const systemMessage = `Interview started at ${new Date().toISOString()}`;
-      sequenceNumberRef.current = 0;
-      // We'll save this when we have interview_id
-      
+      const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+      await fetch(`${base}/api/v1/conversations/messages-public`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interview_id: interview.id,
+          role: "system",
+          content: systemMessage,
+          sequence_number: 0,
+        }),
+      });
     } catch (error) {
       console.error("Failed to initialize interview:", error);
     }
@@ -86,7 +91,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
   // Verify the token once on mount
   useEffect(() => {
     apiFetch(`/api/v1/tokens/verify?token=${token}`, { method: "POST" })
-      .then(() => setStatus("consent"))
+      .then(() => {
+        setStatus("consent");
+        initializeInterview();
+      })
       .catch((err: Error) => {
         setError(err.message);
         setStatus("invalid");
@@ -118,93 +126,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
     }
   }, [status, stream]);
 
-  // Stop recording & upload when interview finishes
-  useEffect(() => {
-    if (status !== "finished") return;
-
-    const upload = async () => {
-      try {
-        // Simple stop
-        mediaRecorderRef.current?.stop();
-        audioRecorderRef.current?.stop();
-        
-        // Wait for chunks
-        await new Promise(r => setTimeout(r, 1000));
-
-        const videoBlob = new Blob(videoChunksRef.current, { type: "video/webm" });
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-
-        console.log("Video size", videoBlob.size, "bytes", "Audio size", audioBlob.size);
-
-        // Proceed even if one of the blobs is empty; we'll still mark completion
-
-        const uploadOne = async (blob: Blob, kind: "video" | "audio") => {
-          const fileName = `${kind}-${Date.now()}.webm`;
-          const presign = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/tokens/presign-upload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token, file_name: fileName, content_type: blob.type }),
-          }).then(async (r) => {
-            if (!r.ok) {
-              const text = await r.text();
-              throw new Error(`Presign failed ${r.status}: ${text}`);
-            }
-            return r.json();
-          });
-          await fetch(presign.presigned_url || presign.url, { method: "PUT", body: blob, headers: { "Content-Type": blob.type } }).then(async r => {
-            if(!r.ok){
-              const text = await r.text();
-              throw new Error(`S3 upload failed ${r.status}: ${text}`);
-            }
-          });
-          const baseUrl = (presign.presigned_url || presign.url).split('?')[0];
-          return baseUrl.startsWith('http') ? baseUrl : `s3://${presign.key}`;
-        };
-
-        let videoUrl: string | null = null;
-        let audioUrl: string | null = null;
-        try {
-          if (videoBlob.size > 0) {
-            videoUrl = await uploadOne(videoBlob, "video");
-          }
-        } catch (e) {
-          console.error("Video upload failed", e);
-        }
-        try {
-          if (audioBlob.size > 0) {
-            audioUrl = await uploadOne(audioBlob, "audio");
-          }
-        } catch (e) {
-          console.error("Audio upload failed", e);
-        }
-
-        // Save URLs to interview (no auth needed)
-        const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ video_url: videoUrl, audio_url: audioUrl }),
-        });
-        try {
-          if (resp.ok) {
-            const data = await resp.json();
-            if (data && typeof data.id === 'number') setInterviewId(data.id);
-          }
-        } catch {}
-      } catch (err) {
-        console.error("Upload error", err);
-        // Try to at least mark interview completed without media
-        try {
-          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/interviews/${token}/media`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ video_url: null, audio_url: null }),
-          });
-        } catch {}
-      }
-    };
-
-    upload();
-  }, [status, token]);
+  // Note: upload handled in the unified effect below
 
   // Query permission states once we reach test step
   useEffect(() => {
@@ -301,16 +223,27 @@ export default function InterviewPage({ params }: { params: { token: string } })
   }, [status, question]);
 
   // --- Start recording when interview begins ---
-  // 1) Video+Audio recorder
+  // 1) Video+Audio recorder with codec fallback and timeslice chunks
   useEffect(() => {
     if (status !== "interview" || !stream) return;
     try {
       console.log("Starting recording with stream tracks:", stream.getTracks().length);
-      const rec = new MediaRecorder(stream);
+      // Prefer a supported mimeType for video
+      const videoMimeCandidates = [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      ];
+      const chosenVideoMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
+        ? videoMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
+        : undefined;
+      const rec = new MediaRecorder(stream, chosenVideoMime ? { mimeType: chosenVideoMime } : undefined);
       rec.ondataavailable = (e) => {
-        console.log("video chunk", e.data.size);
+        // accumulate chunks silently
         videoChunksRef.current.push(e.data);
       };
+      // Start without timeslice; collect a single blob on stop
       rec.start();
       mediaRecorderRef.current = rec;
 
@@ -318,11 +251,21 @@ export default function InterviewPage({ params }: { params: { token: string } })
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length) {
         const audioOnlyStream = new MediaStream(audioTracks);
-        const audioRec = new MediaRecorder(audioOnlyStream);
+        const audioMimeCandidates = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/ogg;codecs=opus",
+          "audio/mp4",
+        ];
+        const chosenAudioMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
+          ? audioMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
+          : undefined;
+        const audioRec = new MediaRecorder(audioOnlyStream, chosenAudioMime ? { mimeType: chosenAudioMime } : undefined);
         audioRec.ondataavailable = (e) => {
-          console.log("audio chunk", e.data.size);
+          // accumulate chunks silently
           audioChunksRef.current.push(e.data);
         };
+        // Start without timeslice; single blob on stop
         audioRec.start();
         audioRecorderRef.current = audioRec;
       }
@@ -330,6 +273,80 @@ export default function InterviewPage({ params }: { params: { token: string } })
       console.error("MediaRecorder error:", e);
     }
   }, [status, stream]);
+
+  // Upload media when interview finishes (must be declared before any early returns)
+  useEffect(() => {
+    if (status !== "finished") return;
+    const uploadMedia = async () => {
+      try {
+        console.log("Starting media upload...");
+
+        // Stop recorders and get final data (force flush last chunk)
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          try { (mediaRecorderRef.current as any).requestData?.(); } catch {}
+          mediaRecorderRef.current.stop();
+          await new Promise(resolve => {
+            mediaRecorderRef.current!.addEventListener("stop", resolve, { once: true });
+          });
+        }
+
+        if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
+          try { (audioRecorderRef.current as any).requestData?.(); } catch {}
+          audioRecorderRef.current.stop();
+          await new Promise(resolve => {
+            audioRecorderRef.current!.addEventListener("stop", resolve, { once: true });
+          });
+        }
+
+        // Create blobs from chunks (infer type from first chunk if present)
+        const videoType = videoChunksRef.current[0]?.type || "video/webm";
+        const audioType = audioChunksRef.current[0]?.type || "audio/webm";
+        const videoBlob = new Blob(videoChunksRef.current, { type: videoType });
+        const audioBlob = new Blob(audioChunksRef.current, { type: audioType });
+
+        console.log("Video blob size:", videoBlob.size, "Audio blob size:", audioBlob.size);
+
+        // Get presigned URLs
+        const videoPresignedUrl = videoBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
+          method: "POST",
+          body: JSON.stringify({ token, file_name: `interview-${token}-video-${Date.now()}.webm`, content_type: videoType })
+        }) : null;
+
+        const audioPresignedUrl = audioBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
+          method: "POST",
+          body: JSON.stringify({ token, file_name: `interview-${token}-audio-${Date.now()}.webm`, content_type: audioType })
+        }) : null;
+
+        // Upload to S3 or dev stub
+        const uploads: Promise<Response>[] = [];
+        if (videoPresignedUrl && videoBlob.size > 0) {
+          uploads.push(fetch(videoPresignedUrl.presigned_url, { method: "PUT", body: videoBlob, headers: { "Content-Type": videoType } }));
+        }
+        if (audioPresignedUrl && audioBlob.size > 0) {
+          uploads.push(fetch(audioPresignedUrl.presigned_url, { method: "PUT", body: audioBlob, headers: { "Content-Type": audioType } }));
+        }
+        if (uploads.length > 0) {
+          const results = await Promise.allSettled(uploads);
+          results.forEach((r, i) => console.log("upload result", i, r.status));
+        }
+
+        // Save media URLs to interview record and get interview ID
+        const videoUrl = videoPresignedUrl ? videoPresignedUrl.presigned_url.split('?')[0] : null;
+        const audioUrl = audioPresignedUrl ? audioPresignedUrl.presigned_url.split('?')[0] : null;
+        const interviewRecord = await apiFetch<{ id: number }>(`/api/v1/interviews/${token}/media`, {
+          method: "PATCH",
+          body: JSON.stringify({ video_url: videoUrl, audio_url: audioUrl })
+        });
+        setInterviewId(interviewRecord.id);
+        console.log("Interview ID captured:", interviewRecord.id);
+
+        await saveConversationMessage("system", `Interview completed. Media uploaded: video=${videoUrl ? 'yes' : 'no'}, audio=${audioUrl ? 'yes' : 'no'}`);
+      } catch (error) {
+        console.error("Media upload failed:", error);
+      }
+    };
+    uploadMedia();
+  }, [status, token]);
 
   if (status === "loading") return <p>Doğrulanıyor…</p>;
   if (status === "invalid") return <p>{error || "Bağlantı geçersiz veya süresi dolmuş."}</p>;
@@ -475,8 +492,9 @@ export default function InterviewPage({ params }: { params: { token: string } })
       try {
         console.log("Starting media upload...");
         
-        // Stop recorders and get final data
+        // Stop recorders and get final data (force flush last chunk)
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          try { mediaRecorderRef.current.requestData?.(); } catch {}
           mediaRecorderRef.current.stop();
           await new Promise(resolve => {
             mediaRecorderRef.current!.addEventListener("stop", resolve, { once: true });
@@ -484,37 +502,40 @@ export default function InterviewPage({ params }: { params: { token: string } })
         }
         
         if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
+          try { audioRecorderRef.current.requestData?.(); } catch {}
           audioRecorderRef.current.stop();
           await new Promise(resolve => {
             audioRecorderRef.current!.addEventListener("stop", resolve, { once: true });
           });
         }
         
-        // Create blobs from chunks
-        const videoBlob = new Blob(videoChunksRef.current, { type: "video/webm" });
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        // Create blobs from chunks (infer type from first chunk if present)
+        const videoType = videoChunksRef.current[0]?.type || "video/webm";
+        const audioType = audioChunksRef.current[0]?.type || "audio/webm";
+        const videoBlob = new Blob(videoChunksRef.current, { type: videoType });
+        const audioBlob = new Blob(audioChunksRef.current, { type: audioType });
         
         console.log("Video blob size:", videoBlob.size, "Audio blob size:", audioBlob.size);
         
-        if (videoBlob.size === 0 && audioBlob.size === 0) {
-          console.log("No media data to upload");
-          return;
-        }
+        // Even if there is no media, we will still mark interview as completed
+        // so that rule-based analysis can be generated from conversation only.
         
         // Get presigned URLs
         const videoPresignedUrl = videoBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
           method: "POST",
           body: JSON.stringify({
+            token,
             file_name: `interview-${token}-video-${Date.now()}.webm`,
-            content_type: "video/webm"
+            content_type: videoType,
           })
         }) : null;
         
         const audioPresignedUrl = audioBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
           method: "POST",
           body: JSON.stringify({
+            token,
             file_name: `interview-${token}-audio-${Date.now()}.webm`,
-            content_type: "audio/webm"
+            content_type: audioType,
           })
         }) : null;
         
@@ -526,7 +547,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
             fetch(videoPresignedUrl.presigned_url, {
               method: "PUT",
               body: videoBlob,
-              headers: { "Content-Type": "video/webm" }
+              headers: { "Content-Type": videoType }
             })
           );
         }
@@ -536,14 +557,14 @@ export default function InterviewPage({ params }: { params: { token: string } })
             fetch(audioPresignedUrl.presigned_url, {
               method: "PUT", 
               body: audioBlob,
-              headers: { "Content-Type": "audio/webm" }
+              headers: { "Content-Type": audioType }
             })
           );
         }
         
         if (uploads.length > 0) {
-          await Promise.all(uploads);
-          console.log("Media uploaded to S3 successfully");
+          const results = await Promise.allSettled(uploads);
+          results.forEach((r, i) => console.log("upload result", i, r.status));
         }
         
         // Save media URLs to interview record and get interview ID
@@ -563,17 +584,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
         console.log("Interview ID captured:", interviewRecord.id);
         
         // Save system message about interview completion
-        if (interviewRecord.id) {
-          await apiFetch("/api/v1/conversations/messages", {
-            method: "POST",
-            body: JSON.stringify({
-              interview_id: interviewRecord.id,
-              role: "system",
-              content: `Interview completed. Media uploaded: video=${videoUrl ? 'yes' : 'no'}, audio=${audioUrl ? 'yes' : 'no'}`,
-              sequence_number: sequenceNumberRef.current + 1
-            })
-          });
-        }
+        await saveConversationMessage(
+          "system",
+          `Interview completed. Media uploaded: video=${videoUrl ? 'yes' : 'no'}, audio=${audioUrl ? 'yes' : 'no'}`,
+        );
         
       } catch (error) {
         console.error("Media upload failed:", error);
