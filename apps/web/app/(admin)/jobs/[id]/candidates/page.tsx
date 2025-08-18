@@ -8,6 +8,9 @@ import { Button } from "@/components/ui/Button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Loader } from "@/components/ui/Loader";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 export default function JobCandidatesPage() {
   const params = useParams();
@@ -28,6 +31,7 @@ export default function JobCandidatesPage() {
     .filter((i) => i.job_id === jobId)
     .map((i) => i.candidate_id);
   const jobCandidates = candidates.filter((c) => jobCandidateIds.includes(c.id));
+  const [search, setSearch] = useState("");
 
   const onUpload = async () => {
     if (!files.length) return;
@@ -127,66 +131,98 @@ export default function JobCandidatesPage() {
     }
   };
 
-  if (loading) return <div className="p-6">Loading…</div>;
+  if (loading) {
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-6">
+          <div className="h-8 w-56"><Skeleton className="h-8 w-56" /></div>
+          <div className="h-5 w-24"><Skeleton className="h-9 w-24" /></div>
+        </div>
+        <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg p-6 mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <Skeleton className="h-6 w-40" />
+            <Skeleton className="h-9 w-40" />
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Skeleton className="h-10" />
+            <Skeleton className="h-10" />
+            <Skeleton className="h-10" />
+          </div>
+        </div>
+        <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-200 dark:border-neutral-800">
+            <Skeleton className="h-6 w-64" />
+          </div>
+          <div className="p-6 space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="grid grid-cols-4 gap-4">
+                <Skeleton className="h-5" />
+                <Skeleton className="h-5" />
+                <Skeleton className="h-5" />
+                <Skeleton className="h-9" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Job Candidates</h1>
-          <p className="text-xs text-gray-500">Job ID: {jobId}</p>
-        </div>
-        <a href="/jobs" className="text-brand-700">← Back to Jobs</a>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">İş Adayları</h1>
+        <a href="/jobs" className="text-brand-700">← İlanlara Geri Dön</a>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8">
+      <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg p-6 mb-8">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-medium text-gray-900">Bulk Upload CVs</h3>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Toplu CV Yükleme</h3>
           <Dialog>
             <DialogTrigger asChild>
               <Button variant="outline">Send Links to All</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Send Invitation Links</DialogTitle>
+                <DialogTitle>Davet Linki Gönder</DialogTitle>
               </DialogHeader>
               <div className="space-y-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Link Expiry</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link Süresi</label>
                   <Select value={String(expiresDays)} onValueChange={(v) => setExpiresDays(Number(v))}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
                     <SelectContent>
                       {[1,3,7,14,30].map((d) => (
-                        <SelectItem key={d} value={String(d)}>{d} day{d>1?'s':''}</SelectItem>
+                        <SelectItem key={d} value={String(d)}>{d} gün</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
-                <Button onClick={sendAll}>Send Link to All</Button>
+                <Button onClick={sendAll}>Tümüne Gönder</Button>
               </div>
             </DialogContent>
           </Dialog>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
           <div className="md:col-span-2">
-            <input type="file" multiple accept=".pdf,.doc,.docx,.txt" onChange={(e) => setFiles(Array.from(e.target.files || []))} className="block w-full text-sm text-gray-600" />
-            {files.length > 0 && (<p className="text-sm text-gray-500 mt-2">{files.length} file(s) selected</p>)}
+            <input type="file" multiple accept=".pdf,.doc,.docx,.txt" onChange={(e) => setFiles(Array.from(e.target.files || []))} className="block w-full text-sm text-gray-600 dark:text-gray-300" />
+            {files.length > 0 && (<p className="text-sm text-gray-500 dark:text-gray-300 mt-2">{files.length} dosya seçildi</p>)}
           </div>
           <div className="flex items-end">
             <Button onClick={onUpload} disabled={uploading || files.length === 0}>
-              {uploading ? "Uploading…" : "Upload & Parse"}
+              {uploading ? "Yükleniyor…" : "Yükle & Ayrıştır"}
             </Button>
           </div>
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Create Single Candidate</h3>
+      <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg p-6 mb-8">
+        <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100 mb-4">Tekil Aday Oluştur</h3>
         <div className="grid gap-4 md:grid-cols-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Ad Soyad</label>
             <input
               value={singleName}
               onChange={(e) => setSingleName(e.target.value)}
@@ -195,7 +231,7 @@ export default function JobCandidatesPage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">E-posta</label>
             <input
               type="email"
               value={singleEmail}
@@ -205,7 +241,7 @@ export default function JobCandidatesPage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Expiry (days)</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Geçerlilik (gün)</label>
             <input
               type="number"
               min={1}
@@ -223,32 +259,54 @@ export default function JobCandidatesPage() {
         </div>
         <div className="flex gap-3 mt-4">
           <Button onClick={createSingleCandidate} disabled={creating}>
-            {creating ? (presigning ? "Uploading CV…" : "Creating…") : "Create Candidate"}
+            {creating ? (presigning ? "CV yükleniyor…" : "Oluşturuluyor…") : "Aday Oluştur"}
           </Button>
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-medium text-gray-900">Candidates for this Job</h3>
+      <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 dark:border-neutral-800 flex items-center gap-4">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Bu İlanın Adayları</h3>
+          <div className="ml-auto w-full max-w-xs">
+            <input
+              placeholder="Ad veya e-posta ile ara"
+              aria-label="Aday ara"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
         </div>
-        <table className="min-w-full divide-y divide-gray-200">
+        {jobCandidates.length === 0 ? (
+          <EmptyState title="Henüz aday yok" description="CV yükleyin veya aday oluşturarak davet göndermeye başlayın." />
+        ) : (
+        <div className="w-full overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Resume</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Ad Soyad</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-posta</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Özgeçmiş</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">İşlemler</th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {jobCandidates.map((c) => (
-              <tr key={c.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{c.name}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{c.email}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+          <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
+            {jobCandidates
+              .filter((c) => {
+                const q = search.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  (c.name || "").toLowerCase().includes(q) ||
+                  (c.email || "").toLowerCase().includes(q)
+                );
+              })
+              .map((c) => (
+              <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-neutral-800">
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-neutral-100">{c.name}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
-                    <Button variant="ghost" onClick={() => downloadCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">View CV</Button>
+                    <Button variant="ghost" onClick={() => downloadCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV'yi Gör</Button>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
@@ -256,12 +314,12 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="outline">Actions</Button>
+                      <Button variant="outline">İşlemler</Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => sendLink(c.id)}>Send Link</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => sendLink(c.id)}>Davet Gönder</DropdownMenuItem>
                       {c.resume_url && (
-                        <DropdownMenuItem onClick={() => downloadCv(c.id)}>View CV</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => downloadCv(c.id)}>CV'yi Gör</DropdownMenuItem>
                       )}
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -270,6 +328,8 @@ export default function JobCandidatesPage() {
             ))}
           </tbody>
         </table>
+        </div>
+        )}
       </div>
     </div>
   );

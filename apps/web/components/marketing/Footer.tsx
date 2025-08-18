@@ -1,6 +1,6 @@
 export function MarketingFooter() {
   return (
-    <footer className="px-6 py-16 bg-gray-900 text-white">
+    <footer className="px-6 py-16 bg-gray-900 dark:bg-neutral-900 text-white">
       <div className="max-w-6xl mx-auto">
         <div className="grid md:grid-cols-4 gap-8 mb-8">
           <div>
@@ -33,10 +33,10 @@ export function MarketingFooter() {
           </div>
         </div>
         <div className="border-t border-gray-800 pt-8 flex justify-between items-center">
-          <p className="text-gray-400">Hirevision • Copyright © {new Date().getFullYear()}</p>
+          <p className="text-gray-400">Hirevision • © {new Date().getFullYear()}</p>
           <div className="flex space-x-4 text-gray-400">
-            <span>Terms of service</span>
-            <span>Privacy policy</span>
+            <span>Terms</span>
+            <span>Privacy</span>
           </div>
         </div>
       </div>

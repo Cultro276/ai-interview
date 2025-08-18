@@ -5,6 +5,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import { Loader } from "@/components/ui/Loader";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Badge } from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
+import { useToast } from "@/context/ToastContext";
 
 interface ConversationMessage {
   id: number;
@@ -31,6 +36,7 @@ interface InterviewAnalysis {
 
 export default function InterviewsPage() {
   const { interviews, candidates, jobs, loading } = useDashboard();
+  const { error: toastError, success: toastSuccess } = useToast();
   const [selectedInterview, setSelectedInterview] = useState<number | null>(null);
   const [conversationMessages, setConversationMessages] = useState<ConversationMessage[]>([]);
   const [analysis, setAnalysis] = useState<InterviewAnalysis | null>(null);
@@ -39,6 +45,7 @@ export default function InterviewsPage() {
   const [sendingFinal, setSendingFinal] = useState(false);
   const [transcript, setTranscript] = useState<string>("");
   const [savingTranscript, setSavingTranscript] = useState(false);
+  const [search, setSearch] = useState("");
 
   const viewConversation = async (interviewId: number) => {
     setSelectedInterview(interviewId);
@@ -56,9 +63,9 @@ export default function InterviewsPage() {
         console.log("No analysis found for this interview");
         setAnalysis(null);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to load conversation:", error);
-      alert("Failed to load conversation data");
+      toastError(error?.message || "Konuşma verileri yüklenemedi");
     } finally {
       setLoadingConversation(false);
     }
@@ -76,7 +83,7 @@ export default function InterviewsPage() {
       const analysisData = await apiFetch<InterviewAnalysis>(`/api/v1/conversations/analysis/${interviewId}`);
       setAnalysis(analysisData);
     } catch (e: any) {
-      alert(e.message || "Failed to (re)generate analysis");
+      toastError(e.message || "Analiz oluşturulamadı");
     } finally {
       setGenerating(false);
     }
@@ -110,7 +117,7 @@ export default function InterviewsPage() {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candidateId}/resume-download-url`);
       window.open(url, "_blank");
     } catch (e: any) {
-      alert(e.message || "Download failed");
+      toastError(e.message || "İndirme başarısız oldu");
     }
   };
 
@@ -118,23 +125,16 @@ export default function InterviewsPage() {
     setSendingFinal(true);
     try {
       await apiFetch(`/api/v1/candidates/${candidateId}/notify-final`, { method: "POST" });
-      alert("Final interview invite sent");
+      toastSuccess("Final mülakat daveti gönderildi");
     } catch (e: any) {
-      alert(e.message || "Failed to send final invite");
+      toastError(e.message || "Final davet gönderilemedi");
     } finally {
       setSendingFinal(false);
     }
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading interviews...</p>
-        </div>
-      </div>
-    );
+    return <Loader label="Loading interviews..." />;
   }
 
   if (selectedInterview) {
@@ -143,7 +143,7 @@ export default function InterviewsPage() {
     return (
   <div>
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">Interview Conversation</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Mülakat Görüşmesi</h1>
           <div className="flex items-center gap-3">
             {cand && cand.resume_url && (
               <Button
@@ -166,11 +166,11 @@ export default function InterviewsPage() {
             )}
             <Dialog>
               <DialogTrigger asChild>
-                <Button variant="outline" size="sm" onClick={() => loadTranscript(selectedInterview!)}>Transcript</Button>
+                <Button variant="outline" size="sm" onClick={() => loadTranscript(selectedInterview!)}>Transkript</Button>
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>Transcript</DialogTitle>
+                  <DialogTitle>Transkript</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3">
                   <textarea
@@ -181,36 +181,33 @@ export default function InterviewsPage() {
                     placeholder="Paste or edit transcript text here"
                   />
                   <div className="flex justify-end gap-2">
-                    <Button variant="ghost" onClick={() => loadTranscript(selectedInterview!)}>Reload</Button>
+                    <Button variant="ghost" onClick={() => loadTranscript(selectedInterview!)}>Yenile</Button>
                     <Button onClick={() => saveTranscript(selectedInterview!)} disabled={savingTranscript}>
-                      {savingTranscript ? "Saving…" : "Save"}
+                      {savingTranscript ? "Kaydediliyor…" : "Kaydet"}
                     </Button>
                   </div>
                 </div>
               </DialogContent>
             </Dialog>
             <Button onClick={() => setSelectedInterview(null)} variant="secondary" size="sm">
-              ← Back to Interviews
+              ← Mülakatlara Dön
             </Button>
           </div>
         </div>
 
         {loadingConversation ? (
-          <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600 mx-auto mb-4"></div>
-            <p>Loading conversation...</p>
-          </div>
+          <Loader label="Loading conversation..." />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Conversation Messages */}
             <div className="lg:col-span-2">
               <div className="bg-white border border-gray-200 rounded-lg">
                 <div className="px-6 py-4 border-b border-gray-200">
-                  <h3 className="text-lg font-medium text-gray-900">Conversation Transcript</h3>
+                  <h3 className="text-lg font-medium text-gray-900">Görüşme Transkripti</h3>
                 </div>
                 <div className="p-6 max-h-96 overflow-y-auto">
                   {conversationMessages.length === 0 ? (
-                    <p className="text-gray-500">No conversation data found.</p>
+                    <EmptyState title="Konuşma bulunamadı" description="Bu mülakata ait mesaj henüz yok." />
                   ) : (
                     <div className="space-y-4">
                       {conversationMessages.map((message) => (
@@ -229,8 +226,8 @@ export default function InterviewsPage() {
                               message.role === "assistant" ? "text-brand-700" :
                               message.role === "user" ? "text-green-700" : "text-gray-700"
                             }`}>
-                              {message.role === "assistant" ? "🤖 AI" : 
-                               message.role === "user" ? "👤 Candidate" : "⚙️ System"}
+                              {message.role === "assistant" ? "🤖 Yapay Zeka" : 
+                               message.role === "user" ? "👤 Aday" : "⚙️ Sistem"}
                             </span>
                             <span className="text-xs text-gray-500">
                               {new Date(message.timestamp).toLocaleTimeString()}
@@ -249,7 +246,7 @@ export default function InterviewsPage() {
             <div className="lg:col-span-1">
               <div className="bg-white border border-gray-200 rounded-lg">
                 <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                  <h3 className="text-lg font_medium text-gray-900">AI Analysis</h3>
+                  <h3 className="text-lg font-medium text-gray-900">AI Analysis</h3>
                   {selectedInterview && (
                     <Dialog>
                       <DialogTrigger asChild>
@@ -287,7 +284,7 @@ export default function InterviewsPage() {
                     <div className="space-y-4">
                       {analysis.overall_score && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Overall Score</span>
+                          <span className="text-sm font-medium text-gray-700">Genel Puan</span>
                           <div className="mt-1">
                             <div className="w-full bg-gray-200 rounded-full h-2">
                               <div 
@@ -299,51 +296,45 @@ export default function InterviewsPage() {
                           </div>
                         </div>
                       )}
-                      
                       {analysis.communication_score && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Communication</span>
+                          <span className="text-sm font-medium text-gray-700">İletişim</span>
                           <p className="text-lg font-semibold text-brand-600">{analysis.communication_score}/100</p>
                         </div>
                       )}
-                      
                       {analysis.technical_score && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Technical Skills</span>
+                          <span className="text-sm font-medium text-gray-700">Teknik Yetenek</span>
                           <p className="text-lg font-semibold text-green-600">{analysis.technical_score}/100</p>
                         </div>
                       )}
-                      
                       {analysis.cultural_fit_score && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Cultural Fit</span>
+                          <span className="text-sm font-medium text-gray-700">Kültürel Uyum</span>
                           <p className="text-lg font-semibold text-purple-600">{analysis.cultural_fit_score}/100</p>
                         </div>
                       )}
-                      
                       {analysis.summary && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Summary</span>
+                          <span className="text-sm font-medium text-gray-700">Özet</span>
                           <p className="text-sm text-gray-600 mt-1">{analysis.summary}</p>
                         </div>
                       )}
-                      
                       {analysis.strengths && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Strengths</span>
+                          <span className="text-sm font-medium text-gray-700">Güçlü Yönler</span>
                           <p className="text-sm text-gray-600 mt-1">{analysis.strengths}</p>
                         </div>
                       )}
-                      
                       {analysis.weaknesses && (
                         <div>
-                          <span className="text-sm font-medium text-gray-700">Areas for Improvement</span>
+                          <span className="text-sm font-medium text-gray-700">Gelişim Alanları</span>
                           <p className="text-sm text-gray-600 mt-1">{analysis.weaknesses}</p>
                         </div>
                       )}
                     </div>
                   ) : (
-                    <p className="text-gray-500">No analysis available. Analysis will be generated automatically after interview completion.</p>
+                    <p className="text-gray-500">Analiz bulunamadı. Mülakat tamamlandıktan sonra otomatik oluşturulacaktır.</p>
                   )}
                 </div>
               </div>
@@ -356,95 +347,108 @@ export default function InterviewsPage() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Interviews</h1>
+      <div className="flex justify-between items-center mb-6 gap-4">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Mülakatlar</h1>
+        <div className="w-full max-w-xs ml-auto">
+          <Input
+            placeholder="ID, aday veya iş ile ara"
+            aria-label="Mülakat ara"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
+      {interviews.length === 0 ? (
+        <EmptyState
+          title="No interviews yet"
+          description="Interviews will appear here once candidates start interviewing."
+          actionLabel="Go to Jobs"
+          onAction={() => (window.location.href = "/jobs")}
+        />
+      ) : (
+      <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg overflow-hidden">
+        <div className="w-full overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Interview ID
+              <th className="sticky top-0 z-10 bg-gray-50 dark:bg-neutral-900 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                Mülakat ID
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Candidate
+              <th className="sticky top-0 z-10 bg-gray-50 dark:bg-neutral-900 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                Aday
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Job Position
+              <th className="sticky top-0 z-10 bg-gray-50 dark:bg-neutral-900 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider hidden sm:table-cell">
+                Pozisyon
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
+              <th className="sticky top-0 z-10 bg-gray-50 dark:bg-neutral-900 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                Durum
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Date
+              <th className="sticky top-0 z-10 bg-gray-50 dark:bg-neutral-900 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider hidden md:table-cell">
+                Tarih
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Actions
+              <th className="sticky top-0 z-10 bg-gray-50 dark:bg-neutral-900 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                İşlemler
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {interviews.map((interview) => {
+          <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
+            {interviews
+              .filter((interview) => {
+                const q = search.trim().toLowerCase();
+                if (!q) return true;
+                const candidate = candidates.find(c => c.id === interview.candidate_id);
+                const job = jobs.find(j => j.id === interview.job_id);
+                return (
+                  String(interview.id).includes(q) ||
+                  (candidate?.name || "").toLowerCase().includes(q) ||
+                  (job?.title || "").toLowerCase().includes(q)
+                );
+              })
+              .map((interview) => {
               const candidate = candidates.find(c => c.id === interview.candidate_id);
               const job = jobs.find(j => j.id === interview.job_id);
               return (
-                <tr key={interview.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                <tr key={interview.id} className="hover:bg-gray-50 dark:hover:bg-neutral-800">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-neutral-100">
                     #{interview.id}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                     {candidate?.name || "Unknown"}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 hidden sm:table-cell">
                     {job?.title || "Unknown"}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      interview.status === "completed" 
-                        ? "bg-green-100 text-green-800"
-                        : "bg-yellow-100 text-yellow-800"
-                    }`}>
-                      {interview.status}
-                    </span>
+                    <Badge variant={interview.status === "completed" ? "success" : "warning"}>{interview.status}</Badge>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(interview.created_at).toLocaleDateString()}
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 hidden md:table-cell">
+                    {new Date(interview.created_at).toLocaleDateString('tr-TR')}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <button 
-                      onClick={() => viewConversation(interview.id)}
-                      className="text-brand-700 hover:text-brand-900 mr-4"
-                    >
-                      View Info
-                    </button>
-                    {(interview as any).audio_url && (
-                      <a 
-                        href={(interview as any).audio_url} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-green-600 hover:text-green-900 mr-4"
-                      >
-                        Audio
-                      </a>
-                    )}
-                    {(interview as any).video_url && (
-                      <a 
-                        href={(interview as any).video_url} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-purple-600 hover:text-purple-900"
-                      >
-                        Video
-                      </a>
-                    )}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">İşlemler</Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => viewConversation(interview.id)}>Detayları Gör</DropdownMenuItem>
+                        {(interview as any).audio_url && (
+                          <DropdownMenuItem onSelect={() => window.open((interview as any).audio_url, "_blank", "noopener,noreferrer")}>Ses Kaydını Aç</DropdownMenuItem>
+                        )}
+                        {(interview as any).video_url && (
+                          <DropdownMenuItem onSelect={() => window.open((interview as any).video_url, "_blank", "noopener,noreferrer")}>Video Kaydını Aç</DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+        </div>
       </div>
-  </div>
- );
+      )}
+    </div>
+  );
 } 
