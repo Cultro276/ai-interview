@@ -13,6 +13,8 @@ from src.db.models.conversation import ConversationMessage
 from src.db.models.candidate import Candidate
 from src.db.session import get_session
 from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUpdate, InterviewMediaUpdate
+from src.core.s3 import generate_presigned_get_url
+from urllib.parse import urlparse
 from src.services.analysis import generate_rule_based_analysis
 from src.core.metrics import collector, Timer
 from pydantic import BaseModel
@@ -162,6 +164,48 @@ async def get_interview_by_token(token: str, session: AsyncSession = Depends(get
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     return interview
+
+
+class MediaDownloadResponse(BaseModel):
+    audio_url: str | None = None
+    video_url: str | None = None
+
+
+@router.get("/{int_id}/media-download-urls", response_model=MediaDownloadResponse)
+async def media_download_urls(
+    int_id: int,
+    expires_in: int = 600,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Ensure ownership
+    interview = (
+        await session.execute(
+            select(Interview)
+            .join(Job, Interview.job_id == Job.id)
+            .where(Interview.id == int_id, Job.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    def to_key(url: str | None) -> str | None:
+        if not url:
+            return None
+        if url.startswith("s3://"):
+            return url.split("/", 3)[-1]
+        try:
+            return urlparse(url).path.lstrip("/")
+        except Exception:
+            return None
+
+    audio_key = to_key(getattr(interview, "audio_url", None))
+    video_key = to_key(getattr(interview, "video_url", None))
+
+    audio = generate_presigned_get_url(audio_key, expires=expires_in) if audio_key else None
+    video = generate_presigned_get_url(video_key, expires=expires_in) if video_key else None
+
+    return MediaDownloadResponse(audio_url=audio, video_url=video)
 
 
 @router.patch("/{int_id}/status", response_model=InterviewRead)

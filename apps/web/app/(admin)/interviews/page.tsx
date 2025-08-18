@@ -438,12 +438,20 @@ export default function InterviewsPage() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onSelect={() => viewConversation(interview.id)}>Detayları Gör</DropdownMenuItem>
-                        {(interview as any).audio_url && (
-                          <DropdownMenuItem onSelect={() => window.open((interview as any).audio_url, "_blank", "noopener,noreferrer")}>Ses Kaydını Aç</DropdownMenuItem>
-                        )}
-                        {(interview as any).video_url && (
-                          <DropdownMenuItem onSelect={() => window.open((interview as any).video_url, "_blank", "noopener,noreferrer")}>Video Kaydını Aç</DropdownMenuItem>
-                        )}
+                        <DropdownMenuItem
+                          onSelect={async () => {
+                            try {
+                              const { audio_url, video_url } = await apiFetch<{ audio_url?: string; video_url?: string }>(`/api/v1/interviews/${interview.id}/media-download-urls`);
+                              if (audio_url) window.open(audio_url, "_blank", "noopener,noreferrer");
+                              if (video_url) window.open(video_url, "_blank", "noopener,noreferrer");
+                              if (!audio_url && !video_url) alert("No media available");
+                            } catch (e: any) {
+                              alert(e.message || "Failed to open media");
+                            }
+                          }}
+                        >
+                          Medyayı Aç
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </td>

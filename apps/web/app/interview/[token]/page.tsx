@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { apiFetch } from "@/lib/api";
-import { speak, listen } from "@/lib/voice";
+import { listen } from "@/lib/voice";
 import { Steps } from "@/components/ui/Steps";
 import { Button } from "@/components/ui/Button";
 
@@ -44,10 +44,52 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const sequenceNumberRef = useRef<number>(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  // WebAudio for mixing mic + TTS
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const mixDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const micGainRef = useRef<GainNode | null>(null);
+  const ttsGainRef = useRef<GainNode | null>(null);
+  const currentTtsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Block public message posts after completion to avoid 400s
+  const canPostPublicRef = useRef<boolean>(true);
+
+  const playTTS = async (text: string, onEnded?: () => void) => {
+    try {
+      if (!audioCtxRef.current) return onEnded?.();
+      if (audioCtxRef.current.state === "suspended") {
+        try { await audioCtxRef.current.resume(); } catch {}
+      }
+      const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+      const res = await fetch(`${base}/api/v1/tts/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "audio/mpeg" },
+        body: JSON.stringify({ text, lang: "tr" }),
+      });
+      if (!res.ok) throw new Error(`TTS failed: ${res.status}`);
+      const buf = await res.arrayBuffer();
+      const audioBuffer = await audioCtxRef.current.decodeAudioData(buf);
+      const src = audioCtxRef.current.createBufferSource();
+      src.buffer = audioBuffer;
+      // If mixing available, route to ttsGain; otherwise to speakers so candidate hears it
+      if (ttsGainRef.current) {
+        src.connect(ttsGainRef.current);
+        // Also route to speakers so candidate hears AI voice while it's mixed into the recording
+        src.connect(audioCtxRef.current.destination);
+      } else {
+        src.connect(audioCtxRef.current.destination);
+      }
+      src.onended = () => onEnded?.();
+      currentTtsSourceRef.current = src;
+      src.start(0);
+    } catch (e) {
+      console.error("TTS error", e);
+      onEnded?.();
+    }
+  };
 
   // Save conversation message to database (no-redirect for unauthenticated candidate)
   const saveConversationMessage = async (role: "assistant" | "user" | "system", content: string) => {
-    if (!interviewId) return;
+    if (!interviewId || !canPostPublicRef.current) return;
     try {
       sequenceNumberRef.current += 1;
       const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
@@ -161,7 +203,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
     if (status !== "interview" || question === null) return;
 
     let rec: any = null;
-    speak(question, () => {
+    playTTS(question, () => {
       setPhase("listening");
 
       let buffer: string[] = [];
@@ -216,14 +258,16 @@ export default function InterviewPage({ params }: { params: { token: string } })
           });
       };
 
+      const listenStart = Date.now();
       rec = listen(
         (t) => {
           buffer.push(t);
           // Each time we get speech, reset the timer to wait for next words
           if (silenceTimer) clearTimeout(silenceTimer);
-          silenceTimer = setTimeout(finalize, 4000); // 4 seconds of no new speech triggers finalize
+          // Enforce a minimum listening window of 2s to avoid immediate finalize
+          const minHold = Math.max(0, 2000 - (Date.now() - listenStart));
+          silenceTimer = setTimeout(finalize, 4000 + minHold);
         },
-        finalize,
       );
 
       // Safety net: if STT yields nothing (no events), force finalize after 12s
@@ -232,9 +276,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
     return () => {
       if (rec && rec.stop) rec.stop();
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
+      try { currentTtsSourceRef.current?.stop(0); } catch {}
     };
   }, [status, question]);
 
@@ -246,27 +288,62 @@ export default function InterviewPage({ params }: { params: { token: string } })
       console.log("Starting recording with stream tracks:", stream.getTracks().length);
       // Prefer a supported mimeType for video
       const videoMimeCandidates = [
-        "video/webm;codecs=vp9,opus",
+        // Prefer VP8 for broadest compatibility across Chromium-based browsers
         "video/webm;codecs=vp8,opus",
+        "video/webm;codecs=vp9,opus",
         "video/webm",
-        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
       ];
       const chosenVideoMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
         ? videoMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
         : undefined;
-      const rec = new MediaRecorder(stream, chosenVideoMime ? { mimeType: chosenVideoMime } : undefined);
+      // Reset chunk buffers before starting
+      videoChunksRef.current = [];
+      audioChunksRef.current = [];
+      // Build WebAudio mixing graph (mic + tts)
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioCtxRef.current = audioCtx;
+      // Prefer createMediaStreamDestination; gracefully degrade if unavailable
+      let dest: MediaStreamAudioDestinationNode | null = null;
+      if (typeof (audioCtx as any).createMediaStreamDestination === "function") {
+        dest = (audioCtx as any).createMediaStreamDestination();
+      }
+      mixDestRef.current = dest;
+      // Mic pipeline
+      const micSource = audioCtx.createMediaStreamSource(stream);
+      const micGain = audioCtx.createGain();
+      micGain.gain.value = 1.0;
+      micGainRef.current = micGain;
+      if (dest) {
+        micSource.connect(micGain).connect(dest);
+      }
+      // TTS pipeline (only if mixing available)
+      if (dest) {
+        const ttsGain = audioCtx.createGain();
+        ttsGain.gain.value = 0.9;
+        ttsGainRef.current = ttsGain;
+        ttsGain.connect(dest);
+      } else {
+        ttsGainRef.current = null;
+      }
+
+      // Combine video track with mixed audio if available; otherwise fallback to original stream
+      const combinedStream = dest && dest.stream.getAudioTracks().length
+        ? new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()])
+        : stream;
+      const rec = new MediaRecorder(combinedStream, chosenVideoMime ? { mimeType: chosenVideoMime } : undefined);
       rec.ondataavailable = (e) => {
         // accumulate chunks silently
         videoChunksRef.current.push(e.data);
       };
-      // Start without timeslice; collect a single blob on stop
-      rec.start();
+      // Start with a small timeslice to ensure regular dataavailable events across browsers
+      rec.start(1000);
       mediaRecorderRef.current = rec;
 
-      // 2) Audio-only recorder (clone only audio tracks)
-      const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length) {
-        const audioOnlyStream = new MediaStream(audioTracks);
+      // 2) Audio-only recorder from mixed destination, fallback to mic-only
+      const audioOnlyStream = mixDestRef.current && mixDestRef.current.stream.getAudioTracks().length
+        ? mixDestRef.current.stream
+        : new MediaStream(stream.getAudioTracks());
+      if (audioOnlyStream.getAudioTracks().length) {
         const audioMimeCandidates = [
           "audio/webm;codecs=opus",
           "audio/webm",
@@ -281,8 +358,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
           // accumulate chunks silently
           audioChunksRef.current.push(e.data);
         };
-        // Start without timeslice; single blob on stop
-        audioRec.start();
+        // Start with timeslice to flush data regularly
+        audioRec.start(1000);
         audioRecorderRef.current = audioRec;
       }
     } catch (e) {
@@ -296,6 +373,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
     const uploadMedia = async () => {
       try {
         console.log("Starting media upload...");
+        // Stop sending public messages – token will be marked used
+        canPostPublicRef.current = false;
 
         // Stop recorders and get final data (force flush last chunk)
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -322,33 +401,43 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
         console.log("Video blob size:", videoBlob.size, "Audio blob size:", audioBlob.size);
 
-        // Get presigned URLs
-        const videoPresignedUrl = videoBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
-          method: "POST",
-          body: JSON.stringify({ token, file_name: `interview-${token}-video-${Date.now()}.webm`, content_type: videoType, job_id: interviewJobId ?? undefined })
-        }) : null;
+        // Helper: presign
+        const presign = async (kind: "video" | "audio", type: string) => {
+          const name = `interview-${token}-${kind}-${Date.now()}.webm`;
+          return apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
+            method: "POST",
+            body: JSON.stringify({ token, file_name: name, content_type: type }),
+          });
+        };
+        // Helper: PUT with 1 retry (new presign on failure)
+        const putWithRetry = async (
+          kind: "video" | "audio",
+          blob: Blob,
+          type: string,
+        ) => {
+          if (blob.size === 0) return { ok: false, url: null } as const;
+          try {
+            const p1 = await presign(kind, type);
+            const r1 = await fetch(p1.presigned_url, { method: "PUT", body: blob, headers: { "Content-Type": type } });
+            if (r1.ok) return { ok: true, url: p1.presigned_url.split("?")[0] } as const;
+          } catch {}
+          try {
+            const p2 = await presign(kind, type);
+            const r2 = await fetch(p2.presigned_url, { method: "PUT", body: blob, headers: { "Content-Type": type } });
+            if (r2.ok) return { ok: true, url: p2.presigned_url.split("?")[0] } as const;
+          } catch {}
+          return { ok: false, url: null } as const;
+        };
 
-        const audioPresignedUrl = audioBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
-          method: "POST",
-          body: JSON.stringify({ token, file_name: `interview-${token}-audio-${Date.now()}.webm`, content_type: audioType, job_id: interviewJobId ?? undefined })
-        }) : null;
-
-        // Upload to S3 or dev stub
-        const uploads: Promise<Response>[] = [];
-        if (videoPresignedUrl && videoBlob.size > 0) {
-          uploads.push(fetch(videoPresignedUrl.presigned_url, { method: "PUT", body: videoBlob, headers: { "Content-Type": videoType } }));
-        }
-        if (audioPresignedUrl && audioBlob.size > 0) {
-          uploads.push(fetch(audioPresignedUrl.presigned_url, { method: "PUT", body: audioBlob, headers: { "Content-Type": audioType } }));
-        }
-        if (uploads.length > 0) {
-          const results = await Promise.allSettled(uploads);
-          results.forEach((r, i) => console.log("upload result", i, r.status));
-        }
+        const [videoRes, audioRes] = await Promise.all([
+          putWithRetry("video", videoBlob, videoType),
+          putWithRetry("audio", audioBlob, audioType),
+        ]);
+        console.log("upload video ok=", videoRes.ok, "audio ok=", audioRes.ok);
 
         // Save media URLs to interview record and get interview ID
-        const videoUrl = videoPresignedUrl ? videoPresignedUrl.presigned_url.split('?')[0] : null;
-        const audioUrl = audioPresignedUrl ? audioPresignedUrl.presigned_url.split('?')[0] : null;
+        const videoUrl = videoRes.ok ? (videoRes.url as string) : null;
+        const audioUrl = audioRes.ok ? (audioRes.url as string) : null;
         const interviewRecord = await apiFetch<{ id: number }>(`/api/v1/interviews/${token}/media`, {
           method: "PATCH",
           body: JSON.stringify({ video_url: videoUrl, audio_url: audioUrl })
@@ -480,6 +569,12 @@ export default function InterviewPage({ params }: { params: { token: string } })
           {phase === "thinking" && "Yanıt işleniyor…"}
           {phase === "idle" && "Görüşme yakında başlayacak…"}
         </p>
+        {question && (
+          <div className="mt-3 max-w-2xl mx-auto text-gray-800 border border-gray-200 rounded-lg p-3 bg-white">
+            <div className="text-sm font-medium text-gray-600 mb-1">Soru</div>
+            <div className="text-base">{question}</div>
+          </div>
+        )}
         {/* Geçici Bitir butonu */}
         <Button
           className="mt-3"

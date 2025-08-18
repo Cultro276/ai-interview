@@ -10,6 +10,7 @@ from .upload import router as upload_router
 from .tokens import router as tokens_router
 from .conversation import router as convo_router
 from .metrics import router as metrics_router
+from .tts import router as tts_router
 
 router = APIRouter(tags=["utils"])
 
@@ -30,3 +31,4 @@ router.include_router(upload_router)
 router.include_router(tokens_router)
 router.include_router(convo_router) 
 router.include_router(metrics_router)
+router.include_router(tts_router)
