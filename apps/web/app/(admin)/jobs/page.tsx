@@ -117,13 +117,11 @@ export default function JobsPage() {
                     <DialogTrigger asChild>
                       <Button variant="ghost" size="sm">Düzenle</Button>
                     </DialogTrigger>
-                    <DialogContent aria-labelledby={`edit-job-title-${job.id}`} aria-describedby={`edit-job-desc-${job.id}`}>
-                      <DialogHeader>
-                        <DialogTitle id={`edit-job-title-${job.id}`}>İşi Düzenle</DialogTitle>
-                        <DialogDescription id={`edit-job-desc-${job.id}`}>
-                          Başlığı ve açıklamayı güncelleyin, ardından kaydedin.
-                        </DialogDescription>
-                      </DialogHeader>
+                    <DialogContent>
+                      <DialogTitle id={`edit-job-title-${job.id}`}>İşi Düzenle</DialogTitle>
+                      <DialogDescription id={`edit-job-desc-${job.id}`}>
+                        Başlığı ve açıklamayı güncelleyin, ardından kaydedin.
+                      </DialogDescription>
                       <form className="space-y-3" onSubmit={async (e)=>{
                         e.preventDefault();
                         const form = e.target as HTMLFormElement;

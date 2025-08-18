@@ -38,6 +38,9 @@ const DialogContent = React.forwardRef<
       )}
       {...props}
     >
+      {/* Fallbacks to satisfy Radix a11y requirements even if caller forgets */}
+      <DialogPrimitive.Title className="sr-only">Dialog</DialogPrimitive.Title>
+      <DialogPrimitive.Description className="sr-only">Dialog content</DialogPrimitive.Description>
       {children}
       <DialogPrimitive.Close className="absolute right-3 top-3 rounded-sm opacity-70 transition hover:opacity-100 focus:outline-none disabled:pointer-events-none">
         <X className="h-4 w-4" />

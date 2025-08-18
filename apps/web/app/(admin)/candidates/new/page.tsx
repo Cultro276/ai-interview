@@ -11,7 +11,7 @@ export default function NewCandidatePage() {
   const router=useRouter();
   const submit=async()=>{
     try{
-      await apiFetch("/api/v1/candidates",{
+      await apiFetch("/api/v1/candidates/",{
         method:"POST",
         body:JSON.stringify({name, email, expires_in_days: expiresInDays})
       });

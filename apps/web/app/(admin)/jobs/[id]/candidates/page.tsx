@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
 import { Button } from "@/components/ui/Button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader } from "@/components/ui/Loader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -185,6 +185,9 @@ export default function JobCandidatesPage() {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Davet Linki Gönder</DialogTitle>
+                <DialogDescription>
+                  Seçilen geçerlilik süresiyle bu ilana bağlı tüm adaylara davet linki göndereceksiniz.
+                </DialogDescription>
               </DialogHeader>
               <div className="space-y-3">
                 <div>

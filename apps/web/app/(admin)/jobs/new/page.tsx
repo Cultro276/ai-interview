@@ -38,7 +38,7 @@ export default function NewJobPage() {
       return;
     }
     try {
-      await apiFetch("/api/v1/jobs", {
+      await apiFetch("/api/v1/jobs/", {
         method: "POST",
         body: JSON.stringify({ title: title.trim(), description: description.trim(), expires_in_days: expiryDays }),
       });

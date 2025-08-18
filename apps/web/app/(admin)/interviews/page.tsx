@@ -3,7 +3,7 @@ import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Loader } from "@/components/ui/Loader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -171,6 +171,9 @@ export default function InterviewsPage() {
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>Transkript</DialogTitle>
+                  <DialogDescription>
+                    Bu görüşmeye ait transkript metnini görüntüleyin veya düzenleyin.
+                  </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3">
                   <textarea
@@ -255,6 +258,9 @@ export default function InterviewsPage() {
                       <DialogContent>
                         <DialogHeader>
                           <DialogTitle>Regenerate analysis?</DialogTitle>
+                          <DialogDescription>
+                            Bu işlem mevcut analizi günceller. Devam etmek istediğinize emin misiniz?
+                          </DialogDescription>
                         </DialogHeader>
                         <div className="flex justify-end gap-2">
                           <Button variant="ghost">Cancel</Button>
