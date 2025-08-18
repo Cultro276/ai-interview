@@ -22,6 +22,7 @@ export default function JobCandidatesPage() {
   const [singleEmail, setSingleEmail] = useState("");
   const [creating, setCreating] = useState(false);
   const [singleExpiry, setSingleExpiry] = useState(7);
+  const [presigning, setPresigning] = useState(false);
 
   const jobCandidateIds = interviews
     .filter((i) => i.job_id === jobId)
@@ -59,14 +60,30 @@ export default function JobCandidatesPage() {
       toastError("Please enter a valid email address");
       return;
     }
+    // Optional: If a CV file is selected, upload first and use the resulting key/url
     setCreating(true);
     try {
+      let resumeUrl: string | undefined = undefined;
+      if (singleFile) {
+        setPresigning(true);
+        // 1) Presign to cvs/{jobId}/...
+        const presign = await apiFetch<{ url: string; key: string }>(`/api/v1/jobs/${jobId}/candidates/presign-cv`, {
+          method: "POST",
+          body: JSON.stringify({ file_name: singleFile.name, content_type: singleFile.type || "application/octet-stream" }),
+        });
+        // 2) Upload file to presigned URL
+        await fetch(presign.url, { method: "PUT", body: singleFile, headers: { "Content-Type": singleFile.type || "application/octet-stream" } });
+        // 3) Save the public/proxied location
+        resumeUrl = `s3://${presign.key}`;
+        setPresigning(false);
+      }
       await apiFetch<any>(`/api/v1/jobs/${jobId}/candidates`, {
         method: "POST",
-        body: JSON.stringify({ name: singleName, email: singleEmail, expires_in_days: singleExpiry }),
+        body: JSON.stringify({ name: singleName, email: singleEmail, expires_in_days: singleExpiry, resume_url: resumeUrl }),
       });
       setSingleName("");
       setSingleEmail("");
+      setSingleFile(null);
       await refreshData();
       success("Candidate created and linked to job");
     } catch (e: any) {
@@ -115,7 +132,10 @@ export default function JobCandidatesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Job Candidates</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Job Candidates</h1>
+          <p className="text-xs text-gray-500">Job ID: {jobId}</p>
+        </div>
         <a href="/jobs" className="text-brand-700">← Back to Jobs</a>
       </div>
 
@@ -195,10 +215,15 @@ export default function JobCandidatesPage() {
               className="w-full px-3 py-2 border border-gray-300 rounded-md"
             />
           </div>
+          <div className="md:col-span-1">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Upload CV (optional)</label>
+            <input type="file" accept=".pdf,.doc,.docx,.txt" onChange={(e) => setSingleFile((e.target.files && e.target.files[0]) || null)} className="block w-full text-sm text-gray-600" />
+            {singleFile && <p className="text-xs text-gray-500 mt-1">{singleFile.name}</p>}
+          </div>
         </div>
         <div className="flex gap-3 mt-4">
           <Button onClick={createSingleCandidate} disabled={creating}>
-            {creating ? "Creating…" : "Create Candidate"}
+            {creating ? (presigning ? "Uploading CV…" : "Creating…") : "Create Candidate"}
           </Button>
         </div>
       </div>

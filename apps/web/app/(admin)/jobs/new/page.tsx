@@ -7,13 +7,14 @@ import { useDashboard } from "@/context/DashboardContext";
 export default function NewJobPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [expiryDays, setExpiryDays] = useState<number>(30);
   const router = useRouter();
   const { refreshData } = useDashboard();
   const submit = async () => {
     if (!title) { alert("Title is required"); return; }
     await apiFetch("/api/v1/jobs", {
       method: "POST",
-      body: JSON.stringify({ title, description }),
+      body: JSON.stringify({ title, description, expires_in_days: expiryDays }),
     });
     await refreshData();
     router.push("/jobs");
@@ -41,6 +42,18 @@ export default function NewJobPage() {
             className="w-full px-3 py-2 border border-gray-300 rounded-md"
           />
           <p className="text-xs text-gray-500 mt-1">Bu açıklama AI analizine bağlam olarak gönderilir.</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Link Expiry (days)</label>
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={expiryDays}
+            onChange={(e)=> setExpiryDays(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md"
+          />
+          <p className="text-xs text-gray-500 mt-1">Bu değer varsayılan aday daveti süresine kopyalanır.</p>
         </div>
         <div className="flex justify-end">
           <button

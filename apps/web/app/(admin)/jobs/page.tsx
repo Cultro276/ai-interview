@@ -76,6 +76,7 @@ export default function JobsPage() {
               <div className="flex justify_between items-start mb-4">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">{job.title}</h3>
+                  <p className="text-xs text-gray-500">Job ID: {job.id}</p>
                   <p className="text-gray-600 mt-1">{job.description}</p>
                   <p className="text-sm text-gray-500 mt-2">
                     Created: {new Date(job.created_at).toLocaleDateString()}

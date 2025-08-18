@@ -9,6 +9,8 @@ from src.db.models.user import User
 from src.db.models.job import Job
 from src.db.models.interview import Interview
 from src.db.models.candidate import Candidate
+from src.db.models.conversation import ConversationMessage
+from src.db.models.candidate import Candidate
 from src.db.session import get_session
 from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUpdate, InterviewMediaUpdate
 from src.services.analysis import generate_rule_based_analysis
@@ -62,9 +64,63 @@ class TranscriptPayload(BaseModel):
 _in_memory_transcripts: dict[int, str] = {}
 
 
+async def _maybe_complete_interview(
+    session: AsyncSession,
+    interview: Interview,
+    request: Request = None,
+):
+    """Mark interview as completed once media (audio or video) and transcript exist.
+
+    Also sets candidate.used_at at completion time, and completion IP.
+    """
+    # Already completed → no-op
+    if interview.status == "completed":
+        return
+    has_media = bool(interview.audio_url or interview.video_url)
+    transcript_text = _in_memory_transcripts.get(interview.id) or ""
+    has_transcript = bool(transcript_text.strip())
+    if not has_transcript:
+        # Consider DB conversation messages as transcript presence
+        cm = (
+            await session.execute(
+                select(ConversationMessage).where(ConversationMessage.interview_id == interview.id)
+            )
+        ).first()
+        has_transcript = cm is not None
+    if has_media and has_transcript:
+        from datetime import datetime, timezone
+        interview.status = "completed"
+        interview.completed_at = datetime.now(timezone.utc)
+        try:
+            ip = request.client.host if request and request.client else None
+            interview.completed_ip = ip
+        except Exception:
+            pass
+        # Mark candidate token as used at completion
+        cand = (
+            await session.execute(
+                select(Candidate).where(Candidate.id == interview.candidate_id)
+            )
+        ).scalar_one_or_none()
+        if cand and not cand.used_at:
+            cand.used_at = interview.completed_at
+        await session.commit()
+        await session.refresh(interview)
+
+
 @router.post("/{int_id}/transcript")
-async def upload_transcript(int_id: int, payload: TranscriptPayload):
+async def upload_transcript(
+    int_id: int,
+    payload: TranscriptPayload,
+    session: AsyncSession = Depends(get_session),
+    request: Request = None,
+):
     _in_memory_transcripts[int_id] = payload.text or ""
+    interview = (
+        await session.execute(select(Interview).where(Interview.id == int_id))
+    ).scalar_one_or_none()
+    if interview:
+        await _maybe_complete_interview(session, interview, request)
     return {"interview_id": int_id, "length": len(_in_memory_transcripts[int_id])}
 
 
@@ -161,28 +217,10 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
         interview.audio_url = media_in.audio_url
     if media_in.video_url:
         interview.video_url = media_in.video_url
-    # Mark status completed when media uploaded
-    interview.status = "completed"
-    # Mark completion metadata
-    from datetime import datetime, timezone
-    interview.completed_at = datetime.now(timezone.utc)
-    try:
-        ip = request.client.host if request and request.client else None
-        interview.completed_ip = ip
-    except Exception:
-        pass
-
-    # Mark candidate token as used after completion
-    try:
-        from src.db.models.candidate import Candidate as _Cand
-        cand_rec = (await session.execute(select(_Cand).where(_Cand.id == cand.id))).scalar_one_or_none()
-        if cand_rec and not cand_rec.used_at:
-            cand_rec.used_at = interview.completed_at
-    except Exception:
-        pass
-
     await session.commit()
     await session.refresh(interview)
+    # Complete only when transcript also exists
+    await _maybe_complete_interview(session, interview, request)
 
     # Metrics: estimate upload latency from presign to completion using candidate token
     try:
@@ -190,11 +228,12 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
     except Exception:
         pass
 
-    # Auto-generate analysis after media is saved
+    # Auto-generate analysis after media is saved (if completed)
     try:
-        with Timer() as t:
-            await generate_rule_based_analysis(session, interview.id)
-        collector.record_analysis_ms(t.ms)
+        if interview.status == "completed":
+            with Timer() as t:
+                await generate_rule_based_analysis(session, interview.id)
+            collector.record_analysis_ms(t.ms)
     except Exception as e:
         # Non-blocking
         print("[analysis] generation failed:", e)

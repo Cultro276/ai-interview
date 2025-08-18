@@ -71,6 +71,7 @@ class InterviewAnalysisRead(BaseModel):
 class JobBase(BaseModel):
     title: str = Field(..., max_length=255)
     description: Optional[str] = None
+    expires_in_days: Optional[int] = Field(default=None, ge=1, le=365, description="Default invite link expiry for this job")
 
 
 class JobCreate(JobBase):
@@ -87,6 +88,7 @@ class JobRead(JobBase):
     user_id: int
     created_at: datetime
     updated_at: datetime
+    default_invite_expiry_days: Optional[int] = None
 
     model_config = {
         "from_attributes": True,

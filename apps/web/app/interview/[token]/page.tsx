@@ -40,6 +40,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
   
   // Conversation tracking
   const [interviewId, setInterviewId] = useState<number | null>(null);
+  const [interviewJobId, setInterviewJobId] = useState<number | null>(null);
   const sequenceNumberRef = useRef<number>(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -70,8 +71,9 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const initializeInterview = async () => {
     try {
       // Fetch existing interview for this candidate by token (created by admin flow)
-      const interview = await apiFetch<{ id: number }>(`/api/v1/interviews/by-token/${token}`);
+      const interview = await apiFetch<{ id: number; job_id: number }>(`/api/v1/interviews/by-token/${token}`);
       setInterviewId(interview.id);
+      setInterviewJobId(interview.job_id);
       sequenceNumberRef.current = 0;
       // Save system message to indicate interview started
       const systemMessage = `Interview started at ${new Date().toISOString()}`;
@@ -164,11 +166,17 @@ export default function InterviewPage({ params }: { params: { token: string } })
 
       let buffer: string[] = [];
       let silenceTimer: any = null;
+      let hardStopTimer: any = null;
 
       const finalize = () => {
         if (rec && rec.stop) rec.stop();
-        const full = buffer.join(" ").trim();
-        if (!full) return; // nothing captured
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (hardStopTimer) clearTimeout(hardStopTimer);
+        let full = buffer.join(" ").trim();
+        if (!full) {
+          // Fallback: proceed even if no speech captured, to avoid getting stuck
+          full = "...";
+        }
 
         // Update history with user's answer
         setHistory((h) => [...h, { role: "user", text: full }]);
@@ -215,7 +223,11 @@ export default function InterviewPage({ params }: { params: { token: string } })
           if (silenceTimer) clearTimeout(silenceTimer);
           silenceTimer = setTimeout(finalize, 4000); // 4 seconds of no new speech triggers finalize
         },
+        finalize,
       );
+
+      // Safety net: if STT yields nothing (no events), force finalize after 12s
+      hardStopTimer = setTimeout(finalize, 12000);
     });
 
     return () => {
@@ -313,12 +325,12 @@ export default function InterviewPage({ params }: { params: { token: string } })
         // Get presigned URLs
         const videoPresignedUrl = videoBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
           method: "POST",
-          body: JSON.stringify({ token, file_name: `interview-${token}-video-${Date.now()}.webm`, content_type: videoType })
+          body: JSON.stringify({ token, file_name: `interview-${token}-video-${Date.now()}.webm`, content_type: videoType, job_id: interviewJobId ?? undefined })
         }) : null;
 
         const audioPresignedUrl = audioBlob.size > 0 ? await apiFetch<{ presigned_url: string }>("/api/v1/tokens/presign-upload", {
           method: "POST",
-          body: JSON.stringify({ token, file_name: `interview-${token}-audio-${Date.now()}.webm`, content_type: audioType })
+          body: JSON.stringify({ token, file_name: `interview-${token}-audio-${Date.now()}.webm`, content_type: audioType, job_id: interviewJobId ?? undefined })
         }) : null;
 
         // Upload to S3 or dev stub

@@ -14,7 +14,7 @@ from src.db.models.candidate import Candidate
 from src.db.models.interview import Interview
 from src.db.models.candidate_profile import CandidateProfile
 from src.db.models.conversation import InterviewAnalysis
-from src.core.s3 import put_object_bytes
+from src.core.s3 import put_object_bytes, generate_presigned_put_url_at_key
 from datetime import datetime, timedelta
 import re
 
@@ -36,7 +36,13 @@ async def create_job(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    job = Job(title=job_in.title, description=job_in.description, user_id=current_user.id)
+    expiry = job_in.expires_in_days if (job_in.expires_in_days and job_in.expires_in_days > 0) else 7
+    job = Job(
+        title=job_in.title,
+        description=job_in.description,
+        user_id=current_user.id,
+        default_invite_expiry_days=expiry,
+    )
     session.add(job)
     await session.commit()
     await session.refresh(job)
@@ -55,7 +61,10 @@ async def update_job(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     for field, value in job_in.dict(exclude_unset=True).items():
-        setattr(job, field, value)
+        if field == "expires_in_days" and value is not None:
+            job.default_invite_expiry_days = value
+        elif field in {"title", "description"}:
+            setattr(job, field, value)
     await session.commit()
     await session.refresh(job)
     return job
@@ -115,11 +124,9 @@ async def bulk_upload_candidates(
         base = (f.filename or "candidate").rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
         name = base.title()[:255]
 
-        # Upload resume to S3 under separate prefix (dev fallback if S3 is not configured)
-        # Use "cvs/{YYYY}/{MM}/{job_id}/..." rather than uploads/
-        date_prefix = datetime.utcnow().strftime("%Y/%m")
-        safe_name = (f.filename or "resume").replace("/", "-")
-        key = f"cvs/{date_prefix}/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
+        # Upload resume under cvs/{job_id}/... fixed path
+        safe_name = (f.filename or "resume").split("/")[-1]
+        key = f"cvs/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
         try:
             resume_url = put_object_bytes(key, content, f.content_type or "application/octet-stream")
         except Exception:
@@ -184,7 +191,7 @@ async def create_candidate_for_job(
     # Create candidate (mimic candidates.create flow)
     from uuid import uuid4
     from src.core.mail import send_email_resend
-    expires_days = cand_in.expires_in_days or 7
+    expires_days = cand_in.expires_in_days or job.default_invite_expiry_days or 7
     candidate = Candidate(
         user_id=current_user.id,
         name=cand_in.name,
@@ -218,6 +225,38 @@ async def create_candidate_for_job(
         pass
     print(f"[INVITE LINK] http://localhost:3000/interview/{candidate.token}")
     return candidate
+
+
+# --- Single candidate with CV presign ---
+
+
+class SingleCandidatePresignRequest(BaseModel):
+    file_name: str
+    content_type: str
+
+
+@router.post("/{job_id}/candidates/presign-cv")
+async def presign_single_candidate_cv(
+    job_id: int,
+    payload: SingleCandidatePresignRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Verify job ownership
+    job = (
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    ).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    safe_name = (payload.file_name or "resume").split("/")[-1]
+    key = f"cvs/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
+    try:
+        presigned = generate_presigned_put_url_at_key(key, payload.content_type)
+        return {"url": presigned["url"], "key": presigned["key"]}
+    except Exception:
+        # Dev fallback – when S3 not configured
+        url = f"http://localhost:8000/dev-upload/{key}"
+        return {"url": url, "key": key}
 
 
 # --- Leaderboard for a job ---

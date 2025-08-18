@@ -57,7 +57,8 @@ async def create_candidate(
     candidate_data = candidate_in.dict(exclude={'expires_in_days'})
     candidate = Candidate(**candidate_data, user_id=current_user.id)
     candidate.token = uuid4().hex
-    candidate.expires_at = datetime.utcnow() + timedelta(days=candidate_in.expires_in_days)
+    # If caller didn't specify, fallback to 7 days
+    candidate.expires_at = datetime.utcnow() + timedelta(days=candidate_in.expires_in_days or 7)
     session.add(candidate)
     try:
         await session.commit()

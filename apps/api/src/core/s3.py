@@ -41,6 +41,27 @@ def generate_presigned_put_url(file_name: str, content_type: str, expires: int =
     return {"url": url, "key": key} 
 
 
+def generate_presigned_put_url_at_key(key: str, content_type: str, expires: int = 600) -> dict:
+    """Generate a presigned PUT URL for an exact S3 key without adding date/uuid.
+
+    This is useful when the caller wants full control of the path, e.g., media/{job_id}/... or cvs/{job_id}/...
+    """
+    if not settings.s3_bucket:
+        raise RuntimeError("S3_BUCKET not configured")
+    url = _client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": settings.s3_bucket,
+            "Key": key,
+            "ContentType": content_type,
+        },
+        ExpiresIn=expires,
+        HttpMethod="PUT",
+    )
+    print(f"[S3 PRESIGN:FIXED] key={key}")
+    return {"url": url, "key": key}
+
+
 def put_object_bytes(key: str, body: bytes, content_type: str) -> str:
     """Upload raw bytes to S3 at the given key and return an s3:// URL."""
     if not settings.s3_bucket:

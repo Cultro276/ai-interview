@@ -9,7 +9,7 @@ import unicodedata
 from src.db.session import get_session
 from src.db.models.candidate import Candidate
 from src.api.v1.schemas import CandidateRead
-from src.core.s3 import generate_presigned_put_url
+from src.core.s3 import generate_presigned_put_url, generate_presigned_put_url_at_key
 from src.core.metrics import collector
 from src.core.config import settings
 
@@ -18,6 +18,7 @@ class UploadPresignRequest(BaseModel):
     token: str
     file_name: str
     content_type: str
+    job_id: int | None = None
 
 
 router = APIRouter(prefix="/tokens", tags=["tokens"])
@@ -27,8 +28,19 @@ router = APIRouter(prefix="/tokens", tags=["tokens"])
 async def verify_token(token: str, session: AsyncSession = Depends(get_session)):
     cand = (await session.execute(select(Candidate).where(Candidate.token == token))).scalar_one_or_none()
     now_utc = datetime.now(timezone.utc)
-    if not cand or cand.expires_at <= now_utc or cand.used_at is not None:
+    # Token is valid if not expired and interview NOT completed yet.
+    if not cand or cand.expires_at <= now_utc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
+    # If any interview for this candidate is completed, treat as used/expired
+    from src.db.models.interview import Interview
+    from sqlalchemy import select as _select
+    completed = (
+        await session.execute(
+            _select(Interview).where(Interview.candidate_id == cand.id, Interview.status == "completed")
+        )
+    ).first()
+    if completed is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Interview already completed")
 
     # Sanitize email to avoid response validation failures (old data may contain invalid emails)
     safe_email = cand.email or ""
@@ -50,9 +62,18 @@ async def presign_upload(req: UploadPresignRequest, session: AsyncSession = Depe
     # verify token using existing logic
     cand = (await session.execute(select(Candidate).where(Candidate.token == req.token))).scalar_one_or_none()
     now_utc = datetime.now(timezone.utc)
-    # Single-use enforcement: if token already used (interview completed), block new uploads
-    if not cand or cand.expires_at <= now_utc or cand.used_at is not None:
+    # Allow presign if token not expired and interview not completed
+    if not cand or cand.expires_at <= now_utc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
+    from src.db.models.interview import Interview
+    from sqlalchemy import select as _select
+    completed = (
+        await session.execute(
+            _select(Interview).where(Interview.candidate_id == cand.id, Interview.status == "completed")
+        )
+    ).first()
+    if completed is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Interview already completed")
 
     # Build server-side file name: "{first_last}_{kind}_{YYYYMMDDHHMMSS}.{ext}"
     def slugify(value: str) -> str:
@@ -75,12 +96,13 @@ async def presign_upload(req: UploadPresignRequest, session: AsyncSession = Depe
         ext = "wav"
     server_file_name = f"{name_slug}_{kind}_{ts}.{ext}"
 
-    # Use separate S3 prefix for interview media, not uploads
-    # We encode the filename into the key via generate_presigned_put_url (which currently defaults to uploads/)
-    # Adjust by passing a server_file_name that will be prefixed in s3.py with uploads/. We will later move media to "media/" if needed.
-    # Use separate prefix for interview media
+    # Use media/{job_id}/ when provided; otherwise fall back to date-based path
     try:
-        presigned = generate_presigned_put_url(server_file_name, req.content_type, prefix="media")
+        if req.job_id is not None:
+            key = f"media/{req.job_id}/{server_file_name}"
+            presigned = generate_presigned_put_url_at_key(key, req.content_type)
+        else:
+            presigned = generate_presigned_put_url(server_file_name, req.content_type, prefix="media")
         print(f"[S3 PRESIGN] bucket={settings.s3_bucket} key={presigned['key']} content_type={req.content_type}")
         # mark presign issued to measure upload duration when client later calls media PATCH
         collector.mark_presign_issued(req.token)
