@@ -77,8 +77,8 @@ export default function JobCandidatesPage() {
         });
         // 2) Upload file to presigned URL
         await fetch(presign.url, { method: "PUT", body: singleFile, headers: { "Content-Type": singleFile.type || "application/octet-stream" } });
-        // 3) Save the public/proxied location
-        resumeUrl = `s3://${presign.key}`;
+        // 3) Save S3 key directly; backend presigns on demand
+        resumeUrl = presign.key;
         setPresigning(false);
       }
       await apiFetch<any>(`/api/v1/jobs/${jobId}/candidates`, {
@@ -122,10 +122,24 @@ export default function JobCandidatesPage() {
     }
   };
 
+  const viewCv = async (candId: number) => {
+    try {
+      const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/resume-download-url`);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      toastError(e.message || "Open failed");
+    }
+  };
+
   const downloadCv = async (candId: number) => {
     try {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/resume-download-url`);
-      window.open(url, "_blank");
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = "cv.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     } catch (e: any) {
       toastError(e.message || "Download failed");
     }
@@ -309,7 +323,10 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
-                    <Button variant="ghost" onClick={() => downloadCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV'yi Gör</Button>
+                    <div className="flex items-center gap-2">
+                      <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">View CV</Button>
+                      <Button variant="ghost" onClick={() => downloadCv(c.id)} className="text-emerald-700 hover:text-emerald-900 p-0 h-auto">Download</Button>
+                    </div>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
@@ -322,7 +339,10 @@ export default function JobCandidatesPage() {
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => sendLink(c.id)}>Davet Gönder</DropdownMenuItem>
                       {c.resume_url && (
-                        <DropdownMenuItem onClick={() => downloadCv(c.id)}>CV'yi Gör</DropdownMenuItem>
+                        <>
+                          <DropdownMenuItem onClick={() => viewCv(c.id)}>View CV</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => downloadCv(c.id)}>Download CV</DropdownMenuItem>
+                        </>
                       )}
                     </DropdownMenuContent>
                   </DropdownMenu>

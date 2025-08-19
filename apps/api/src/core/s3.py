@@ -90,3 +90,22 @@ def generate_presigned_get_url(key: str, expires: int = 600) -> str:
         ExpiresIn=expires,
         HttpMethod="GET",
     )
+
+
+def object_exists(key: str) -> bool:
+    if not settings.s3_bucket:
+        return False
+    try:
+        _client.head_object(Bucket=settings.s3_bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def get_object_bytes(key: str) -> tuple[bytes, str]:
+    if not settings.s3_bucket:
+        raise RuntimeError("S3_BUCKET not configured")
+    obj = _client.get_object(Bucket=settings.s3_bucket, Key=key)
+    body = obj["Body"].read()
+    content_type = obj.get("ContentType") or "application/octet-stream"
+    return body, content_type

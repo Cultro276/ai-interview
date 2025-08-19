@@ -112,10 +112,26 @@ export default function InterviewsPage() {
     }
   };
 
+  const viewCv = async (candidateId: number) => {
+    try {
+      const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candidateId}/resume-download-url`);
+      // Open in new tab for inline view; most browsers will preview PDFs
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      toastError(e.message || "İndirme başarısız oldu");
+    }
+  };
+
   const downloadCv = async (candidateId: number) => {
     try {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candidateId}/resume-download-url`);
-      window.open(url, "_blank");
+      // Force download by adding content-disposition where possible via link trick
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = "cv.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     } catch (e: any) {
       toastError(e.message || "İndirme başarısız oldu");
     }
@@ -146,13 +162,22 @@ export default function InterviewsPage() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Mülakat Görüşmesi</h1>
           <div className="flex items-center gap-3">
             {cand && cand.resume_url && (
-              <Button
-                onClick={() => downloadCv(cand.id)}
-                className="bg-emerald-600 hover:bg-emerald-700"
-                size="sm"
-              >
-                Download CV
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => viewCv(cand.id)}
+                  className="bg-sky-600 hover:bg-sky-700"
+                  size="sm"
+                >
+                  View CV
+                </Button>
+                <Button
+                  onClick={() => downloadCv(cand.id)}
+                  className="bg-emerald-600 hover:bg-emerald-700"
+                  size="sm"
+                >
+                  Download CV
+                </Button>
+              </div>
             )}
             {cand && (
               <Button

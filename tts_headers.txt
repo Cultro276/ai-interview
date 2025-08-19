@@ -1,0 +1,9 @@
+HTTP/1.1 200 OK
+date: Tue, 19 Aug 2025 20:09:16 GMT
+server: uvicorn
+content-disposition: inline; filename=tts.mp3
+cache-control: public, max-age=31536000
+x-tts-provider: cache
+content-type: audio/mpeg
+transfer-encoding: chunked
+

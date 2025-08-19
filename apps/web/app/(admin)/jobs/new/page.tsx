@@ -13,6 +13,8 @@ export default function NewJobPage() {
   const [description, setDescription] = useState("");
   const [expiryDays, setExpiryDays] = useState<number>(30);
   const [errors, setErrors] = useState<{ title?: string; description?: string }>({});
+  const [extracting, setExtracting] = useState(false);
+  const [autoReqJson, setAutoReqJson] = useState<string>("");
   const router = useRouter();
   const { refreshData } = useDashboard();
   const { success, error } = useToast();
@@ -38,10 +40,26 @@ export default function NewJobPage() {
       return;
     }
     try {
-      await apiFetch("/api/v1/jobs/", {
+      const job = await apiFetch<{ id: number }>("/api/v1/jobs/", {
         method: "POST",
         body: JSON.stringify({ title: title.trim(), description: description.trim(), expires_in_days: expiryDays }),
       });
+      // Optional: AI extraction right after create if description is present
+      if (description.trim().length >= 20) {
+        setExtracting(true);
+        try {
+          const data = await apiFetch<{ requirements_config: any; rubric_weights: any }>(`/api/v1/jobs/${job.id}/extract-requirements`, {
+            method: "POST",
+            body: JSON.stringify({ job_text: description.trim() }),
+          });
+          setAutoReqJson(JSON.stringify(data, null, 2));
+          success("AI gereksinimler çıkarıldı");
+        } catch (e: any) {
+          // non-blocking
+        } finally {
+          setExtracting(false);
+        }
+      }
       await refreshData();
       success("Job created");
       router.push("/jobs");
@@ -101,8 +119,16 @@ export default function NewJobPage() {
           <p className="text-xs text-gray-500 mt-1">Bu değer varsayılan aday daveti süresine kopyalanır.</p>
         </div>
         <div className="flex justify-end">
-          <Button onClick={submit} aria-label="Save job">Save Job</Button>
+          <Button onClick={submit} aria-label="Save job" disabled={extracting}>
+            {extracting ? "Kaydediliyor ve AI çıkarılıyor…" : "Save Job"}
+          </Button>
         </div>
+        {autoReqJson && (
+          <div className="mt-4">
+            <Label className="block text-sm font-medium text-gray-700 mb-1">Çıkarılan gereksinimler (önizleme)</Label>
+            <pre className="text-xs bg-gray-50 border border-gray-200 rounded p-3 overflow-auto max-h-64">{autoReqJson}</pre>
+          </div>
+        )}
       </div>
     </div>
   );

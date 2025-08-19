@@ -173,11 +173,27 @@ async def resume_download_url(
         raise HTTPException(status_code=404, detail="Candidate not found")
     if not cand.resume_url:
         raise HTTPException(status_code=404, detail="No resume available for this candidate")
-    # Support both s3:// and https presigned URLs stored directly
-    if cand.resume_url.startswith("s3://"):
-        parsed = urlparse(cand.resume_url)
-        key = parsed.path.lstrip("/")
+    # Support raw S3 key, s3://bucket/key, and s3://key (legacy)
+    ru = cand.resume_url
+    if ru.startswith("s3://"):
+        parsed = urlparse(ru)
+        netloc = (parsed.netloc or "").strip()
+        path = parsed.path.lstrip("/")
+        if netloc and path:
+            # s3://bucket/key → use path
+            key = path
+        elif netloc and not path:
+            # unlikely: s3://key-without-slash
+            key = netloc
+        else:
+            # s3://prefix/path form stored as s3://{prefix}/{rest}
+            # Recover full key as netloc + path
+            key = f"{netloc}/{path}".strip("/")
         url = generate_presigned_get_url(key, expires=expires_in)
+        return {"url": url}
+    # If value looks like an S3 key (contains '/'), presign directly
+    if "/" in ru and not ru.startswith("http"):
+        url = generate_presigned_get_url(ru.lstrip("/"), expires=expires_in)
         return {"url": url}
     # Already a public/proxied URL
     return {"url": cand.resume_url}

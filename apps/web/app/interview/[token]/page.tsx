@@ -63,7 +63,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
       const res = await fetch(`${base}/api/v1/tts/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "audio/mpeg" },
-        body: JSON.stringify({ text, lang: "tr" }),
+        body: JSON.stringify({ text, lang: "tr", provider: process.env.NEXT_PUBLIC_TTS_PROVIDER || undefined }),
       });
       if (!res.ok) throw new Error(`TTS failed: ${res.status}`);
       const buf = await res.arrayBuffer();
@@ -183,17 +183,31 @@ export default function InterviewPage({ params }: { params: { token: string } })
     navigator.permissions.query({ name: "microphone" as PermissionName }).then((p) => setMicPerm(p.state));
   }, [status]);
 
-  // Schedule first question 2s after interview starts
+  // Schedule first question 2s after interview starts (fetch from backend using job context)
   useEffect(() => {
     if (status !== "interview" || question !== null) return;
     const id = setTimeout(() => {
-      const firstQuestion = "Merhaba, kendinizi tanıtır mısınız?";
-      setQuestion(firstQuestion);
-      setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
-      setPhase("speaking");
-      
-      // Save first question to database
-      saveConversationMessage("assistant", firstQuestion);
+      // Ask backend for the first question using empty history
+      const initialHistory: { role: "assistant" | "user"; text: string }[] = [];
+      apiFetch<{ question: string | null; done: boolean }>("/api/v1/interview/next-question", {
+        method: "POST",
+        body: JSON.stringify({ history: initialHistory, interview_id: interviewId }),
+      })
+        .then((res) => {
+          const firstQuestion = (res.question || "").trim() || "Merhaba, kendinizi tanıtır mısınız?";
+          setQuestion(firstQuestion);
+          setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
+          setPhase("speaking");
+          // Save first question to database
+          saveConversationMessage("assistant", firstQuestion);
+        })
+        .catch(() => {
+          const firstQuestion = "Merhaba, kendinizi tanıtır mısınız?";
+          setQuestion(firstQuestion);
+          setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
+          setPhase("speaking");
+          saveConversationMessage("assistant", firstQuestion);
+        });
     }, 2000);
     return () => clearTimeout(id);
   }, [status, question, interviewId]);
@@ -203,6 +217,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
     if (status !== "interview" || question === null) return;
 
     let rec: any = null;
+    // Force ElevenLabs when available by adding provider in query body
     playTTS(question, () => {
       setPhase("listening");
 
@@ -221,7 +236,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
         }
 
         // Update history with user's answer
-        setHistory((h) => [...h, { role: "user", text: full }]);
+        const newHistoryLocal = [...history, { role: "user", text: full }];
+        setHistory(newHistoryLocal);
         setPhase("thinking");
 
         // Save user's answer to database
@@ -231,7 +247,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           "/api/v1/interview/next-question",
           {
             method: "POST",
-            body: JSON.stringify({ history: [...history, { role: "user", text: full }], interview_id: interviewId }),
+            body: JSON.stringify({ history: newHistoryLocal, interview_id: interviewId }),
           },
         )
           .then((res) => {
@@ -240,12 +256,13 @@ export default function InterviewPage({ params }: { params: { token: string } })
               setStatus("finished");
               // Save completion message
               saveConversationMessage("system", "Interview completed");
-            } else if (res.question) {
-              setQuestion(res.question);
-              setHistory((h) => [...h, { role: "assistant", text: res.question! }]);
+            } else {
+              const nextQ = (res.question || "").trim() || "Devam edelim: Son projende üstlendiğin rolü biraz açabilir misin?";
+              setQuestion(nextQ);
+              setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
               setPhase("speaking");
               // Save AI's next question
-              saveConversationMessage("assistant", res.question);
+              saveConversationMessage("assistant", nextQ);
             }
           })
           .catch((err) => {

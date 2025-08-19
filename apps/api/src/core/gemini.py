@@ -28,10 +28,13 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     system_prompt = (
-        "You are an HR interviewer conducting a Turkish job interview. "
-        "Given the conversation so far, ask the next appropriate question. "
-        "If the candidate has answered sufficiently AND you have asked at least 5 questions, respond with the single word FINISHED. "
-        "Otherwise respond with only the next question sentence."
+        "You are a Turkish HR interviewer. "
+        "Given the conversation so far and the provided context, ask the next concise, natural, and human-sounding question in Turkish. "
+        "Do NOT echo or paraphrase the candidate's words back to them. Avoid filler like 'Anladım', 'Görünüyor', 'Teşekkürler' at the start. "
+        "Ask exactly ONE question sentence. "
+        "If both a Job Description and a Candidate Resume section are present in the context, prefer asking about their intersection first; "
+        "if Resume is present and this is the first question, it's acceptable to say 'Özgeçmişinizi inceledim' (but never say 'ilanı okudum'). "
+        "If the candidate has answered sufficiently AND you have asked at least 5 questions, respond with the single word FINISHED."
     )
     if job_context:
         system_prompt += (
@@ -91,3 +94,154 @@ async def generate_question(history: List[dict[str, str]], job_context: str | No
     except Exception:
         # Last-resort fallback
         return _fallback_generate(history, job_context)
+
+
+async def polish_question(text: str) -> str:
+    """Optionally send the generated question to the LLM to smooth tone.
+
+    Kept optional with strict fallback to original text.
+    """
+    if not GEMINI_API_KEY or not _GENAI_AVAILABLE:
+        return text
+    try:
+        def _sync(t: str):
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = (
+                "Aşağıdaki soruyu Türkçe, kısa ve doğal bir üslupla, nazik ve net şekilde yeniden yaz.\n"
+                "Tek cümle, soru işaretiyle bitir:\n\n" + t
+            )
+            resp = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            cleaned = (resp.text or t).strip()
+            return cleaned or t
+        return await to_thread.run_sync(_sync, text)
+    except Exception:
+        return text
+
+
+# --- OpenAI fallback (HTTP) ---
+
+def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None = None):
+    """Blocking OpenAI request executed in a thread (chat.completions)."""
+    api_key = settings.openai_api_key
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not configured")
+    import httpx  # local import to avoid import when unused
+
+    system_prompt = (
+        "You are a Turkish HR interviewer. "
+        "Given the conversation so far and the provided context, ask the next concise, natural, and human-sounding question in Turkish. "
+        "Do NOT echo or paraphrase the candidate's words back to them. Avoid filler like 'Anladım', 'Görünüyor', 'Teşekkürler' at the start. "
+        "Ask exactly ONE question sentence. "
+        "If both a Job Description and a Candidate Resume section are present in the context, prefer asking about their intersection first; "
+        "if Resume is present and this is the first question, it's acceptable to say 'Özgeçmişinizi inceledim' (but never say 'ilanı okudum'). "
+        "If the candidate has answered sufficiently AND you have asked at least 5 questions, respond with the single word FINISHED."
+    )
+    if job_context:
+        system_prompt += ("\n\nJob description (context for tailoring questions):\n" + job_context[:1500])
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for turn in history:
+        role = "user" if turn["role"] == "user" else "assistant"
+        messages.append({"role": role, "content": turn["text"]})
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": 120,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    with httpx.Client(timeout=5.0) as client:
+        resp = client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    text = (data.get("choices", [{}])[0].get("message", {}).get("content", "").strip())
+    if text.upper() == "FINISHED":
+        return {"question": "", "done": True}
+    return {"question": text, "done": False}
+
+
+async def generate_question_robust(history: List[dict[str, str]], job_context: str | None = None, total_timeout_s: float = 5.0) -> dict[str, str]:
+    """Two-tier LLM strategy: Gemini first, then OpenAI; last resort local canned.
+
+    Ensures kural tabanlıya düşme çok nadir olur.
+    """
+    # 1) Gemini (fast path)
+    try:
+        return await to_thread.run_sync(_sync_generate, history, job_context)
+    except Exception:
+        pass
+
+    # 2) OpenAI (fallback)
+    try:
+        return await to_thread.run_sync(_openai_sync_generate, history, job_context)
+    except Exception:
+        pass
+
+    # 3) Local canned
+    return _fallback_generate(history, job_context)
+
+
+def _fallback_requirements(text: str) -> dict:
+    """Heuristic requirements extraction when LLM is unavailable.
+
+    Looks for common backend keywords and builds a basic config.
+    """
+    low = (text or "").lower()
+    reqs = []
+    def add(id_, label, keywords, weight):
+        reqs.append({
+            "id": id_,
+            "label": label,
+            "keywords": keywords,
+            "weight": weight,
+            "followups": [],
+        })
+    if any(k in low for k in ["fastapi", "rest", "endpoint", "api"]):
+        add("backend_api", "REST API geliştirme", ["fastapi","rest","endpoint","auth","pydantic"], 25)
+    if any(k in low for k in ["aws","s3","ecs","eks","iam"]):
+        add("cloud_aws", "AWS üzerinde çalışma", ["aws","s3","ecs","eks","iam","cloudwatch"], 15)
+    if any(k in low for k in ["postgres","sql","index","migration","alembic"]):
+        add("data_store", "Veritabanı ve migration", ["postgres","sql","index","migration","alembic","sqlalchemy"], 15)
+    if any(k in low for k in ["performans","ölçek","scal","caching","redis","p95","p99"]):
+        add("scalability", "Ölçeklenebilirlik ve performans", ["ölçek","performans","caching","redis","profiling","p95","p99"], 20)
+    if any(k in low for k in ["test","pytest","ci","cd","pipeline","coverage"]):
+        add("testing_ci", "Test ve CI/CD", ["test","pytest","unit","integration","coverage","ci","cd","pipeline"], 10)
+    add("collab", "Takım çalışması ve iletişim", ["takım","iletişim","code review","paydaş","geri bildirim"], 15)
+    if not reqs:
+        add("general", "Genel yeterlilik", ["deneyim","proje","sorumluluk"], 100)
+    return {
+        "requirements_config": {"requirements": reqs, "dialog": {"max_questions": 7, "language": "tr"}},
+        "rubric_weights": {"communication":0.2,"technical":0.4,"problem_solving":0.2,"cultural_fit":0.1,"alignment":0.1},
+    }
+
+
+async def extract_requirements_from_text(text: str) -> dict:
+    """Use Gemini to extract requirements_config and rubric_weights from a free-form job post.
+
+    Returns dict with keys: requirements_config, rubric_weights.
+    Falls back to heuristic if API not available or parsing fails.
+    """
+    if not GEMINI_API_KEY or not _GENAI_AVAILABLE:
+        return _fallback_requirements(text)
+    try:
+        def _sync(text_: str):
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = (
+                "Aşağıdaki iş ilanından Türkçe, JSON formatta gereksinimleri çıkar.\n"
+                "Cevabı SADECE JSON olarak döndür. Şema:\n"
+                "{\n  'requirements_config': { 'requirements': [ { 'id': str, 'label': str, 'keywords': [str], 'weight': number, 'followups': [str] } ], 'dialog': { 'max_questions': 7, 'language': 'tr' } },\n  'rubric_weights': { 'communication': number, 'technical': number, 'problem_solving': number, 'cultural_fit': number, 'alignment': number }\n}\n\n"
+                "İlan metni:\n" + text_[:6000]
+            )
+            resp = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            raw = resp.text.strip()
+            import json
+            data = json.loads(raw)
+            return data
+        data = await to_thread.run_sync(_sync, text)
+        # basic validation
+        if not isinstance(data, dict) or "requirements_config" not in data:
+            return _fallback_requirements(text)
+        return data
+    except Exception:
+        return _fallback_requirements(text)

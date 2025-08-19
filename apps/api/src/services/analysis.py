@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from src.db.models.interview import Interview
@@ -21,8 +21,9 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
     )
     messages: List[ConversationMessage] = list(result.scalars().all())
 
-    # Pull job description for context
+    # Pull job description and requirements config for context
     job_desc = ""
+    requirements_config: Dict[str, Any] | None = None
     job = (
         await session.execute(
             select(Job)
@@ -30,8 +31,13 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
             .where(Interview.id == interview_id)
         )
     ).scalar_one_or_none()
-    if job and job.description:
-        job_desc = job.description
+    if job:
+        if job.description:
+            job_desc = job.description
+        try:
+            requirements_config = job.requirements_config  # type: ignore[attr-defined]
+        except Exception:
+            requirements_config = None
 
     if not messages:
         summary = "No conversation captured."
@@ -90,6 +96,37 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
         tech = round(technical_score, 2)
         culture = round(cultural_fit_score, 2)
 
+        # Optional: compute requirements coverage from job config
+        coverage_summary = None
+        if requirements_config and isinstance(requirements_config, dict):
+            reqs = requirements_config.get("requirements") or []
+            coverage_items: List[Dict[str, Any]] = []
+            for req in reqs:
+                rid = req.get("id") or req.get("label") or "req"
+                keywords: List[str] = [str(k).lower() for k in (req.get("keywords") or [])]
+                matched = set()
+                evidences: List[Dict[str, Any]] = []
+                for m in user_msgs:
+                    low = m.content.lower()
+                    hits = [k for k in keywords if k and k in low]
+                    if hits:
+                        matched.update(hits)
+                        evidences.append({
+                            "message_seq": m.sequence_number,
+                            "text": m.content[:240],
+                            "weight": min(1.0, len(hits) / max(1, len(keywords)))
+                        })
+                coverage_score = 0.0
+                if keywords:
+                    coverage_score = round(100.0 * len(matched) / len(keywords), 2)
+                coverage_items.append({
+                    "id": rid,
+                    "coverage_score": coverage_score,
+                    "matched_keywords": sorted(list(matched)),
+                    "evidence_snippets": evidences[:5],
+                })
+            coverage_summary = coverage_items
+
     # Upsert analysis
     existing = (
         await session.execute(
@@ -105,6 +142,9 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
         existing.communication_score = comm
         existing.technical_score = tech
         existing.cultural_fit_score = culture
+        if 'coverage_summary' in locals() and coverage_summary is not None:
+            import json
+            existing.technical_assessment = json.dumps({"requirements_coverage": coverage_summary}, ensure_ascii=False)
         await session.commit()
         await session.refresh(existing)
         return existing
@@ -120,6 +160,9 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
             cultural_fit_score=culture,
             model_used="rule-based-v1",
         )
+        if 'coverage_summary' in locals() and coverage_summary is not None:
+            import json
+            analysis.technical_assessment = json.dumps({"requirements_coverage": coverage_summary}, ensure_ascii=False)
         session.add(analysis)
         await session.commit()
         await session.refresh(analysis)

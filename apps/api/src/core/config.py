@@ -27,6 +27,28 @@ class Settings:
     def gemini_api_key(self) -> str | None:
         return os.getenv("GEMINI_API_KEY")
 
+    @property
+    def openai_api_key(self) -> str | None:
+        return os.getenv("OPENAI_API_KEY")
+
+    # Azure Speech
+    @property
+    def azure_speech_key(self) -> str | None:
+        return os.getenv("AZURE_SPEECH_KEY")
+
+    @property
+    def azure_speech_region(self) -> str | None:
+        return os.getenv("AZURE_SPEECH_REGION")
+
+    # ElevenLabs
+    @property
+    def elevenlabs_api_key(self) -> str | None:
+        return os.getenv("ELEVENLABS_API_KEY")
+
+    @property
+    def elevenlabs_voice_id(self) -> str | None:
+        return os.getenv("ELEVENLABS_VOICE_ID")
+
     # Mail (Resend)
     @property
     def resend_api_key(self) -> str | None:

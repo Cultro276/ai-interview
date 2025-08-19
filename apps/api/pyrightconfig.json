@@ -6,7 +6,8 @@
     "./src"
   ],
   "typeCheckingMode": "standard",
-  "reportMissingTypeStubs": false
+  "reportMissingTypeStubs": false,
+  "reportMissingImports": false
 }
 
 

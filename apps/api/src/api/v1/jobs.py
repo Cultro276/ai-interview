@@ -1,4 +1,6 @@
+# pyright: reportMissingImports=false, reportMissingModuleSource=false
 from typing import List
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from pydantic import BaseModel
@@ -15,8 +17,15 @@ from src.db.models.interview import Interview
 from src.db.models.candidate_profile import CandidateProfile
 from src.db.models.conversation import InterviewAnalysis
 from src.core.s3 import put_object_bytes, generate_presigned_put_url_at_key
+from src.core.gemini import extract_requirements_from_text
 from datetime import datetime, timedelta
 import re
+
+# Hint pyright that 3rd-party imports are available at runtime
+if TYPE_CHECKING:
+    import fastapi  # noqa: F401
+    import sqlalchemy  # noqa: F401
+    import pydantic  # noqa: F401
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -28,6 +37,68 @@ async def list_jobs(
 ):
     result = await session.execute(select(Job).where(Job.user_id == current_user.id))
     return result.scalars().all()
+
+
+@router.get("/{job_id}/requirements-config")
+async def get_requirements_config(job_id: int, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        return job.requirements_config  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+@router.put("/{job_id}/requirements-config")
+async def set_requirements_config(job_id: int, payload: dict, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    setattr(job, "requirements_config", payload)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/{job_id}/rubric-weights")
+async def get_rubric_weights(job_id: int, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        return job.rubric_weights  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+@router.put("/{job_id}/rubric-weights")
+async def set_rubric_weights(job_id: int, payload: dict, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    setattr(job, "rubric_weights", payload)
+    await session.commit()
+    return {"ok": True}
+
+
+class ExtractReqBody(BaseModel):
+    job_text: str
+
+
+@router.post("/{job_id}/extract-requirements")
+async def extract_requirements(job_id: int, payload: ExtractReqBody, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    data = await extract_requirements_from_text(payload.job_text)
+    # apply but do not overwrite if fields are missing
+    if data.get("requirements_config"):
+        job.requirements_config = data["requirements_config"]
+    if data.get("rubric_weights"):
+        job.rubric_weights = data["rubric_weights"]
+    await session.commit()
+    await session.refresh(job)
+    return {"requirements_config": job.requirements_config, "rubric_weights": job.rubric_weights}
 
 
 @router.post("/", response_model=JobRead, status_code=status.HTTP_201_CREATED)
@@ -42,6 +113,8 @@ async def create_job(
         description=job_in.description,
         user_id=current_user.id,
         default_invite_expiry_days=expiry,
+        requirements_config=job_in.requirements_config,
+        rubric_weights=job_in.rubric_weights,
     )
     session.add(job)
     await session.commit()
@@ -63,7 +136,7 @@ async def update_job(
     for field, value in job_in.dict(exclude_unset=True).items():
         if field == "expires_in_days" and value is not None:
             job.default_invite_expiry_days = value
-        elif field in {"title", "description"}:
+        elif field in {"title", "description", "requirements_config", "rubric_weights"}:
             setattr(job, field, value)
     await session.commit()
     await session.refresh(job)

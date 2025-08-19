@@ -18,6 +18,9 @@ from urllib.parse import urlparse
 from src.services.analysis import generate_rule_based_analysis
 from src.core.metrics import collector, Timer
 from pydantic import BaseModel
+import httpx
+import asyncio
+from src.services.stt import transcribe_with_whisper
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -265,6 +268,41 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
     await session.refresh(interview)
     # Complete only when transcript also exists
     await _maybe_complete_interview(session, interview, request)
+
+    # Background STT: if transcript missing and audio exists, fetch and transcribe
+    try:
+        has_transcript = bool(_in_memory_transcripts.get(interview.id))
+        if (not has_transcript) and interview.audio_url:
+            def _to_key(url: str | None) -> str | None:
+                if not url:
+                    return None
+                if url.startswith("s3://"):
+                    return url.split("/", 3)[-1]
+                try:
+                    from urllib.parse import urlparse as _urlparse
+                    return _urlparse(url).path.lstrip("/")
+                except Exception:
+                    return None
+
+            key = _to_key(interview.audio_url)
+            if key:
+                presigned_get = generate_presigned_get_url(key, expires=600)
+
+                async def _bg_stt():
+                    try:
+                        async with httpx.AsyncClient(timeout=60.0) as client:
+                            resp = await client.get(presigned_get)
+                            resp.raise_for_status()
+                            text = await transcribe_with_whisper(resp.content, resp.headers.get("Content-Type") or "audio/webm")
+                            if text:
+                                _in_memory_transcripts[interview.id] = text
+                                await _maybe_complete_interview(session, interview, request)
+                    except Exception:
+                        pass
+
+                asyncio.create_task(_bg_stt())
+    except Exception:
+        pass
 
     # Metrics: estimate upload latency from presign to completion using candidate token
     try:
