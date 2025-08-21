@@ -27,6 +27,16 @@ services:
     ports:
       - "8000:8000"
 
+  worker:
+    build:
+      context: ./apps/api
+    command: python -c "from src.services.queue import run_sqs_worker; run_sqs_worker()"
+    env_file:
+      - ./apps/api/.env
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
   web:
     build:
       context: ./apps/web

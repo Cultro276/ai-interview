@@ -1,6 +1,6 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useParams } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
@@ -27,11 +27,155 @@ export default function JobCandidatesPage() {
   const [singleExpiry, setSingleExpiry] = useState(7);
   const [presigning, setPresigning] = useState(false);
 
-  const jobCandidateIds = interviews
-    .filter((i) => i.job_id === jobId)
-    .map((i) => i.candidate_id);
+  const jobInterviews = interviews.filter((i) => i.job_id === jobId);
+  const jobCandidateIds = jobInterviews.map((i) => i.candidate_id);
   const jobCandidates = candidates.filter((c) => jobCandidateIds.includes(c.id));
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "completed" | "pending">("all");
+  const [hasCvOnly, setHasCvOnly] = useState(false);
+  const [hasMediaOnly, setHasMediaOnly] = useState(false);
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+  const [minDurationMin, setMinDurationMin] = useState<string>("");
+  const [maxDurationMin, setMaxDurationMin] = useState<string>("");
+  const [sortBy, setSortBy] = useState<
+    | "created"
+    | "score"
+    | "last_update_desc"
+    | "last_update_asc"
+    | "duration_desc"
+    | "duration_asc"
+  >("created");
+
+  // URL params <-> state sync
+  const sp = useSearchParams();
+  const router = useRouter();
+  const didInitFromUrlRef = useRef(false);
+
+  // 1) On mount: initialize state from URL once
+  useEffect(() => {
+    if (didInitFromUrlRef.current) return;
+    const get = (k: string) => sp.get(k);
+    const truthy = (v: string | null) => v === "1" || v === "true";
+    const q = get("q");
+    const statusP = get("status") as any;
+    const cv = get("cv");
+    const media = get("media");
+    const from = get("from");
+    const to = get("to");
+    const minD = get("minDur");
+    const maxD = get("maxDur");
+    const sortP = get("sort") as any;
+
+    if (q !== null) setSearch(q);
+    if (statusP && ["all","completed","pending"].includes(statusP)) setStatusFilter(statusP);
+    if (cv !== null) setHasCvOnly(truthy(cv));
+    if (media !== null) setHasMediaOnly(truthy(media));
+    if (from !== null) setDateFrom(from);
+    if (to !== null) setDateTo(to);
+    if (minD !== null) setMinDurationMin(minD);
+    if (maxD !== null) setMaxDurationMin(maxD);
+    if (sortP && [
+      "created","score","last_update_desc","last_update_asc","duration_desc","duration_asc"
+    ].includes(sortP)) setSortBy(sortP);
+
+    didInitFromUrlRef.current = true;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 2) Whenever filters change, reflect into URL
+  useEffect(() => {
+    if (!didInitFromUrlRef.current) return;
+    const params = new URLSearchParams();
+    if (search.trim()) params.set("q", search.trim());
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (hasCvOnly) params.set("cv", "1");
+    if (hasMediaOnly) params.set("media", "1");
+    if (dateFrom) params.set("from", dateFrom);
+    if (dateTo) params.set("to", dateTo);
+    if (minDurationMin) params.set("minDur", String(minDurationMin));
+    if (maxDurationMin) params.set("maxDur", String(maxDurationMin));
+    if (sortBy !== "created") params.set("sort", sortBy);
+
+    const qs = params.toString();
+    const path = typeof window !== 'undefined' ? window.location.pathname : `/jobs/${jobId}/candidates`;
+    router.replace(qs ? `${path}?${qs}` : path, { scroll: false });
+  }, [search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy, jobId, router]);
+
+  // Report modal state
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportAnalysis, setReportAnalysis] = useState<any | null>(null);
+  const [reportInterviewId, setReportInterviewId] = useState<number | null>(null);
+  // Invite link modal state
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+
+  const findLatestInterviewId = (candidateId: number): number | null => {
+    const list = jobInterviews.filter((i) => i.candidate_id === candidateId);
+    if (list.length === 0) return null;
+    // pick the newest by created_at
+    const sorted = [...list].sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return sorted[0].id;
+  };
+  const findLatestInterview = (candidateId: number) => {
+    const list = jobInterviews.filter((i) => i.candidate_id === candidateId);
+    if (list.length === 0) return null as any;
+    return [...list].sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+  };
+  const formatDuration = (startIso?: string, endIso?: string) => {
+    if (!startIso || !endIso) return "—";
+    const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+    if (!isFinite(ms) || ms <= 0) return "—";
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (h > 0 ? pad(h) + ":" : "") + pad(m) + ":" + pad(s);
+  };
+
+  const [videoOpen, setVideoOpen] = useState(false);
+  const [videoSrc, setVideoSrc] = useState<string | null>(null);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  const openVideoForCandidate = async (candId: number) => {
+    try {
+      const intId = findLatestInterviewId(candId);
+      if (!intId) return toastError("Bu aday için mülakat bulunamadı");
+      const { audio_url, video_url } = await apiFetch<{ audio_url?: string; video_url?: string }>(`/api/v1/interviews/${intId}/media-download-urls`);
+      setVideoSrc(video_url || null);
+      setAudioSrc(audio_url || null);
+      if (!video_url && !audio_url) return toastError("Medya bulunamadı");
+      setVideoOpen(true);
+    } catch (e: any) {
+      toastError(e.message || "Medya açılamadı");
+    }
+  };
+
+  const openReportForCandidate = async (candId: number) => {
+    const intId = findLatestInterviewId(candId);
+    if (!intId) return toastError("Bu aday için mülakat bulunamadı");
+    setReportInterviewId(intId);
+    setReportLoading(true);
+    setReportOpen(true);
+    try {
+      const data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
+      setReportAnalysis(data);
+    } catch (e: any) {
+      setReportAnalysis(null);
+      toastError(e.message || "Rapor yüklenemedi");
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const exportReportPdf = () => {
+    // Simple client-side print for now; can be replaced with server-side Puppeteer
+    try {
+      window.print();
+    } catch {}
+  };
 
   const onUpload = async () => {
     if (!files.length) return;
@@ -131,19 +275,21 @@ export default function JobCandidatesPage() {
     }
   };
 
-  const downloadCv = async (candId: number) => {
+  const openInviteLinkForCandidate = async (candId: number) => {
     try {
-      const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/resume-download-url`);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = "cv.pdf";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      setInviteLoading(true);
+      setInviteOpen(true);
+      const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/invite-link`);
+      setInviteUrl(url);
     } catch (e: any) {
-      toastError(e.message || "Download failed");
+      setInviteUrl(null);
+      toastError(e.message || "Link alınamadı");
+    } finally {
+      setInviteLoading(false);
     }
   };
+
+  // Removed explicit download; browser preview allows easy download already
 
   if (loading) {
     return (
@@ -293,7 +439,61 @@ export default function JobCandidatesPage() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+          <div className="flex items-center gap-4 ml-4 flex-wrap">
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              Durum:
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
+                <option value="all">Tümü</option>
+                <option value="completed">Tamamlanan</option>
+                <option value="pending">Bekleyen</option>
+              </select>
+            </label>
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              <input type="checkbox" checked={hasCvOnly} onChange={(e) => setHasCvOnly(e.target.checked)} />
+              Sadece CV’si olanlar
+            </label>
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              <input type="checkbox" checked={hasMediaOnly} onChange={(e) => setHasMediaOnly(e.target.checked)} />
+              Sadece medyası olanlar
+            </label>
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              Son güncelleme:
+              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+              –
+              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+            </label>
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              Süre (dk):
+              <input
+                type="number"
+                placeholder="min"
+                className="w-20 border rounded px-2 py-1 text-sm"
+                value={minDurationMin}
+                onChange={(e) => setMinDurationMin(e.target.value)}
+              />
+              –
+              <input
+                type="number"
+                placeholder="max"
+                className="w-20 border rounded px-2 py-1 text-sm"
+                value={maxDurationMin}
+                onChange={(e) => setMaxDurationMin(e.target.value)}
+              />
+            </label>
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              Sırala:
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
+                <option value="created">Varsayılan</option>
+                <option value="score">Genel Puan (yüksek→düşük)</option>
+                <option value="last_update_desc">Son güncelleme (en yeni)</option>
+                <option value="last_update_asc">Son güncelleme (en eski)</option>
+                <option value="duration_desc">Süre (en uzun)</option>
+                <option value="duration_asc">Süre (en kısa)</option>
+              </select>
+            </label>
+          </div>
         </div>
+
         {jobCandidates.length === 0 ? (
           <EmptyState title="Henüz aday yok" description="CV yükleyin veya aday oluşturarak davet göndermeye başlayın." />
         ) : (
@@ -301,10 +501,16 @@ export default function JobCandidatesPage() {
         <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800">
           <thead className="bg-gray-50">
             <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">ID</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Ad Soyad</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-posta</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Özgeçmiş</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">İşlemler</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">View CV</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Link</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Durum</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Süre</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Son Güncelleme</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Video</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Rapor</th>
             </tr>
           </thead>
           <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
@@ -317,35 +523,99 @@ export default function JobCandidatesPage() {
                   (c.email || "").toLowerCase().includes(q)
                 );
               })
+              .filter((c) => {
+                const it = findLatestInterview(c.id) as any;
+                // status filter
+                if (statusFilter !== "all") {
+                  if (!it || it.status !== statusFilter) return false;
+                }
+                // has CV filter
+                if (hasCvOnly && !c.resume_url) return false;
+                // has media filter
+                if (hasMediaOnly) {
+                  if (!it || (!it.audio_url && !it.video_url)) return false;
+                }
+                // date range filter (last update: completed_at if exists else created_at)
+                const lastIso = it?.completed_at || it?.created_at;
+                if (dateFrom) {
+                  if (!lastIso || new Date(lastIso) < new Date(dateFrom)) return false;
+                }
+                if (dateTo) {
+                  if (!lastIso || new Date(lastIso) > new Date(dateTo + "T23:59:59")) return false;
+                }
+                // duration range filter (minutes) applies only if completed_at exists
+                const minM = minDurationMin ? Number(minDurationMin) : null;
+                const maxM = maxDurationMin ? Number(maxDurationMin) : null;
+                if (minM !== null || maxM !== null) {
+                  if (!it || !it.created_at || !it.completed_at) return false;
+                  const ms = new Date(it.completed_at).getTime() - new Date(it.created_at).getTime();
+                  const durMin = ms > 0 ? ms / 60000 : 0;
+                  if (minM !== null && durMin < minM) return false;
+                  if (maxM !== null && durMin > maxM) return false;
+                }
+                return true;
+              })
+              .sort((a, b) => {
+                if (sortBy === "created") return 0; // keep API order
+                const itA = findLatestInterview(a.id) as any;
+                const itB = findLatestInterview(b.id) as any;
+                if (sortBy === "score") {
+                  const scoreA = itA?.overall_score || 0;
+                  const scoreB = itB?.overall_score || 0;
+                  return scoreB - scoreA;
+                }
+                if (sortBy === "last_update_desc" || sortBy === "last_update_asc") {
+                  const lastA = itA?.completed_at || itA?.created_at || null;
+                  const lastB = itB?.completed_at || itB?.created_at || null;
+                  const tA = lastA ? new Date(lastA).getTime() : 0;
+                  const tB = lastB ? new Date(lastB).getTime() : 0;
+                  return sortBy === "last_update_desc" ? tB - tA : tA - tB;
+                }
+                if (sortBy === "duration_desc" || sortBy === "duration_asc") {
+                  const hasA = itA?.created_at && itA?.completed_at;
+                  const hasB = itB?.created_at && itB?.completed_at;
+                  const dA = hasA ? (new Date(itA.completed_at).getTime() - new Date(itA.created_at).getTime()) : null;
+                  const dB = hasB ? (new Date(itB.completed_at).getTime() - new Date(itB.created_at).getTime()) : null;
+                  const normA = dA === null ? (sortBy === "duration_desc" ? -1 : Number.MAX_SAFE_INTEGER) : dA;
+                  const normB = dB === null ? (sortBy === "duration_desc" ? -1 : Number.MAX_SAFE_INTEGER) : dB;
+                  return sortBy === "duration_desc" ? normB - normA : normA - normB;
+                }
+                return 0;
+              })
               .map((c) => (
               <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-neutral-800">
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">#{c.id}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-neutral-100">{c.name}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
-                    <div className="flex items-center gap-2">
-                      <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">View CV</Button>
-                      <Button variant="ghost" onClick={() => downloadCv(c.id)} className="text-emerald-700 hover:text-emerald-900 p-0 h-auto">Download</Button>
-                    </div>
+                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">View CV</Button>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline">İşlemler</Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => sendLink(c.id)}>Davet Gönder</DropdownMenuItem>
-                      {c.resume_url && (
-                        <>
-                          <DropdownMenuItem onClick={() => viewCv(c.id)}>View CV</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => downloadCv(c.id)}>Download CV</DropdownMenuItem>
-                        </>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                  <Button variant="ghost" onClick={() => openInviteLinkForCandidate(c.id)} className="p-0 h-auto">Link</Button>
+                </td>
+                {(() => {
+                  const it: any = findLatestInterview(c.id);
+                  const status = it?.status || "—";
+                  const dur = it?.completed_at ? formatDuration(it?.created_at, it?.completed_at) : "—";
+                  const last = it?.completed_at || it?.created_at || null;
+                  const badgeColor = status === "completed" ? "bg-emerald-100 text-emerald-700" : status === "pending" ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-600";
+                  return (
+                    <>
+                      <td className="px-6 py-4 whitespace-nowrap text-xs"><span className={`px-2 py-1 rounded ${badgeColor}`}>{status}</span></td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{dur}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{last ? new Date(last).toLocaleString('tr-TR') : "—"}</td>
+                    </>
+                  );
+                })()}
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                  <Button variant="ghost" onClick={() => openVideoForCandidate(c.id)} className="p-0 h-auto">Video</Button>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                  <Button variant="ghost" onClick={() => openReportForCandidate(c.id)} className="p-0 h-auto">Rapor</Button>
                 </td>
               </tr>
             ))}
@@ -354,6 +624,206 @@ export default function JobCandidatesPage() {
         </div>
         )}
       </div>
+
+      {/* Report Modal */}
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Aday Raporu</DialogTitle>
+            <DialogDescription>
+              İşe uygunluk, HR kriterleri ve soft-skill özetleri.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end mb-2">
+            <Button variant="outline" onClick={exportReportPdf}>PDF Olarak Kaydet</Button>
+          </div>
+          {reportLoading ? (
+            <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
+          ) : reportAnalysis ? (
+            <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+              {(() => {
+                const a = reportAnalysis;
+                return (
+                  <div className="space-y-4">
+                    {a.overall_score && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-700">Genel Puan</span>
+                        <div className="mt-1">
+                          <div className="w-full bg-gray-200 rounded-full h-2">
+                            <div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.overall_score}%` }}></div>
+                          </div>
+                          <span className="text-sm text-gray-600">{a.overall_score}/100</span>
+                        </div>
+                      </div>
+                    )}
+                    {a.summary && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-700">Özet</span>
+                        <p className="text-sm text-gray-600 mt-1">{a.summary}</p>
+                      </div>
+                    )}
+                    {(() => {
+                      try {
+                        const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
+                        if (!ta) return null;
+                        return (
+                          <div className="space-y-6">
+                            {Array.isArray(ta.soft_skills) && ta.soft_skills.length > 0 && (
+                              <div>
+                                <span className="text-sm font-medium text-gray-700">Soft Skills</span>
+                                <ul className="mt-2 space-y-1 list-disc list-inside text-sm text-gray-700">
+                                  {ta.soft_skills.map((s: any, idx: number) => (
+                                    <li key={idx}><strong>{s.label}</strong>{typeof s.confidence === 'number' ? ` (${Math.round(s.confidence*100)}%)` : ''}{s.evidence ? ` — ${s.evidence}` : ''}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {ta.hr_criteria && Array.isArray(ta.hr_criteria.criteria) && (
+                              <div>
+                                <span className="text-sm font-medium text-gray-700">HR Kriterleri</span>
+                                <ul className="mt-2 space-y-1 list-disc list-inside text-sm text-gray-700">
+                                  {ta.hr_criteria.criteria.map((c: any, idx: number) => (
+                                    <li key={idx}><strong>{c.label}</strong>{typeof c.score_0_100 === 'number' ? `: ${c.score_0_100}/100` : ''}{c.evidence ? ` — ${c.evidence}` : ''}</li>
+                                  ))}
+                                </ul>
+                                {ta.hr_criteria.summary && <p className="text-sm text-gray-600 mt-1">{ta.hr_criteria.summary}</p>}
+                              </div>
+                            )}
+                            {ta.job_fit && (
+                              <div>
+                                <span className="text-sm font-medium text-gray-700">İşe Uygunluk</span>
+                                {ta.job_fit.job_fit_summary && <p className="text-sm text-gray-600 mt-1">{ta.job_fit.job_fit_summary}</p>}
+                                {Array.isArray(ta.job_fit.key_matches) && ta.job_fit.key_matches.length > 0 && (
+                                  <div className="mt-2">
+                                    <span className="text-xs font-medium text-gray-600">Eşleşen Yönler</span>
+                                    <ul className="list-disc list-inside text-sm text-gray-700">{ta.job_fit.key_matches.map((m: any, i: number) => (<li key={i}>{m}</li>))}</ul>
+                                  </div>
+                                )}
+                                {Array.isArray(ta.job_fit.gaps) && ta.job_fit.gaps.length > 0 && (
+                                  <div className="mt-2">
+                                    <span className="text-xs font-medium text-gray-600">Açık Kalan Alanlar</span>
+                                    <ul className="list-disc list-inside text-sm text-gray-700">{ta.job_fit.gaps.map((g: any, i: number) => (<li key={i}>{g}</li>))}</ul>
+                                  </div>
+                                )}
+                                {Array.isArray(ta.job_fit.recommendations) && ta.job_fit.recommendations.length > 0 && (
+                                  <div className="mt-2">
+                                    <span className="text-xs font-medium text-gray-600">Öneriler</span>
+                                    <ul className="list-disc list-inside text-sm text-gray-700">{ta.job_fit.recommendations.map((r: any, i: number) => (<li key={i}>{r}</li>))}</ul>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      } catch (e) {
+                        return null;
+                      }
+                    })()}
+                  </div>
+                );
+              })()}
+            </div>
+          ) : (
+            <div className="py-6 text-sm text-gray-500">Rapor bulunamadı</div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Invite Link Modal */}
+      <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Davet Linki</DialogTitle>
+            <DialogDescription>Mail servisi devre dışı iken geçici olarak buradan kopyalayın.</DialogDescription>
+          </DialogHeader>
+          {inviteLoading ? (
+            <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
+          ) : inviteUrl ? (
+            <div className="space-y-3">
+              <input
+                readOnly
+                value={inviteUrl}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              />
+              <div className="text-right">
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try { await navigator.clipboard.writeText(inviteUrl); success("Link kopyalandı"); } catch { /* ignore */ }
+                  }}
+                >Kopyala</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="py-6 text-sm text-gray-500">Link alınamadı</div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Video Modal */}
+      <Dialog open={videoOpen} onOpenChange={setVideoOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Video Mülakat</DialogTitle>
+            <DialogDescription>Tarayıcıda oynatılır; isterseniz yeni sekmede de açabilirsiniz.</DialogDescription>
+          </DialogHeader>
+          {(() => {
+            // Local refs via inline IIFE for brevity
+            return (
+              <div>
+                {videoSrc ? (
+                  <video id="admin-video-player" controls src={videoSrc} className="w-full max-h-[60vh] rounded" />
+                ) : audioSrc ? (
+                  <audio id="admin-audio-player" controls src={audioSrc} className="w-full" />
+                ) : (
+                  <div className="py-6 text-sm text-gray-500">Medya bulunamadı</div>
+                )}
+                {(videoSrc || audioSrc) && (
+                  <div className="mt-2 flex items-center gap-3 text-sm">
+                    <span>Zaman:</span>
+                    <span id="time-display" className="min-w-[64px] inline-block">00:00</span>
+                    <span className="ml-4">Hız:</span>
+                    <select
+                      onChange={(e) => {
+                        const rate = Number(e.target.value);
+                        const v = document.getElementById("admin-video-player") as HTMLVideoElement | null;
+                        const a = document.getElementById("admin-audio-player") as HTMLAudioElement | null;
+                        if (v) v.playbackRate = rate;
+                        if (a) a.playbackRate = rate;
+                      }}
+                      className="border rounded px-2 py-1"
+                    >
+                      {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
+                        <option key={r} value={r}>{r}x</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <script dangerouslySetInnerHTML={{ __html: `
+                  (function(){
+                    function fmt(t){
+                      var m = Math.floor(t/60); var s = Math.floor(t%60);
+                      return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+                    }
+                    var v = document.getElementById('admin-video-player');
+                    var a = document.getElementById('admin-audio-player');
+                    var t = document.getElementById('time-display');
+                    function tick(){ if(!t) return; var cur = 0; var dur = 0; if(v){cur=v.currentTime; dur=v.duration||0;} if(a){cur=a.currentTime; dur=a.duration||0;} t.textContent = fmt(cur)+' / '+(isFinite(dur)?fmt(dur):'--:--'); }
+                    if(v){ v.addEventListener('timeupdate', tick); v.addEventListener('loadedmetadata', tick); }
+                    if(a){ a.addEventListener('timeupdate', tick); a.addEventListener('loadedmetadata', tick); }
+                    tick();
+                  })();
+                `}} />
+              </div>
+            );
+          })()}
+          {(videoSrc || audioSrc) && (
+            <div className="mt-2 text-right">
+              <a href={videoSrc || audioSrc || "#"} target="_blank" rel="noreferrer" className="text-brand-700">Yeni sekmede aç</a>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 } 

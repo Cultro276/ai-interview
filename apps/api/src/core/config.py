@@ -49,6 +49,24 @@ class Settings:
     def elevenlabs_voice_id(self) -> str | None:
         return os.getenv("ELEVENLABS_VOICE_ID")
 
+    # Optional providers
+    @property
+    def assemblyai_api_key(self) -> str | None:
+        return os.getenv("ASSEMBLYAI_API_KEY")
+
+    @property
+    def azure_face_key(self) -> str | None:
+        return os.getenv("AZURE_FACE_KEY")
+
+    @property
+    def azure_face_endpoint(self) -> str | None:
+        return os.getenv("AZURE_FACE_ENDPOINT")
+
+    # Queue (SQS)
+    @property
+    def sqs_queue_url(self) -> str | None:
+        return os.getenv("SQS_QUEUE_URL")
+
     # Mail (Resend)
     @property
     def resend_api_key(self) -> str | None:

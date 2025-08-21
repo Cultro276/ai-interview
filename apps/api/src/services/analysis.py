@@ -7,6 +7,7 @@ from src.db.models.interview import Interview
 from src.db.models.job import Job
 
 from src.db.models.conversation import ConversationMessage, InterviewAnalysis
+from src.db.models.interview import Interview
 
 
 async def generate_rule_based_analysis(session: AsyncSession, interview_id: int) -> InterviewAnalysis:
@@ -167,5 +168,103 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
         await session.commit()
         await session.refresh(analysis)
         return analysis
+
+
+async def merge_enrichment_into_analysis(
+    session: AsyncSession,
+    interview_id: int,
+    enrichment: dict,
+) -> InterviewAnalysis:
+    """Merge enrichment payload (soft_skills/speech/vision/llm_summary) into technical_assessment JSON.
+
+    Creates analysis if missing by calling rule-based generator first.
+    """
+    analysis = (
+        await session.execute(
+            select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id)
+        )
+    ).scalar_one_or_none()
+    if not analysis:
+        analysis = await generate_rule_based_analysis(session, interview_id)
+
+    import json
+    blob = {}
+    try:
+        if analysis.technical_assessment:
+            blob = json.loads(analysis.technical_assessment)
+    except Exception:
+        blob = {}
+    # Merge keys conservatively
+    for k in ("soft_skills", "speech", "vision", "llm_summary"):
+        if k in enrichment and enrichment[k]:
+            blob[k] = enrichment[k]
+    analysis.technical_assessment = json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    await session.refresh(analysis)
+    return analysis
+
+
+async def enrich_with_job_and_hr(
+    session: AsyncSession,
+    interview_id: int,
+) -> None:
+    """Enrich analysis with HR criteria scores and job-fit summary."""
+    from sqlalchemy import select as _select
+    from src.db.models.job import Job
+    from src.db.models.candidate import Candidate
+    from src.db.models.candidate_profile import CandidateProfile
+    from src.services.nlp import assess_hr_criteria, assess_job_fit
+
+    interview = (
+        await session.execute(_select(Interview).where(Interview.id == interview_id))
+    ).scalar_one_or_none()
+    if not interview:
+        return
+    job = (
+        await session.execute(_select(Job).where(Job.id == interview.job_id))
+    ).scalar_one_or_none()
+    job_desc = getattr(job, "description", None) or ""
+
+    resume_text = ""
+    try:
+        cand = (
+            await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
+        ).scalar_one_or_none()
+        if cand:
+            profile = (
+                await session.execute(_select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
+            ).scalar_one_or_none()
+            if profile and profile.resume_text:
+                resume_text = profile.resume_text
+    except Exception:
+        resume_text = ""
+
+    # Trim overly long transcripts for safety
+    transcript_text = (interview.transcript_text or "")
+    if len(transcript_text) > 50000:
+        transcript_text = transcript_text[:50000]
+    if not transcript_text.strip():
+        # Fallback to assembling from conversation messages (user turns)
+        msgs = (
+            await session.execute(
+                _select(ConversationMessage)
+                .where(ConversationMessage.interview_id == interview_id)
+                .order_by(ConversationMessage.sequence_number)
+            )
+        ).scalars().all()
+        if msgs:
+            transcript_text = "\n\n".join(
+                [m.content.strip() for m in msgs if m.role.value == "user" and m.content.strip()]
+            )
+    if not transcript_text.strip():
+        return
+
+    hr = await assess_hr_criteria(transcript_text)
+    fit = await assess_job_fit(job_desc, transcript_text, resume_text)
+
+    await merge_enrichment_into_analysis(session, interview_id, {
+        "hr_criteria": hr,
+        "job_fit": fit,
+    })
 
 

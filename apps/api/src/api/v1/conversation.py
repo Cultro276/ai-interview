@@ -83,6 +83,19 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
             try:
                 # Prefer overlap between resume keywords and requirement keywords
                 initial_q = None
+                # If resume exists, start with a short summary for the candidate
+                if resume_text:
+                    try:
+                        from src.services.nlp import summarize_candidate_profile
+                        summary = await asyncio.wait_for(summarize_candidate_profile(resume_text, job_desc), timeout=3.0)
+                        if summary:
+                            # Prepend a friendly summary; still ask for self-intro
+                            return NextQuestionResponse(
+                                question=(summary + " Kısaca kendinizi ve son deneyiminizi anlatır mısınız?").strip(),
+                                done=False,
+                            )
+                    except Exception:
+                        pass
                 if req_cfg and isinstance(req_cfg, dict):
                     reqs = (req_cfg.get("requirements") or [])
                     if resume_text:
@@ -108,18 +121,18 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 # Fall through to normal flow
                 pass
 
+        # Blend: take rule-based suggestion as a hint, but let LLM drive final when available
+        rb = None
         if req_cfg:
-            result = generate_next_question(history, req_cfg)
-        else:
-            # Prefer LLM chain (Gemini -> OpenAI); only if they fail use generic rule-based
-            try:
-                # Combine job and resume contexts for LLM
-                combined_ctx = ("Job Description:\n" + (job_desc or "")).strip()
-                if resume_text:
-                    combined_ctx += ("\n\nCandidate Resume (summary text):\n" + resume_text[:4000])
-                result = await asyncio.wait_for(generate_question_robust(history, combined_ctx), timeout=5.0)
-            except Exception:
-                result = generate_next_question(history, {"requirements": [], "dialog": {"max_questions": 7, "language": "tr"}})
+            rb = generate_next_question(history, req_cfg)
+        # Prefer LLM chain (Gemini -> OpenAI); only if they fail use rule-based
+        try:
+            combined_ctx = ("Job Description:\n" + (job_desc or "")).strip()
+            if resume_text:
+                combined_ctx += ("\n\nCandidate Resume (summary text):\n" + resume_text[:4000])
+            result = await asyncio.wait_for(generate_question_robust(history, combined_ctx), timeout=6.0)
+        except Exception:
+            result = rb or generate_next_question(history, {"requirements": [], "dialog": {"max_questions": 7, "language": "tr"}})
 
         # Optional LLM-based polish layer for more human-like tone
         if result and result.get("question"):

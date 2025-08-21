@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+import logging
 
 import boto3
 from botocore.client import Config
@@ -16,6 +17,9 @@ _client = boto3.client(
     aws_secret_access_key=settings.aws_secret_access_key,
     config=Config(signature_version="s3v4"),
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def generate_presigned_put_url(file_name: str, content_type: str, expires: int = 600, prefix: str = "uploads") -> dict:
@@ -37,7 +41,7 @@ def generate_presigned_put_url(file_name: str, content_type: str, expires: int =
         ExpiresIn=expires,
         HttpMethod="PUT",
     )
-    print(f"[S3 PRESIGN] generated key={key}")
+    logger.info("[S3 PRESIGN] generated key=%s", key)
     return {"url": url, "key": key} 
 
 
@@ -58,7 +62,7 @@ def generate_presigned_put_url_at_key(key: str, content_type: str, expires: int 
         ExpiresIn=expires,
         HttpMethod="PUT",
     )
-    print(f"[S3 PRESIGN:FIXED] key={key}")
+    logger.info("[S3 PRESIGN:FIXED] key=%s", key)
     return {"url": url, "key": key}
 
 
@@ -73,7 +77,7 @@ def put_object_bytes(key: str, body: bytes, content_type: str) -> str:
         ContentType=content_type or "application/octet-stream",
     )
     url = f"s3://{settings.s3_bucket}/{key}"
-    print(f"[S3 PUT] uploaded {len(body)} bytes to {url}")
+    logger.info("[S3 PUT] uploaded %d bytes to %s", len(body), url)
     return url
 
 

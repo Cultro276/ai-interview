@@ -236,7 +236,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
         }
 
         // Update history with user's answer
-        const newHistoryLocal = [...history, { role: "user", text: full }];
+        const newHistoryLocal: { role: "assistant" | "user"; text: string }[] = [...history, { role: "user", text: full }];
         setHistory(newHistoryLocal);
         setPhase("thinking");
 
@@ -258,11 +258,18 @@ export default function InterviewPage({ params }: { params: { token: string } })
               saveConversationMessage("system", "Interview completed");
             } else {
               const nextQ = (res.question || "").trim() || "Devam edelim: Son projende üstlendiğin rolü biraz açabilir misin?";
-              setQuestion(nextQ);
-              setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
-              setPhase("speaking");
-              // Save AI's next question
-              saveConversationMessage("assistant", nextQ);
+              // Avoid duplicate consecutive questions
+              setHistory((h) => {
+                const last = h[h.length - 1];
+                if (last && last.role === "assistant" && last.text.trim() === nextQ) {
+                  return h;
+                }
+                setQuestion(nextQ);
+                setPhase("speaking");
+                // Save AI's next question
+                saveConversationMessage("assistant", nextQ);
+                return [...h, { role: "assistant", text: nextQ }];
+              });
             }
           })
           .catch((err) => {
@@ -287,7 +294,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
         },
       );
 
-      // Safety net: if STT yields nothing (no events), force finalize after 12s
+      // Safety net: if STT yields nothing (no events), force finalize
       hardStopTimer = setTimeout(finalize, 12000);
     });
 

@@ -79,7 +79,8 @@ async def create_candidate(
     except Exception:
         pass
     # Always log the invite link for local testing
-    print(f"[INVITE LINK] http://localhost:3000/interview/{candidate.token}")
+    import logging
+    logging.getLogger(__name__).info("[INVITE LINK] /interview/%s", candidate.token)
     return candidate
 
 
@@ -117,7 +118,8 @@ async def resend_link(
     )
     await send_email_resend(cand.email, subj, body)
     # Always log the invite link for local testing
-    print(f"[INVITE LINK] {link}")
+    import logging
+    logging.getLogger(__name__).info("[INVITE LINK] %s", link)
     return {"detail":"sent"}
 
 

@@ -296,7 +296,8 @@ async def create_candidate_for_job(
         )
     except Exception:
         pass
-    print(f"[INVITE LINK] http://localhost:3000/interview/{candidate.token}")
+    import logging
+    logging.getLogger(__name__).info("[INVITE LINK] /interview/%s", candidate.token)
     return candidate
 
 

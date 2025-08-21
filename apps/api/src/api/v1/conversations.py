@@ -86,6 +86,19 @@ async def create_message_public(
     if not interview or interview.candidate_id != cand.id:
         raise HTTPException(status_code=404, detail="Interview not found")
 
+    # Deduplicate by (interview_id, sequence_number) to avoid StrictMode double posts
+    existing = (
+        await session.execute(
+            select(ConversationMessage)
+            .where(
+                ConversationMessage.interview_id == message_in.interview_id,
+                ConversationMessage.sequence_number == message_in.sequence_number,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+
     payload = {
         "interview_id": message_in.interview_id,
         "role": message_in.role,

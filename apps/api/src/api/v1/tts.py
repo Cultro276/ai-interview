@@ -19,6 +19,13 @@ class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=800)
     lang: str = Field(default="tr")
     provider: str | None = Field(default=None, description="Force provider: 'elevenlabs' | 'azure' | 'gtts'")
+    # Optional style controls
+    stability: float | None = Field(default=None, ge=0, le=1)
+    similarity_boost: float | None = Field(default=None, ge=0, le=1)
+    style: float | None = Field(default=None, ge=0, le=1, description="ElevenLabs style strength")
+    use_speaker_boost: bool | None = Field(default=None)
+    # Experimental: allow inline hints like [pause], [breath]; we will sanitize for providers
+    allow_inline_hints: bool | None = Field(default=False)
 
 
 @router.post("/speak")
@@ -37,8 +44,10 @@ async def tts_speak(req: TTSRequest):
             # S3 cache by hash of voice+lang+text
             try:
                 from src.core.s3 import object_exists, get_object_bytes, put_object_bytes
-                digest = hashlib.sha256((settings.elevenlabs_voice_id + "::" + (req.lang or "tr") + "::" + req.text).encode("utf-8")).hexdigest()
-                key = f"tts/elevenlabs/{settings.elevenlabs_voice_id}/{req.lang or 'tr'}/{digest}.mp3"
+                voice_id = settings.elevenlabs_voice_id or "default"
+                lang = req.lang or "tr"
+                digest = hashlib.sha256((voice_id + "::" + lang + "::" + req.text).encode("utf-8")).hexdigest()
+                key = f"tts/elevenlabs/{voice_id}/{lang}/{digest}.mp3"
                 if settings.s3_bucket and object_exists(key):
                     body, _ = get_object_bytes(key)
                     return StreamingResponse(BytesIO(body), media_type="audio/mpeg", headers={
@@ -49,13 +58,24 @@ async def tts_speak(req: TTSRequest):
             except Exception:
                 key = None
 
+            # Optional inline hint sanitation (basic). ElevenLabs does not officially support [whisper] tags
+            text = req.text
+            if not req.allow_inline_hints:
+                import re as _re
+                text = _re.sub(r"\[(whisper|pause|breath)\]", "", text, flags=_re.I)
+            payload = {
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": req.stability if req.stability is not None else 0.4,
+                    "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.8,
+                    "style": req.style if req.style is not None else 0.5,
+                    "use_speaker_boost": True if req.use_speaker_boost is None else req.use_speaker_boost,
+                },
+            }
             r = requests.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{settings.elevenlabs_voice_id}",
-                json={
-                    "text": req.text,
-                    "model_id": "eleven_multilingual_v2",
-                    "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "style": 0.5, "use_speaker_boost": True},
-                },
+                json=payload,
                 headers={"xi-api-key": settings.elevenlabs_api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
                 timeout=10,
             )
@@ -64,7 +84,8 @@ async def tts_speak(req: TTSRequest):
             # Save to S3 cache
             try:
                 if settings.s3_bucket and key:
-                    put_object_bytes(key, r.content, "audio/mpeg")
+                    from src.core.s3 import put_object_bytes as _put
+                    _put(key, r.content, "audio/mpeg")
             except Exception:
                 pass
             return StreamingResponse(BytesIO(r.content), media_type="audio/mpeg", headers={
@@ -132,13 +153,23 @@ async def tts_speak(req: TTSRequest):
                 key = None
 
             # v1 text-to-speech
+            text = req.text
+            if not req.allow_inline_hints:
+                import re as _re
+                text = _re.sub(r"\[(whisper|pause|breath)\]", "", text, flags=_re.I)
+            payload = {
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": req.stability if req.stability is not None else 0.4,
+                    "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.8,
+                    "style": req.style if req.style is not None else 0.5,
+                    "use_speaker_boost": True if req.use_speaker_boost is None else req.use_speaker_boost,
+                },
+            }
             r = requests.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{voice}",
-                json={
-                    "text": req.text,
-                    "model_id": "eleven_multilingual_v2",
-                    "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "style": 0.5, "use_speaker_boost": True},
-                },
+                json=payload,
                 headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
                 timeout=10,
             )
@@ -146,7 +177,8 @@ async def tts_speak(req: TTSRequest):
             data = r.content
             try:
                 if settings.s3_bucket and key:
-                    put_object_bytes(key, data, "audio/mpeg")
+                    from src.core.s3 import put_object_bytes as _put
+                    _put(key, data, "audio/mpeg")
             except Exception:
                 pass
             return StreamingResponse(BytesIO(data), media_type="audio/mpeg", headers={
@@ -223,9 +255,11 @@ async def tts_speak(req: TTSRequest):
                 })
             # Generate and store
             buf = BytesIO()
-            gTTS(text=req.text, lang=req.lang, slow=False).write_to_fp(buf)
+            from gtts import gTTS as _gTTS  # type: ignore
+            _gTTS(text=req.text, lang=req.lang, slow=False).write_to_fp(buf)
             data = buf.getvalue()
-            put_object_bytes(key, data, "audio/mpeg")
+            from src.core.s3 import put_object_bytes as _put
+            _put(key, data, "audio/mpeg")
             return StreamingResponse(BytesIO(data), media_type="audio/mpeg", headers={
                 "Content-Disposition": "inline; filename=tts.mp3",
                 "Cache-Control": "public, max-age=31536000",
@@ -233,7 +267,8 @@ async def tts_speak(req: TTSRequest):
 
         # Fallback: in-memory generation without cache
         buf = BytesIO()
-        gTTS(text=req.text, lang=req.lang, slow=False).write_to_fp(buf)
+        from gtts import gTTS as _gTTS  # type: ignore
+        _gTTS(text=req.text, lang=req.lang, slow=False).write_to_fp(buf)
         buf.seek(0)
         headers = {
             "Content-Disposition": "inline; filename=tts.mp3",

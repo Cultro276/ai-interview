@@ -16,11 +16,14 @@ from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUp
 from src.core.s3 import generate_presigned_get_url
 from urllib.parse import urlparse
 from src.services.analysis import generate_rule_based_analysis
+from src.services.analysis import merge_enrichment_into_analysis
 from src.core.metrics import collector, Timer
 from pydantic import BaseModel
 import httpx
 import asyncio
 from src.services.stt import transcribe_with_whisper
+from src.services.nlp import extract_soft_skills
+from src.services.queue import enqueue_process_interview
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -120,20 +123,50 @@ async def upload_transcript(
     session: AsyncSession = Depends(get_session),
     request: Request = None,
 ):
-    _in_memory_transcripts[int_id] = payload.text or ""
     interview = (
         await session.execute(select(Interview).where(Interview.id == int_id))
     ).scalar_one_or_none()
-    if interview:
-        await _maybe_complete_interview(session, interview, request)
-    return {"interview_id": int_id, "length": len(_in_memory_transcripts[int_id])}
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    # Persist transcript on interview
+    interview.transcript_text = payload.text or ""
+    interview.transcript_provider = payload.provider or "manual"
+    await session.commit()
+    await session.refresh(interview)
+    # Backward-compat for any in-memory consumers
+    _in_memory_transcripts[int_id] = interview.transcript_text or ""
+    await _maybe_complete_interview(session, interview, request)
+    return {"interview_id": int_id, "length": len(interview.transcript_text or "")}
 
 
 @router.get("/{int_id}/transcript")
 async def get_transcript(int_id: int):
-    if int_id not in _in_memory_transcripts:
-        raise HTTPException(status_code=404, detail="Transcript not found")
-    return {"interview_id": int_id, "text": _in_memory_transcripts[int_id]}
+    # Prefer DB value; fallback to legacy in-memory; if still missing, assemble from conversation messages
+    from src.db.session import async_session_factory
+    async with async_session_factory() as session:
+        interview = (
+            await session.execute(select(Interview).where(Interview.id == int_id))
+        ).scalar_one_or_none()
+        if interview and (interview.transcript_text and interview.transcript_text.strip()):
+            return {"interview_id": int_id, "text": interview.transcript_text}
+
+        # Assemble a minimal transcript from conversation messages (user answers only)
+        msgs = (
+            await session.execute(
+                select(ConversationMessage)
+                .where(ConversationMessage.interview_id == int_id)
+                .order_by(ConversationMessage.sequence_number)
+            )
+        ).scalars().all()
+        if msgs:
+            user_lines = [m.content.strip() for m in msgs if m.role.value == "user" and m.content.strip()]
+            if user_lines:
+                text = "\n\n".join(user_lines)
+                return {"interview_id": int_id, "text": text}
+
+    if int_id in _in_memory_transcripts:
+        return {"interview_id": int_id, "text": _in_memory_transcripts[int_id]}
+    raise HTTPException(status_code=404, detail="Transcript not found")
 
 
 @router.get("/", response_model=List[InterviewRead])
@@ -271,7 +304,7 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
 
     # Background STT: if transcript missing and audio exists, fetch and transcribe
     try:
-        has_transcript = bool(_in_memory_transcripts.get(interview.id))
+        has_transcript = bool(getattr(interview, "transcript_text", None)) or bool(_in_memory_transcripts.get(interview.id))
         if (not has_transcript) and interview.audio_url:
             def _to_key(url: str | None) -> str | None:
                 if not url:
@@ -286,21 +319,8 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
 
             key = _to_key(interview.audio_url)
             if key:
-                presigned_get = generate_presigned_get_url(key, expires=600)
-
-                async def _bg_stt():
-                    try:
-                        async with httpx.AsyncClient(timeout=60.0) as client:
-                            resp = await client.get(presigned_get)
-                            resp.raise_for_status()
-                            text = await transcribe_with_whisper(resp.content, resp.headers.get("Content-Type") or "audio/webm")
-                            if text:
-                                _in_memory_transcripts[interview.id] = text
-                                await _maybe_complete_interview(session, interview, request)
-                    except Exception:
-                        pass
-
-                asyncio.create_task(_bg_stt())
+                # Prefer queue-based processing for durability
+                enqueue_process_interview(interview.id)
     except Exception:
         pass
 
@@ -316,7 +336,8 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
             with Timer() as t:
                 await generate_rule_based_analysis(session, interview.id)
             collector.record_analysis_ms(t.ms)
-    except Exception as e:
-        # Non-blocking
-        print("[analysis] generation failed:", e)
+    except Exception:
+        # Non-blocking; log only
+        import logging
+        logging.getLogger(__name__).exception("[analysis] generation failed")
     return interview 

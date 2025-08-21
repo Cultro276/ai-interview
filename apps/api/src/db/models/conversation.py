@@ -1,7 +1,7 @@
 import datetime as dt
 from enum import Enum
 
-from sqlalchemy import String, Text, func, ForeignKey, Enum as SQLEnum
+from sqlalchemy import String, Text, func, ForeignKey, Enum as SQLEnum, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -15,6 +15,10 @@ class MessageRole(str, Enum):
 
 class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
+    __table_args__ = (
+        UniqueConstraint("interview_id", "sequence_number", name="uq_convo_interview_seq"),
+        Index("ix_convo_interview_seq", "interview_id", "sequence_number"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False)

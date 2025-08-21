@@ -1,6 +1,6 @@
 import datetime as dt
 
-from sqlalchemy import ForeignKey, String, func, DateTime
+from sqlalchemy import ForeignKey, String, func, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -15,6 +15,9 @@ class Interview(Base):
     status: Mapped[str] = mapped_column(String(50), default="pending")
     audio_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     video_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Persisted transcript fields (replace prior in-memory usage)
+    transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
