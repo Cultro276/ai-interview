@@ -28,6 +28,8 @@ class TTSRequest(BaseModel):
     use_speaker_boost: bool | None = Field(default=None)
     # Experimental: allow inline hints like [pause], [breath]; we will sanitize for providers
     allow_inline_hints: bool | None = Field(default=False)
+    # Preset: if set to 'corporate', enforce neutral/professional tone
+    preset: str | None = Field(default=None, description="'corporate' for neutral, professional tone")
 
 
 @router.post("/speak")
@@ -37,6 +39,30 @@ async def tts_speak(req: TTSRequest):
     def _http_error(msg: str, status: int = 502):
         from fastapi import HTTPException
         raise HTTPException(status_code=status, detail=msg)
+
+    def _apply_preset_voice_settings(_defaults: dict) -> dict:
+        if (req.preset or "").lower() == "corporate":
+            return {
+                "stability": req.stability if req.stability is not None else 0.7,
+                "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.65,
+                "style": req.style if req.style is not None else 0.2,
+                "use_speaker_boost": True if req.use_speaker_boost is None else req.use_speaker_boost,
+            }
+        return _defaults
+
+    def _azure_ssml(text: str) -> str:
+        rate = "-8%" if (req.preset or "").lower() == "corporate" else "-5%"
+        pitch = "+0%" if (req.preset or "").lower() == "corporate" else "+1%"
+        voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
+        return f"""
+<speak version='1.0' xml:lang='{req.lang}'>
+  <voice name='{voice}'>
+    <prosody rate='{rate}' pitch='{pitch}'>
+      {text}
+    </prosody>
+  </voice>
+</speak>
+""".strip()
 
     if req.provider == "elevenlabs":
         if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
@@ -67,12 +93,12 @@ async def tts_speak(req: TTSRequest):
             payload = {
                 "text": text,
                 "model_id": "eleven_multilingual_v2",
-                "voice_settings": {
-                    "stability": req.stability if req.stability is not None else 0.4,
-                    "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.8,
-                    "style": req.style if req.style is not None else 0.5,
+                "voice_settings": _apply_preset_voice_settings({
+                    "stability": req.stability if req.stability is not None else 0.6,
+                    "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.7,
+                    "style": req.style if req.style is not None else 0.3,
                     "use_speaker_boost": True if req.use_speaker_boost is None else req.use_speaker_boost,
-                },
+                }),
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.post(
@@ -106,16 +132,7 @@ async def tts_speak(req: TTSRequest):
                 tok = await client.post(token_url, headers={"Ocp-Apim-Subscription-Key": str(settings.azure_speech_key or "")})
                 tok.raise_for_status()
                 access_token = tok.text
-            voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
-            ssml = f"""
-<speak version='1.0' xml:lang='{req.lang}'>
-  <voice name='{voice}'>
-    <prosody rate='-12%' pitch='+4%'>
-      {req.text}
-    </prosody>
-  </voice>
-</speak>
-""".strip()
+            ssml = _azure_ssml(req.text)
             synth_url = f"https://{settings.azure_speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.post(
@@ -166,9 +183,9 @@ async def tts_speak(req: TTSRequest):
                 "text": text,
                 "model_id": "eleven_multilingual_v2",
                 "voice_settings": {
-                    "stability": req.stability if req.stability is not None else 0.4,
-                    "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.8,
-                    "style": req.style if req.style is not None else 0.5,
+                    "stability": req.stability if req.stability is not None else 0.6,
+                    "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.7,
+                    "style": req.style if req.style is not None else 0.3,
                     "use_speaker_boost": True if req.use_speaker_boost is None else req.use_speaker_boost,
                 },
             }
@@ -204,16 +221,7 @@ async def tts_speak(req: TTSRequest):
                 access_token = tok.text
 
             # SSML with TR voice (e.g., "tr-TR-AhmetNeural" or "tr-TR-EmelNeural")
-            voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
-            ssml = f"""
-<speak version='1.0' xml:lang='{req.lang}'>
-  <voice name='{voice}'>
-    <prosody rate='-12%' pitch='+4%'>
-      {req.text}
-    </prosody>
-  </voice>
-</speak>
-""".strip()
+            ssml = _azure_ssml(req.text)
 
             synth_url = f"https://{settings.azure_speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -232,7 +240,9 @@ async def tts_speak(req: TTSRequest):
             if settings.s3_bucket:
                 from src.core.s3 import put_object_bytes
                 digest = hashlib.sha256((req.lang + "::" + req.text).encode("utf-8")).hexdigest()
-                key = f"tts/{req.lang}/{voice}/{digest}.mp3"
+                # voice variable is inside _azure_ssml; use env voice for cache path
+                cache_voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
+                key = f"tts/{req.lang}/{cache_voice}/{digest}.mp3"
                 await to_thread.run_sync(put_object_bytes, key, data, "audio/mpeg")
             return StreamingResponse(BytesIO(data), media_type="audio/mpeg", headers={
                 "Content-Disposition": "inline; filename=tts.mp3",
@@ -306,9 +316,9 @@ async def tts_stream_speak(req: TTSRequest):
         "text": text,
         "model_id": "eleven_multilingual_v2",
         "voice_settings": {
-            "stability": req.stability if req.stability is not None else 0.4,
-            "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.8,
-            "style": req.style if req.style is not None else 0.5,
+            "stability": req.stability if req.stability is not None else 0.6,
+            "similarity_boost": req.similarity_boost if req.similarity_boost is not None else 0.7,
+            "style": req.style if req.style is not None else 0.3,
             "use_speaker_boost": True if req.use_speaker_boost is None else req.use_speaker_boost,
         },
     }

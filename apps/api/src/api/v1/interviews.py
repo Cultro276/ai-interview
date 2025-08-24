@@ -141,7 +141,7 @@ async def upload_transcript(
 
 @router.get("/{int_id}/transcript")
 async def get_transcript(int_id: int):
-    # Prefer DB value; fallback to legacy in-memory; if still missing, assemble from conversation messages
+    # Prefer DB value; fallback to in-memory; if still missing, assemble from full conversation messages (assistant+user)
     from src.db.session import async_session_factory
     async with async_session_factory() as session:
         interview = (
@@ -150,7 +150,7 @@ async def get_transcript(int_id: int):
         if interview and (interview.transcript_text and interview.transcript_text.strip()):
             return {"interview_id": int_id, "text": interview.transcript_text}
 
-        # Assemble a minimal transcript from conversation messages (user answers only)
+        # Assemble a full transcript from conversation messages (assistant + user)
         msgs = (
             await session.execute(
                 select(ConversationMessage)
@@ -159,9 +159,11 @@ async def get_transcript(int_id: int):
             )
         ).scalars().all()
         if msgs:
-            user_lines = [m.content.strip() for m in msgs if m.role.value == "user" and m.content.strip()]
-            if user_lines:
-                text = "\n\n".join(user_lines)
+            def _prefix(m):
+                return ("Interviewer" if m.role.value == "assistant" else ("Candidate" if m.role.value == "user" else "System"))
+            lines = [f"{_prefix(m)}: {m.content.strip()}" for m in msgs if (m.content or "").strip()]
+            if lines:
+                text = "\n\n".join(lines)
                 return {"interview_id": int_id, "text": text}
 
     if int_id in _in_memory_transcripts:

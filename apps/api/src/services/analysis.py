@@ -259,7 +259,7 @@ async def enrich_with_job_and_hr(
     if len(transcript_text) > 50000:
         transcript_text = transcript_text[:50000]
     if not transcript_text.strip():
-        # Fallback to assembling from conversation messages (user turns)
+        # Fallback to assembling from conversation messages (assistant + user)
         msgs = (
             await session.execute(
                 _select(ConversationMessage)
@@ -268,8 +268,10 @@ async def enrich_with_job_and_hr(
             )
         ).scalars().all()
         if msgs:
+            def _prefix(m):
+                return ("Interviewer" if m.role.value == "assistant" else ("Candidate" if m.role.value == "user" else "System"))
             transcript_text = "\n\n".join(
-                [m.content.strip() for m in msgs if m.role.value == "user" and m.content.strip()]
+                [f"{_prefix(m)}: {m.content.strip()}" for m in msgs if (m.content or "").strip()]
             )
     if not transcript_text.strip():
         return
