@@ -16,7 +16,7 @@ from src.db.models.candidate import Candidate
 from src.db.models.interview import Interview
 from src.db.models.candidate_profile import CandidateProfile
 from src.db.models.conversation import InterviewAnalysis
-from src.core.s3 import put_object_bytes, generate_presigned_put_url_at_key
+from src.core.s3 import put_object_bytes, generate_presigned_put_url_at_key, generate_presigned_get_url
 from fastapi import Body
 from datetime import datetime, timedelta
 import re
@@ -219,6 +219,46 @@ async def create_candidate_for_job(
     # Link to job via Interview
     interview = Interview(job_id=job.id, candidate_id=candidate.id, status="pending")
     session.add(interview)
+    await session.flush()
+
+    # If candidate has an uploaded resume URL, parse it now so LLM has context immediately
+    try:
+        if candidate.resume_url and candidate.resume_url.strip():
+            def _to_key(url: str) -> str | None:
+                if url.startswith("s3://"):
+                    from urllib.parse import urlparse as _up
+                    p = _up(url)
+                    return p.path.lstrip("/")
+                try:
+                    from urllib.parse import urlparse as _up
+                    p = _up(url)
+                    return p.path.lstrip("/")
+                except Exception:
+                    return None
+            key = _to_key(candidate.resume_url)
+            if key:
+                url = generate_presigned_get_url(key, expires=120)
+                import httpx
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    data = resp.content
+                    from src.services.nlp import parse_resume_bytes
+                    parsed = parse_resume_bytes(data, resp.headers.get("Content-Type"), candidate.resume_url)
+                    if parsed:
+                        prof = (
+                            await session.execute(
+                                select(CandidateProfile).where(CandidateProfile.candidate_id == candidate.id)
+                            )
+                        ).scalar_one_or_none()
+                        if prof:
+                            prof.resume_text = parsed[:100000]
+                        else:
+                            session.add(CandidateProfile(candidate_id=candidate.id, resume_text=parsed[:100000]))
+                        await session.flush()
+    except Exception:
+        pass
+
     await session.commit()
     await session.refresh(candidate)
 

@@ -117,17 +117,42 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
 
         # Blend: take rule-based suggestion as a hint, but let LLM drive final when available
         rb = None
-        # Prefer LLM chain (Gemini -> OpenAI); only if they fail use rule-based
+        # Prefer LLM chain (Gemini -> OpenAI); if they fail, craft a human-like heuristic follow-up
         try:
             combined_ctx = ("Job Description:\n" + (job_desc or "")).strip()
             if resume_text:
                 combined_ctx += ("\n\nCandidate Resume (summary text):\n" + resume_text[:4000])
             # Fixed max questions; job-level manual dialog settings removed
             max_q = 7
-            result = await asyncio.wait_for(generate_question_robust(history, combined_ctx, max_questions=max_q), timeout=6.0)
+            # Give LLM a bit more time to avoid falling back to canned rules
+            result = await asyncio.wait_for(
+                generate_question_robust(history, combined_ctx, max_questions=max_q), timeout=12.0
+            )
         except Exception:
-            # Fallback: ask a generic probing question
-            result = {"question": "Bu deneyiminizde üstlendiğiniz sorumlulukları biraz açar mısınız?", "done": False}
+            # Heuristic HR-style follow-up using last user text
+            try:
+                last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
+                # Prefer targeting a concrete resume line when available
+                q = None
+                if resume_text:
+                    try:
+                        from src.services.nlp import extract_resume_spotlights, make_targeted_question_from_spotlight
+                        spots = extract_resume_spotlights(resume_text)
+                        if spots:
+                            q = make_targeted_question_from_spotlight(spots[0])
+                    except Exception:
+                        q = None
+                if not q:
+                    from src.services.dialog import extract_keywords
+                    kws = extract_keywords(last_user_text) if last_user_text else []
+                    if kws:
+                        key = kws[0]
+                        q = f"{key} ile ilgili somut bir örnek ve ölçülebilir sonucunuzu paylaşır mısınız?"
+                    else:
+                        q = "Bu deneyiminizde tam olarak nasıl bir rol üstlendiniz ve sonuç ne oldu?"
+                result = {"question": q, "done": False}
+            except Exception:
+                result = {"question": "Kısa bir örnekle katkınızı ve sonucu anlatır mısınız?", "done": False}
 
         # Optional LLM-based polish layer for more human-like tone
         if result and result.get("question"):

@@ -142,3 +142,125 @@ async def opinion_on_candidate(job_desc: str, transcript_text: str, resume_text:
 
 
 
+# --- CV parsing helpers (bytes -> text) and spotlights ---
+
+def _read_pdf_bytes(data: bytes) -> str:
+    try:
+        from pdfminer.high_level import extract_text_to_fp  # type: ignore
+        from io import BytesIO, StringIO
+        input_fp = BytesIO(data)
+        output = StringIO()
+        extract_text_to_fp(input_fp, output)
+        return output.getvalue()
+    except Exception:
+        return ""
+
+
+def _read_docx_bytes(data: bytes) -> str:
+    try:
+        from io import BytesIO
+        import docx  # type: ignore
+        doc = docx.Document(BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs if p.text)
+    except Exception:
+        return ""
+
+
+def parse_resume_bytes(data: bytes, content_type: str | None, file_name: str | None = None) -> str:
+    ct = (content_type or "").lower().strip()
+    name = (file_name or "").lower()
+    text = ""
+    if "/pdf" in ct or name.endswith(".pdf"):
+        text = _read_pdf_bytes(data)
+    elif name.endswith(".docx") or "officedocument" in ct:
+        text = _read_docx_bytes(data)
+    else:
+        try:
+            text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            text = ""
+    # Normalize whitespace
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+_TECH_TOKENS = {
+    "python", "java", "javascript", "typescript", "react", "node", "next.js", "docker", "kubernetes",
+    "aws", "gcp", "azure", "postgres", "mysql", "redis", "kafka", "rabbitmq", "microservice",
+    "fastapi", "django", "flask", "spring", "spring boot", ".net", "golang", "kotlin", "swift",
+}
+
+
+def extract_resume_spotlights(resume_text: str, max_items: int = 3) -> list[str]:
+    """Pick a few concrete lines from the resume that likely contain project/tech context.
+
+    Heuristics: choose lines between 40-220 chars containing any tech token, keep first N unique.
+    """
+    if not resume_text:
+        return []
+    lines = [ln.strip() for ln in resume_text.splitlines() if ln.strip()]
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for ln in lines:
+        low = ln.lower()
+        if 40 <= len(ln) <= 220 and any(tok in low for tok in _TECH_TOKENS):
+            key = low[:120]
+            if key not in seen:
+                seen.add(key)
+                chosen.append(ln)
+                if len(chosen) >= max_items:
+                    break
+    # fallback: if nothing matched, take the longest informative line
+    if not chosen and lines:
+        chosen = sorted(lines, key=lambda s: len(s), reverse=True)[:1]
+    return chosen
+
+
+def make_targeted_question_from_spotlight(line: str) -> str:
+    frag = line.strip()
+    if len(frag) > 120:
+        frag = frag[:117] + "…"
+    return (
+        f"Özgeçmişinizde '{frag}' üzerinde çalıştığınızı görüyorum. "
+        "Bu çalışmada hangi sorunu çözdünüz, hangi teknolojileri nasıl kullandınız ve ölçülebilir sonuç ne oldu?"
+    )
+
+
+# --- CV parsing helpers (bytes -> text) ---
+
+def _read_pdf_bytes(data: bytes) -> str:
+    try:
+        from pdfminer.high_level import extract_text_to_fp  # type: ignore
+        from io import BytesIO, StringIO
+        input_fp = BytesIO(data)
+        output = StringIO()
+        extract_text_to_fp(input_fp, output)
+        return output.getvalue()
+    except Exception:
+        return ""
+
+
+def _read_docx_bytes(data: bytes) -> str:
+    try:
+        from io import BytesIO
+        import docx  # type: ignore
+        doc = docx.Document(BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs if p.text)
+    except Exception:
+        return ""
+
+
+def parse_resume_bytes(data: bytes, content_type: str | None, file_name: str | None = None) -> str:
+    ct = (content_type or "").lower().strip()
+    name = (file_name or "").lower()
+    text = ""
+    if "/pdf" in ct or name.endswith(".pdf"):
+        text = _read_pdf_bytes(data)
+    elif name.endswith(".docx") or "officedocument" in ct:
+        text = _read_docx_bytes(data)
+    else:
+        try:
+            text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            text = ""
+    # Normalize whitespace
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())

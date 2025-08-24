@@ -109,7 +109,7 @@ async def create_message_public(
                 ConversationMessage.sequence_number == message_in.sequence_number,
             )
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if existing:
         return existing
 
@@ -122,7 +122,7 @@ async def create_message_public(
                 .where(ConversationMessage.interview_id == message_in.interview_id)
                 .order_by(ConversationMessage.sequence_number.desc())
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if last and last.role == message_in.role and last.content.strip() == message_in.content.strip():
             return last
     except Exception:

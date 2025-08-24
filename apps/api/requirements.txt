@@ -18,5 +18,5 @@ uvloop==0.20.0
 azure-cognitiveservices-speech==1.35.0
 redis==5.0.7
 slowapi==0.1.9
-pytest==8.3.2
-pytest-asyncio==0.24.0
+pdfminer.six==20231228
+python-docx==0.8.11

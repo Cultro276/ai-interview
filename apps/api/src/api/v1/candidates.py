@@ -12,6 +12,11 @@ from src.auth import current_active_user
 from src.db.models.user import User
 from src.api.v1.schemas import CandidateCreate, CandidateRead, CandidateUpdate
 from src.core.s3 import generate_presigned_get_url
+from src.db.models.candidate_profile import CandidateProfile
+from src.db.models.conversation import ConversationMessage
+from src.services.nlp import parse_resume_bytes
+from sqlalchemy import select as _select
+import httpx
 from src.core.mail import send_email_resend
 from urllib.parse import urlparse
 from src.db.models.candidate import Candidate
@@ -229,3 +234,90 @@ async def delete_candidate(
         raise HTTPException(status_code=404, detail="Candidate not found")
     await session.delete(cand)
     await session.commit() 
+
+
+# --- Parse/Backfill resume text for existing candidate ---
+
+
+@router.post("/{cand_id}/parse-resume", response_model=CandidateRead)
+async def parse_resume_now(
+    cand_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    cand = (
+        await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))
+    ).scalar_one_or_none()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # Ensure a profile row exists
+    prof = (
+        await session.execute(_select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
+    ).scalar_one_or_none()
+    if not prof:
+        prof = CandidateProfile(candidate_id=cand.id)
+        session.add(prof)
+        await session.flush()
+
+    parsed_text: str | None = None
+
+    # 1) If resume_url exists, fetch via presigned GET and parse
+    try:
+        if cand.resume_url and cand.resume_url.strip():
+            def _to_key(url: str) -> str | None:
+                if url.startswith("s3://"):
+                    from urllib.parse import urlparse as _up
+                    p = _up(url)
+                    return p.path.lstrip("/")
+                try:
+                    from urllib.parse import urlparse as _up
+                    p = _up(url)
+                    return p.path.lstrip("/")
+                except Exception:
+                    return None
+            key = _to_key(cand.resume_url)
+            if key:
+                presigned = generate_presigned_get_url(key, expires=180)
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(presigned)
+                    resp.raise_for_status()
+                    parsed_text = parse_resume_bytes(resp.content, resp.headers.get("Content-Type"), cand.resume_url)
+    except Exception:
+        parsed_text = None
+
+    # 2) Else, if raw file is stored in DB (legacy path), parse from there
+    if not parsed_text and getattr(prof, "resume_file", None):
+        try:
+            parsed_text = parse_resume_bytes(prof.resume_file or b"", prof.content_type, prof.file_name)
+        except Exception:
+            parsed_text = None
+
+    # 3) Fallback: synthesize minimal profile from existing conversation answers
+    if not parsed_text:
+        try:
+            msgs = (
+                await session.execute(
+                    _select(ConversationMessage)
+                    .where(ConversationMessage.interview_id.in_(
+                        _select(Interview.id).where(Interview.candidate_id == cand.id)
+                    ))
+                    .order_by(ConversationMessage.sequence_number)
+                )
+            ).scalars().all()
+        except Exception:
+            msgs = []
+        user_lines = [m.content.strip() for m in msgs if getattr(m, "role", None) and str(m.role) == "MessageRole.USER" and m.content and m.content.strip()]
+        if user_lines:
+            parsed_text = ("Önceden verilen yanıtlar baz alınarak hazırlanmış özet CV metni:\n\n" + "\n".join(user_lines))[:100000]
+
+    # Save if we have something
+    if parsed_text:
+        prof.resume_text = parsed_text
+        await session.commit()
+        await session.refresh(cand)
+    else:
+        # No data available
+        await session.commit()
+
+    return cand
