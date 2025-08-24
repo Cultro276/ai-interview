@@ -32,9 +32,11 @@ async def stt_transcribe_file(interview_id: int, file: UploadFile = File(...), s
         await upload_transcript(interview_id, payload, session)
         return {"interview_id": interview_id, "length": len(text), "text": text}
     except HTTPException:
-        raise
+        # Always return 200 with empty transcript for short/silent clips
+        return {"interview_id": interview_id, "length": 0, "text": ""}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Do not break flow on STT failures; return empty
+        return {"interview_id": interview_id, "length": 0, "text": ""}
 
 
 @router.websocket("/stream/{interview_id}")
@@ -66,13 +68,11 @@ async def stt_stream(websocket: WebSocket, interview_id: int):
         # Build Azure Speech recognizer with compressed webm/opus stream
         speech_config = speechsdk.SpeechConfig(subscription=settings.azure_speech_key, region=settings.azure_speech_region)
         speech_config.speech_recognition_language = "tr-TR"
-        from azure.cognitiveservices.speech.audio import (
-            AudioStreamFormat,
-            AudioStreamContainerFormat,
-            PushAudioInputStream,
+        # Use audio classes via the speechsdk namespace to avoid submodule import issues
+        stream_format = speechsdk.audio.AudioStreamFormat(
+            compressed_stream_format=speechsdk.audio.AudioStreamContainerFormat.WEBM_OPUS
         )
-        stream_format = AudioStreamFormat(compressed_stream_format=AudioStreamContainerFormat.WEBM_OPUS)
-        push_stream = PushAudioInputStream(stream_format)
+        push_stream = speechsdk.audio.PushAudioInputStream(stream_format)
         audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
 

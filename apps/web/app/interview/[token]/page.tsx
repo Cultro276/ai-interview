@@ -46,6 +46,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
   // Conversation tracking
   const [interviewId, setInterviewId] = useState<number | null>(null);
   const [interviewJobId, setInterviewJobId] = useState<number | null>(null);
+  const preparedFirstQuestionRef = useRef<string | null>(null);
   const sequenceNumberRef = useRef<number>(0);
   const audioStartIndexRef = useRef<number>(0);
   // Dedicated per-answer audio recorder to produce a single valid container
@@ -122,9 +123,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const initializeInterview = async () => {
     try {
       // Fetch existing interview for this candidate by token (created by admin flow)
-      const interview = await apiFetch<{ id: number; job_id: number }>(`/api/v1/interviews/by-token/${token}`);
+      const interview = await apiFetch<{ id: number; job_id: number; prepared_first_question?: string | null }>(`/api/v1/interviews/by-token/${token}`);
       setInterviewId(interview.id);
       setInterviewJobId(interview.job_id);
+      preparedFirstQuestionRef.current = (interview as any).prepared_first_question || null;
       sequenceNumberRef.current = 0;
       // Save system message to indicate interview started
       const systemMessage = `Interview started at ${new Date().toISOString()}`;
@@ -192,11 +194,20 @@ export default function InterviewPage({ params }: { params: { token: string } })
     navigator.permissions.query({ name: "microphone" as PermissionName }).then((p) => setMicPerm(p.state));
   }, [status]);
 
-  // Schedule first question 2s after interview starts (fetch from backend using job context)
+  // Schedule first question: use prepared question if available; otherwise fetch
   useEffect(() => {
     if (status !== "interview" || question !== null) return;
-    const id = setTimeout(() => {
-      // Ask backend for the first question using empty history
+    const id = setTimeout(async () => {
+      const prepared = preparedFirstQuestionRef.current;
+      if (prepared && prepared.trim()) {
+        const q = prepared.trim();
+        setQuestion(q);
+        setHistory((h) => [...h, { role: "assistant", text: q }]);
+        setPhase("speaking");
+        saveConversationMessage("assistant", q);
+        return;
+      }
+      // Fallback to API-generated first question
       const initialHistory: { role: "assistant" | "user"; text: string }[] = [];
       apiFetch<{ question: string | null; done: boolean }>("/api/v1/interview/next-question", {
         method: "POST",
@@ -207,7 +218,6 @@ export default function InterviewPage({ params }: { params: { token: string } })
           setQuestion(firstQuestion);
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
           setPhase("speaking");
-          // Save first question to database
           saveConversationMessage("assistant", firstQuestion);
         })
         .catch(() => {
@@ -217,7 +227,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           setPhase("speaking");
           saveConversationMessage("assistant", firstQuestion);
         });
-    }, 2000);
+    }, 1500);
     return () => clearTimeout(id);
   }, [status, question, interviewId]);
 
@@ -239,9 +249,13 @@ export default function InterviewPage({ params }: { params: { token: string } })
       } catch {}
     };
     const handleVisibilityChange = () => {
-      if (document.hidden) sendSignal("tab_hidden");
+      if (document.hidden) {
+        sendSignal("tab_hidden");
+      }
     };
-    const handleWindowBlur = () => sendSignal("focus_lost");
+    const handleWindowBlur = () => {
+      sendSignal("focus_lost");
+    };
 
     // Force ElevenLabs when available by adding provider in query body
     playTTS(question, () => {
@@ -260,8 +274,11 @@ export default function InterviewPage({ params }: { params: { token: string } })
             "audio/ogg;codecs=opus",
             "audio/mp4",
           ];
+          // Prefer OGG/Opus for Azure STT compatibility; fallback to webm/mp4
           const chosen = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
-            ? mimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
+            ? (mimeCandidates.find((t) => t.startsWith("audio/ogg") && (window as any).MediaRecorder.isTypeSupported(t))
+              || mimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t))
+              || undefined)
             : undefined;
           const ansRec = new MediaRecorder(audioOnlyStream, chosen ? { mimeType: chosen } : undefined);
           ansRec.ondataavailable = (e) => { answerChunksRef.current.push(e.data); };
@@ -274,8 +291,11 @@ export default function InterviewPage({ params }: { params: { token: string } })
       let buffer: string[] = [];
       let silenceTimer: any = null;
       let hardStopTimer: any = null;
+      let finalized = false;
 
       const finalize = async () => {
+        if (finalized) return;
+        finalized = true;
         if (rec && rec.stop) rec.stop();
         // Stop per-answer recorder to finalize a single blob
         if (answerRecorderRef.current && answerRecorderRef.current.state !== "inactive") {
@@ -327,11 +347,16 @@ export default function InterviewPage({ params }: { params: { token: string } })
         // Save user's answer to database
         saveConversationMessage("user", full);
 
+        // Behavior signals for adaptive tone
+        const signals: string[] = [];
+        try {
+          if (buffer.join(" ").trim().length < 10) signals.push("very_short_answer");
+        } catch {}
         apiFetch<{ question: string | null; done: boolean }>(
           "/api/v1/interview/next-question",
           {
             method: "POST",
-            body: JSON.stringify({ history: newHistoryLocal, interview_id: interviewId }),
+            body: JSON.stringify({ history: newHistoryLocal, interview_id: interviewId, signals }),
           },
         )
           .then((res) => {
@@ -372,17 +397,23 @@ export default function InterviewPage({ params }: { params: { token: string } })
       window.addEventListener("blur", handleWindowBlur);
       rec = listen(
         (t) => {
-          buffer.push(t);
-          // Each time we get speech, reset the timer to wait for next words
+          // Ignore very short/placeholder transcripts
+          const clean = (t || "").trim();
+          if (!clean || clean === "..." || clean.length < 2) return;
+          buffer.push(clean);
+          // Each time we get speech, reset timer; hold a bit longer to avoid early cutoff
           if (silenceTimer) clearTimeout(silenceTimer);
-          // Enforce a minimum listening window of 2s to avoid immediate finalize
-          const minHold = Math.max(0, 2000 - (Date.now() - listenStart));
-          silenceTimer = setTimeout(finalize, 4000 + minHold);
+          const minHold = Math.max(0, 2200 - (Date.now() - listenStart));
+          silenceTimer = setTimeout(finalize, 3400 + minHold);
         },
+        () => {
+          // Only finalize if we have some content; otherwise keep listening for a short grace period
+          if (buffer.length > 0) finalize();
+        }
       );
 
-      // Safety net: if STT yields nothing (no events), force finalize
-      hardStopTimer = setTimeout(finalize, 12000);
+      // Safety net: allow longer answers but still fail-safe
+      hardStopTimer = setTimeout(() => { if (buffer.length > 0) finalize(); }, 14000);
     });
 
     return () => {

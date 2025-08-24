@@ -79,14 +79,19 @@ export function listen(
   }
   const recognition = new SpeechRecognition();
   recognition.lang = lang;
-  recognition.interimResults = false;
+  // Use partials to detect speech boundaries more reliably
+  recognition.interimResults = true;
   recognition.continuous = true;
   recognition.maxAlternatives = 1;
 
   recognition.onresult = (e: any) => {
     const idx = e.results.length - 1;
-    const transcript = e.results[idx][0].transcript;
-    onResult(transcript);
+    const res = e.results[idx];
+    const transcript = res[0].transcript;
+    // Emit only final results to the caller buffer to avoid early advancement
+    if (res.isFinal) {
+      onResult(transcript);
+    }
   };
 
   if (onSpeechEnd) {

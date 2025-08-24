@@ -25,6 +25,7 @@ RECRUITER_PERSONA = (
     "Use micro-empathy briefly when appropriate (e.g., 'güzel', 'anlıyorum' INLINE not at the start), but keep it short. "
     "Vary rhythm naturally with word choice (energetic for achievements, calmer for sensitive topics). "
     "Prefer questions that are neither too long nor too short: typically 1–2 sentences, 12–35 words total. "
+    "Always address the candidate in a gender-neutral and respectful way; do NOT infer gender from name, voice, or CV. "
 )
 
 
@@ -47,8 +48,7 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
         "- Prefer 1–2 sentences; ask a primary question and at most one short follow-up when necessary. \n"
         "- Vary intonation implicitly via word choice: sometimes energetic, sometimes calm; keep it professional. \n"
         "- Use micro-empathy where appropriate (kısa ve doğal), but keep it brief. \n"
-        "- If both Job Description and Resume exist, prioritize their intersection. \n"
-        "- If this is the first question and Resume exists, you may start with 'Özgeçmişinizi inceledim' but never 'ilanı okudum'. \n"
+        "- You MAY use job description and CV internally to select a topic, but do NOT reveal, summarize, or reference them explicitly. Never quote names, emails, phone numbers, links, or specific lines from the CV. Keep questions neutral from the candidate's perspective. \n"
         f"- If the candidate has answered sufficiently AND you have already asked {max_questions} questions, respond with exactly FINISHED.\n"
         "Adaptive behavior: If the last candidate message is extremely short (e.g., '...' or under ~10 characters) or likely STT failure, RE-ASK the SAME question more slowly and in simpler words; keep it 1 sentence. Offer a gentle STAR hint (Durum, Görev, Eylem, Sonuç) only once early in the interview."
     )

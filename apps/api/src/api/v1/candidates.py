@@ -14,6 +14,7 @@ from src.api.v1.schemas import CandidateCreate, CandidateRead, CandidateUpdate
 from src.core.s3 import generate_presigned_get_url
 from src.db.models.candidate_profile import CandidateProfile
 from src.db.models.conversation import ConversationMessage
+from src.db.models.interview import Interview
 from src.services.nlp import parse_resume_bytes
 from sqlalchemy import select as _select
 import httpx

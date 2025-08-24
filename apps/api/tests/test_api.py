@@ -1,6 +1,6 @@
 import os
 import asyncio
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 from typing import Any
 
 from httpx import Response as _HttpxResponse  # type: ignore

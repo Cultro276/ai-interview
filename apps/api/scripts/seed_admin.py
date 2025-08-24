@@ -8,7 +8,7 @@ from src.db.models.user import User
 
 async def main() -> None:
     async with async_session_factory() as session:
-        result = await session.execute(select(User).where(User.email == "admin@example.com"))
+        result = await session.execute(select(User).filter_by(email="admin@example.com"))
         user = result.scalar_one_or_none()
         if user:
             print("exists")

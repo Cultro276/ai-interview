@@ -8,7 +8,7 @@ from .conversations import router as conversations_router
 from .conversations import public_router as conversations_public_router
 from .upload import router as upload_router
 from .tokens import router as tokens_router
-from .conversation import router as convo_router
+from .interview_flow import router as convo_router
 from .metrics import router as metrics_router
 from .tts import router as tts_router
 from .stt import router as stt_router

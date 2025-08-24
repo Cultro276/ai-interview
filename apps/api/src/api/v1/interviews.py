@@ -58,6 +58,13 @@ async def create_interview(
     session.add(interview)
     await session.commit()
     await session.refresh(interview)
+    # Precompute dialog plan in background (CV + Job) to personalize early questions
+    try:
+        from src.services.analysis import precompute_dialog_plan_bg
+        import asyncio as _aio
+        _aio.create_task(precompute_dialog_plan_bg(interview.id))
+    except Exception:
+        pass
     return interview
 
 
@@ -75,7 +82,7 @@ _in_memory_transcripts: dict[int, str] = {}
 async def _maybe_complete_interview(
     session: AsyncSession,
     interview: Interview,
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Mark interview as completed once media (audio or video) and transcript exist.
 
@@ -121,7 +128,7 @@ async def upload_transcript(
     int_id: int,
     payload: TranscriptPayload,
     session: AsyncSession = Depends(get_session),
-    request: Request = None,
+    request: Request | None = None,
 ):
     interview = (
         await session.execute(select(Interview).where(Interview.id == int_id))
@@ -141,16 +148,15 @@ async def upload_transcript(
 
 @router.get("/{int_id}/transcript")
 async def get_transcript(int_id: int):
-    # Prefer DB value; fallback to in-memory; if still missing, assemble from full conversation messages (assistant+user)
+    """Return full conversation transcript including both AI and candidate turns.
+
+    Order is by sequence_number to reconstruct dialogue flow. Includes 'System' entries
+    for completeness when present. Falls back to stored interview.transcript_text or
+    legacy in-memory value when message list unavailable.
+    """
     from src.db.session import async_session_factory
     async with async_session_factory() as session:
-        interview = (
-            await session.execute(select(Interview).where(Interview.id == int_id))
-        ).scalar_one_or_none()
-        if interview and (interview.transcript_text and interview.transcript_text.strip()):
-            return {"interview_id": int_id, "text": interview.transcript_text}
-
-        # Assemble a full transcript from conversation messages (assistant + user)
+        # Prefer assembling from conversation messages to include all turns
         msgs = (
             await session.execute(
                 select(ConversationMessage)
@@ -160,12 +166,20 @@ async def get_transcript(int_id: int):
         ).scalars().all()
         if msgs:
             def _prefix(m):
-                return ("Interviewer" if m.role.value == "assistant" else ("Candidate" if m.role.value == "user" else "System"))
-            lines = [f"{_prefix(m)}: {m.content.strip()}" for m in msgs if (m.content or "").strip()]
-            if lines:
-                text = "\n\n".join(lines)
+                return ("Yapay Zeka" if m.role.value == "assistant" else ("Aday" if m.role.value == "user" else "Sistem"))
+            lines = [f"{_prefix(m)}: {(m.content or '').strip()}" for m in msgs if (m.content or "").strip()]
+            text = "\n\n".join(lines) if lines else ""
+            if text:
                 return {"interview_id": int_id, "text": text}
 
+        # If messages missing, use persisted transcript_text
+        interview = (
+            await session.execute(select(Interview).where(Interview.id == int_id))
+        ).scalar_one_or_none()
+        if interview and (interview.transcript_text and interview.transcript_text.strip()):
+            return {"interview_id": int_id, "text": interview.transcript_text}
+
+    # Legacy in-memory fallback
     if int_id in _in_memory_transcripts:
         return {"interview_id": int_id, "text": _in_memory_transcripts[int_id]}
     raise HTTPException(status_code=404, detail="Transcript not found")
@@ -200,7 +214,18 @@ async def get_interview_by_token(token: str, session: AsyncSession = Depends(get
         )
     ).scalar_one_or_none()
     if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
+        # Create a placeholder interview so that the client can record conversation messages
+        # Choose the newest job for this tenant; if none exists, create a minimal interview without job context
+        from src.db.models.job import Job
+        job = (
+            await session.execute(
+                select(Job).where(Job.user_id == cand.user_id).order_by(Job.created_at.desc())
+            )
+        ).scalar_one_or_none()
+        interview = Interview(job_id=job.id if job else None, candidate_id=cand.id, status="pending")  # type: ignore[arg-type]
+        session.add(interview)
+        await session.commit()
+        await session.refresh(interview)
     return interview
 
 
@@ -273,7 +298,7 @@ async def update_status(
 
 
 @candidate_router.patch("/{token}/media", response_model=InterviewRead)
-async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSession=Depends(get_session), request: Request = None):
+async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSession=Depends(get_session), request: Request | None = None):
     # Find interview by candidate token (latest)
     from src.db.models.candidate import Candidate
     cand = (await session.execute(select(Candidate).where(Candidate.token==token))).scalar_one_or_none()

@@ -34,6 +34,11 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
     if job and job.description:
         job_desc = job.description
 
+    # Initialize variables to avoid unbound warnings in later usage
+    filler_count = 0
+    avg_ans_latency = None
+    avg_q_gap = None
+
     if not messages:
         summary = "No conversation captured."
         strengths = "N/A"
@@ -136,11 +141,39 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
     # Prepare competency JSON for technical_assessment
     # Build meta stats for UI
     meta = {
-        "question_count": len([m for m in messages if m.role.value == "assistant"]) if 'messages' in locals() else None,
-        "answer_count": len([m for m in messages if m.role.value == "user"]) if 'messages' in locals() else None,
-        "avg_answer_length_words": round((sum(len(m.content.split()) for m in messages if m.role.value == "user") / max(1, len([m for m in messages if m.role.value == "user"]))), 1) if 'messages' in locals() else None,
-        "filler_word_count": filler_count if 'filler_count' in locals() else None,
-        "top_keywords": sorted(list({k for m in (messages or []) if m.role.value == "user" for k in (["api","database","microservice","docker","aws","takım","iletişim","liderlik","uyum"]) if k in m.content.lower()})) if 'messages' in locals() else [],
+        "question_count": len([m for m in messages if m.role.value == "assistant"]),
+        "answer_count": len([m for m in messages if m.role.value == "user"]),
+        "avg_answer_length_words": round(
+            (
+                sum(len(m.content.split()) for m in messages if m.role.value == "user")
+                / max(1, len([m for m in messages if m.role.value == "user"]))
+            ),
+            1,
+        ),
+        "filler_word_count": filler_count,
+        "top_keywords": sorted(
+            list(
+                {
+                    k
+                    for m in (messages or [])
+                    if m.role.value == "user"
+                    for k in (
+                        [
+                            "api",
+                            "database",
+                            "microservice",
+                            "docker",
+                            "aws",
+                            "takım",
+                            "iletişim",
+                            "liderlik",
+                            "uyum",
+                        ]
+                    )
+                    if k in m.content.lower()
+                }
+            )
+        ),
         "avg_answer_latency_seconds": avg_ans_latency,
         "avg_inter_question_gap_seconds": avg_q_gap,
     }
@@ -285,5 +318,121 @@ async def enrich_with_job_and_hr(
         "job_fit": fit,
         "ai_opinion": op,
     })
+
+
+# --- Pre-interview dialog planning (CV + Job) ---
+
+async def precompute_dialog_plan(session: AsyncSession, interview_id: int) -> dict:
+    """Create a lightweight dialog plan from job description and candidate resume.
+
+    The plan guides initial topics and targeted follow-ups to make the interview
+    feel tailored before it starts. Stored under analysis.technical_assessment.dialog_plan.
+    """
+    from sqlalchemy import select as _select
+    from src.db.models.job import Job
+    from src.db.models.candidate import Candidate
+    from src.db.models.candidate_profile import CandidateProfile
+    from src.services.nlp import extract_resume_spotlights, make_targeted_question_from_spotlight
+
+    interview = (
+        await session.execute(_select(Interview).where(Interview.id == interview_id))
+    ).scalar_one_or_none()
+    if not interview:
+        return {}
+
+    job = (
+        await session.execute(_select(Job).where(Job.id == interview.job_id))
+    ).scalar_one_or_none()
+    job_desc = (getattr(job, "description", None) or "").strip()
+
+    resume_text = ""
+    try:
+        cand = (
+            await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
+        ).scalar_one_or_none()
+        if cand:
+            profile = (
+                await session.execute(_select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
+            ).scalar_one_or_none()
+            if profile and profile.resume_text:
+                resume_text = profile.resume_text
+    except Exception:
+        resume_text = ""
+
+    # Simple topic extraction from job description
+    def _job_topics(text: str, max_items: int = 6) -> list[str]:
+        import re as _re
+        toks = [t.lower() for t in _re.split(r"[^a-zA-ZçğıöşüÇĞİÖŞÜ0-9\\+\\.#]+", text or "") if len(t) >= 3]
+        stop = {
+            "ve","ile","için","gibi","olan","olarak","çok","az","ile","bir","bu","şu","the","and","for","with","and","our","your",
+            "çalışma","ekip","takım","deneyim","deneyimi","sorumluluk","sorumluluklar","görev","pozisyon","çalışacak"
+        }
+        uniq: list[str] = []
+        seen: set[str] = set()
+        for t in toks:
+            if t in stop:
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            uniq.append(t)
+            if len(uniq) >= max_items:
+                break
+        return uniq
+
+    topics = _job_topics(job_desc)
+    spotlights = extract_resume_spotlights(resume_text, max_items=3) if resume_text else []
+    targeted = [make_targeted_question_from_spotlight(s) for s in spotlights]
+    first_seed = None
+    if topics:
+        first_seed = f"Öncelikle {topics[0]} ile ilgili somut bir örneğinizi STAR (Durum, Görev, Eylem, Sonuç) çerçevesinde paylaşır mısınız?"
+
+    plan = {
+        "topics": topics,
+        "resume_spotlights": spotlights,
+        "targeted_questions": targeted,
+        "first_question_seed": first_seed,
+    }
+
+    await merge_enrichment_into_analysis(session, interview_id, {"dialog_plan": plan})
+    # Also prepare a concrete first question and store on Interview
+    try:
+        from src.core.gemini import generate_question_robust
+        # Internal keywords only to avoid disclosure
+        ctx = "Job Description:\n" + (job_desc or "")
+        if resume_text:
+            try:
+                from src.services.dialog import extract_keywords as _ek
+                kws = _ek(resume_text)
+                if kws:
+                    ctx += "\n\nInternal Resume Keywords: " + ", ".join(kws[:30])
+            except Exception:
+                pass
+        res = await generate_question_robust([], ctx, max_questions=7)
+        _qval = res.get("question")
+        q = _qval.strip() if isinstance(_qval, str) else ""
+        # Sanitize: remove any CV/job disclosure
+        bad = ["cv", "özgeçmiş", "ilan", "iş tanımı", "linkedin", "http://", "https://"]
+        if any(b in q.lower() for b in bad) or not q:
+            q = first_seed or "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?"
+        iv = (
+            await session.execute(_select(Interview).where(Interview.id == interview_id))
+        ).scalar_one_or_none()
+        if iv:
+            iv.prepared_first_question = q
+            await session.commit()
+    except Exception:
+        pass
+    return plan
+
+
+async def precompute_dialog_plan_bg(interview_id: int) -> None:
+    """Background helper to precompute and persist dialog plan by interview id."""
+    from src.db.session import async_session_factory
+    async with async_session_factory() as session:
+        try:
+            await precompute_dialog_plan(session, interview_id)
+        except Exception:
+            pass
 
 

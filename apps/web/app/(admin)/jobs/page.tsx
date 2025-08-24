@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogClose } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/context/ToastContext";
@@ -147,6 +147,33 @@ export default function JobsPage() {
                           <Button type="submit">Kaydet</Button>
                         </div>
                       </form>
+                    </DialogContent>
+                  </Dialog>
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button variant="ghost" size="sm" aria-label="İlanı sil">✕</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>İlanı kaldırmak istiyor musunuz?</DialogTitle>
+                        <DialogDescription>Bu işlem geri alınamaz.</DialogDescription>
+                      </DialogHeader>
+                      <div className="flex justify-end gap-2">
+                        <DialogClose asChild>
+                          <Button variant="outline">Vazgeç</Button>
+                        </DialogClose>
+                        <Button
+                          variant="destructive"
+                          onClick={async () => {
+                            try {
+                              await apiFetch(`/api/v1/jobs/${job.id}`, { method: 'DELETE' });
+                              await refreshData();
+                            } catch (err) {
+                              toastError((err as any)?.message || 'Silme başarısız');
+                            }
+                          }}
+                        >Sil</Button>
+                      </div>
                     </DialogContent>
                   </Dialog>
                 </div>

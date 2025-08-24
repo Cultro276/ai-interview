@@ -2,7 +2,7 @@
 import React from "react";
 import { cn } from "@/components/ui/cn";
 
-type ButtonVariant = "primary" | "secondary" | "outline" | "ghost";
+type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "destructive";
 type ButtonSize = "sm" | "md" | "lg";
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -19,6 +19,8 @@ const variantClasses: Record<ButtonVariant, string> = {
     "border border-brand-600 text-brand-700 hover:bg-brand-25 disabled:opacity-50 disabled:cursor-not-allowed",
   ghost:
     "text-brand-700 hover:bg-brand-25 disabled:opacity-50 disabled:cursor-not-allowed",
+  destructive:
+    "bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed",
 };
 
 const sizeClasses: Record<ButtonSize, string> = {

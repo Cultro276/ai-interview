@@ -141,6 +141,7 @@ class InterviewRead(BaseModel):
     video_url: Optional[str] = None
     completed_at: Optional[datetime] = None
     completed_ip: Optional[str] = None
+    prepared_first_question: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

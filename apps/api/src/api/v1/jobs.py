@@ -79,6 +79,7 @@ async def update_job(
             setattr(job, field, value)
     await session.commit()
     await session.refresh(job)
+    # Precompute dialog plan for all interviews under this job? Not at job create.
     return job
 
 
@@ -220,6 +221,14 @@ async def create_candidate_for_job(
     interview = Interview(job_id=job.id, candidate_id=candidate.id, status="pending")
     session.add(interview)
     await session.flush()
+
+    # Trigger dialog plan precompute in background so first questions are personalized
+    try:
+        from src.services.analysis import precompute_dialog_plan_bg
+        import asyncio as _aio
+        _aio.create_task(precompute_dialog_plan_bg(interview.id))
+    except Exception:
+        pass
 
     # If candidate has an uploaded resume URL, parse it now so LLM has context immediately
     try:

@@ -90,14 +90,22 @@ async def transcribe_with_azure(audio_bytes: bytes, content_type: str = "audio/w
             return ""
 
         ct = (content_type or "audio/webm").lower()
-        container = AudioStreamContainerFormat.WEBM_OPUS
+        # Pick compressed container supported by current SDK version; some versions
+        # don't expose WEBM_OPUS. In that case, skip Azure and let caller fallback.
+        container = None
         if "ogg" in ct:
-            container = AudioStreamContainerFormat.OGG_OPUS
+            container = getattr(AudioStreamContainerFormat, "OGG_OPUS", None)
         elif "mp3" in ct or "mpeg" in ct:
-            try:
-                container = AudioStreamContainerFormat.MP3  # type: ignore[attr-defined]
-            except Exception:
-                container = AudioStreamContainerFormat.WEBM_OPUS
+            # MP3 support may not exist in all versions; fall back to OGG_OPUS if present
+            container = getattr(AudioStreamContainerFormat, "MP3", None)
+            if container is None:
+                container = getattr(AudioStreamContainerFormat, "OGG_OPUS", None)
+        elif "webm" in ct:
+            container = getattr(AudioStreamContainerFormat, "WEBM_OPUS", None)
+
+        if container is None:
+            # Current Azure SDK lacks a matching compressed container → let caller fallback
+            return ""
 
         stream_format = AudioStreamFormat(compressed_stream_format=container)
         push_stream = PushAudioInputStream(stream_format)
@@ -124,16 +132,11 @@ async def transcribe_with_azure(audio_bytes: bytes, content_type: str = "audio/w
 
 
 async def transcribe_audio_batch(audio_bytes: bytes, content_type: str = "audio/webm") -> tuple[str, str]:
-    """Prefer Azure batch STT; fallback to Whisper if configured.
+    """Use Azure batch STT only (as requested). No Whisper fallback.
 
-    Returns (text, provider).
+    Returns (text, provider). Empty string means provider returned nothing.
     """
-    # Try Azure first
     text = await transcribe_with_azure(audio_bytes, content_type)
     if text:
         return text, "azure"
-    # Fallback to Whisper if available
-    text = await transcribe_with_whisper(audio_bytes, content_type)
-    if text:
-        return text, "whisper"
-    return "", ""
+    return "", "azure"

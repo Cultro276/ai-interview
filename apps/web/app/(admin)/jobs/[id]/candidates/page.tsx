@@ -1,12 +1,12 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
 import { Button } from "@/components/ui/Button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogClose } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader } from "@/components/ui/Loader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -46,6 +46,7 @@ export default function JobCandidatesPage() {
     | "duration_desc"
     | "duration_asc"
   >("score");
+  const [pageNum, setPageNum] = useState<number>(1);
 
   // URL params <-> state sync
   const sp = useSearchParams();
@@ -66,6 +67,7 @@ export default function JobCandidatesPage() {
     const minD = get("minDur");
     const maxD = get("maxDur");
     const sortP = get("sort") as any;
+    const pageP = parseInt(get("page") || "1", 10);
 
     if (q !== null) setSearch(q);
     if (statusP && ["all","completed","pending"].includes(statusP)) setStatusFilter(statusP);
@@ -78,6 +80,7 @@ export default function JobCandidatesPage() {
     if (sortP && [
       "created","score","last_update_desc","last_update_asc","duration_desc","duration_asc"
     ].includes(sortP)) setSortBy(sortP);
+    if (!isNaN(pageP) && pageP > 0) setPageNum(pageP);
 
     didInitFromUrlRef.current = true;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,11 +99,12 @@ export default function JobCandidatesPage() {
     if (minDurationMin) params.set("minDur", String(minDurationMin));
     if (maxDurationMin) params.set("maxDur", String(maxDurationMin));
     if (sortBy !== "created") params.set("sort", sortBy);
+    if (pageNum !== 1) params.set("page", String(pageNum));
 
     const qs = params.toString();
     const path = typeof window !== 'undefined' ? window.location.pathname : `/jobs/${jobId}/candidates`;
     router.replace(qs ? `${path}?${qs}` : path, { scroll: false });
-  }, [search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy, jobId, router]);
+  }, [search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy, pageNum, jobId, router]);
 
   // Report modal state
   const [reportOpen, setReportOpen] = useState(false);
@@ -316,6 +320,82 @@ export default function JobCandidatesPage() {
 
   // Removed explicit download; browser preview allows easy download already
 
+  // Compute filtered and sorted candidates to derive pagination bounds
+  const filteredSortedCandidates = useMemo(() => {
+    return jobCandidates
+      .filter((c) => {
+        const q = search.trim().toLowerCase();
+        if (!q) return true;
+        return (
+          (c.name || "").toLowerCase().includes(q) ||
+          (c.email || "").toLowerCase().includes(q)
+        );
+      })
+      .filter((c) => {
+        const it = findLatestInterview(c.id) as any;
+        if (statusFilter !== "all") {
+          if (!it || it.status !== statusFilter) return false;
+        }
+        if (hasCvOnly && !c.resume_url) return false;
+        if (hasMediaOnly) {
+          if (!it || (!it.audio_url && !it.video_url)) return false;
+        }
+        const lastIso = it?.completed_at || it?.created_at;
+        if (dateFrom) {
+          if (!lastIso || new Date(lastIso) < new Date(dateFrom)) return false;
+        }
+        if (dateTo) {
+          if (!lastIso || new Date(lastIso) > new Date(dateTo + "T23:59:59")) return false;
+        }
+        const minM = minDurationMin ? Number(minDurationMin) : null;
+        const maxM = maxDurationMin ? Number(maxDurationMin) : null;
+        if (minM !== null || maxM !== null) {
+          if (!it || !it.created_at || !it.completed_at) return false;
+          const ms = new Date(it.completed_at).getTime() - new Date(it.created_at).getTime();
+          const durMin = ms > 0 ? ms / 60000 : 0;
+          if (minM !== null && durMin < minM) return false;
+          if (maxM !== null && durMin > maxM) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === "created") return 0;
+        const itA = findLatestInterview(a.id) as any;
+        const itB = findLatestInterview(b.id) as any;
+        if (sortBy === "score") {
+          const scoreA = itA?.overall_score || 0;
+          const scoreB = itB?.overall_score || 0;
+          return scoreB - scoreA;
+        }
+        if (sortBy === "last_update_desc" || sortBy === "last_update_asc") {
+          const lastA = itA?.completed_at || itA?.created_at || null;
+          const lastB = itB?.completed_at || itB?.created_at || null;
+          const tA = lastA ? new Date(lastA).getTime() : 0;
+          const tB = lastB ? new Date(lastB).getTime() : 0;
+          return sortBy === "last_update_desc" ? tB - tA : tA - tB;
+        }
+        if (sortBy === "duration_desc" || sortBy === "duration_asc") {
+          const hasA = itA?.created_at && itA?.completed_at;
+          const hasB = itB?.created_at && itB?.completed_at;
+          const dA = hasA ? (new Date(itA.completed_at).getTime() - new Date(itA.created_at).getTime()) : null;
+          const dB = hasB ? (new Date(itB.completed_at).getTime() - new Date(itB.created_at).getTime()) : null;
+          const normA = dA === null ? (sortBy === "duration_desc" ? -1 : Number.MAX_SAFE_INTEGER) : dA;
+          const normB = dB === null ? (sortBy === "duration_desc" ? -1 : Number.MAX_SAFE_INTEGER) : dB;
+          return sortBy === "duration_desc" ? normB - normA : normA - normB;
+        }
+        return 0;
+      })
+      .slice(0, 1000);
+  }, [jobCandidates, search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredSortedCandidates.length / 10));
+
+  // Clamp current page within [1, totalPages]
+  useEffect(() => {
+    if (pageNum < 1) setPageNum(1);
+    else if (pageNum > totalPages) setPageNum(totalPages);
+  }, [pageNum, totalPages]);
+
   if (loading) {
     return (
       <div>
@@ -519,7 +599,7 @@ export default function JobCandidatesPage() {
           </div>
         </div>
 
-        {jobCandidates.length === 0 ? (
+        {filteredSortedCandidates.length === 0 ? (
           <EmptyState title="Henüz aday yok" description="CV yükleyin veya aday oluşturarak davet göndermeye başlayın." />
         ) : (
         <div className="w-full overflow-x-auto">
@@ -540,74 +620,8 @@ export default function JobCandidatesPage() {
             </tr>
           </thead>
           <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
-            {jobCandidates
-              .filter((c) => {
-                const q = search.trim().toLowerCase();
-                if (!q) return true;
-                return (
-                  (c.name || "").toLowerCase().includes(q) ||
-                  (c.email || "").toLowerCase().includes(q)
-                );
-              })
-              .filter((c) => {
-                const it = findLatestInterview(c.id) as any;
-                // status filter
-                if (statusFilter !== "all") {
-                  if (!it || it.status !== statusFilter) return false;
-                }
-                // has CV filter
-                if (hasCvOnly && !c.resume_url) return false;
-                // has media filter
-                if (hasMediaOnly) {
-                  if (!it || (!it.audio_url && !it.video_url)) return false;
-                }
-                // date range filter (last update: completed_at if exists else created_at)
-                const lastIso = it?.completed_at || it?.created_at;
-                if (dateFrom) {
-                  if (!lastIso || new Date(lastIso) < new Date(dateFrom)) return false;
-                }
-                if (dateTo) {
-                  if (!lastIso || new Date(lastIso) > new Date(dateTo + "T23:59:59")) return false;
-                }
-                // duration range filter (minutes) applies only if completed_at exists
-                const minM = minDurationMin ? Number(minDurationMin) : null;
-                const maxM = maxDurationMin ? Number(maxDurationMin) : null;
-                if (minM !== null || maxM !== null) {
-                  if (!it || !it.created_at || !it.completed_at) return false;
-                  const ms = new Date(it.completed_at).getTime() - new Date(it.created_at).getTime();
-                  const durMin = ms > 0 ? ms / 60000 : 0;
-                  if (minM !== null && durMin < minM) return false;
-                  if (maxM !== null && durMin > maxM) return false;
-                }
-                return true;
-              })
-              .sort((a, b) => {
-                if (sortBy === "created") return 0; // keep API order
-                const itA = findLatestInterview(a.id) as any;
-                const itB = findLatestInterview(b.id) as any;
-                if (sortBy === "score") {
-                  const scoreA = itA?.overall_score || 0;
-                  const scoreB = itB?.overall_score || 0;
-                  return scoreB - scoreA;
-                }
-                if (sortBy === "last_update_desc" || sortBy === "last_update_asc") {
-                  const lastA = itA?.completed_at || itA?.created_at || null;
-                  const lastB = itB?.completed_at || itB?.created_at || null;
-                  const tA = lastA ? new Date(lastA).getTime() : 0;
-                  const tB = lastB ? new Date(lastB).getTime() : 0;
-                  return sortBy === "last_update_desc" ? tB - tA : tA - tB;
-                }
-                if (sortBy === "duration_desc" || sortBy === "duration_asc") {
-                  const hasA = itA?.created_at && itA?.completed_at;
-                  const hasB = itB?.created_at && itB?.completed_at;
-                  const dA = hasA ? (new Date(itA.completed_at).getTime() - new Date(itA.created_at).getTime()) : null;
-                  const dB = hasB ? (new Date(itB.completed_at).getTime() - new Date(itB.created_at).getTime()) : null;
-                  const normA = dA === null ? (sortBy === "duration_desc" ? -1 : Number.MAX_SAFE_INTEGER) : dA;
-                  const normB = dB === null ? (sortBy === "duration_desc" ? -1 : Number.MAX_SAFE_INTEGER) : dB;
-                  return sortBy === "duration_desc" ? normB - normA : normA - normB;
-                }
-                return 0;
-              })
+            {filteredSortedCandidates
+              .slice((pageNum-1)*10, (pageNum-1)*10 + 10)
               .map((c) => (
               <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-neutral-800">
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">#{c.id}</td>
@@ -648,8 +662,37 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   <Button variant="ghost" onClick={() => openVideoForCandidate(c.id)} className="p-0 h-auto">Video</Button>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 flex items-center gap-3">
                   <Button variant="ghost" onClick={() => openReportForCandidate(c.id)} className="p-0 h-auto">Rapor</Button>
+                  {/* Delete candidate with confirm */}
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button variant="ghost" className="p-0 h-auto" aria-label="Adayı sil">✕</Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Adayı silmek istiyor musunuz?</DialogTitle>
+                        <DialogDescription>Bu işlem geri alınamaz.</DialogDescription>
+                      </DialogHeader>
+                      <div className="flex justify-end gap-2">
+                        <DialogClose asChild>
+                          <Button variant="outline">Vazgeç</Button>
+                        </DialogClose>
+                        <Button
+                          variant="outline"
+                          className="bg-rose-600 text-white hover:bg-rose-700 border-rose-600"
+                          onClick={async () => {
+                            try {
+                              await apiFetch(`/api/v1/candidates/${c.id}`, { method: 'DELETE' });
+                              await refreshData();
+                            } catch (err) {
+                              toastError((err as any)?.message || 'Silme başarısız');
+                            }
+                          }}
+                        >Sil</Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
                 </td>
                 {/* Scorecard aksiyonu kaldırıldı */}
               </tr>
@@ -658,6 +701,13 @@ export default function JobCandidatesPage() {
         </table>
         </div>
         )}
+      </div>
+
+      {/* Pagination controls */}
+      <div className="flex items-center justify-end gap-2 mt-4">
+        <Button variant="outline" size="sm" onClick={() => setPageNum((p)=> Math.max(1, p-1))} disabled={pageNum<=1}>Önceki</Button>
+        <span className="text-sm text-gray-500">Sayfa {pageNum} / {totalPages}</span>
+        <Button variant="outline" size="sm" onClick={() => setPageNum((p)=> Math.min(totalPages, p+1))} disabled={pageNum>=totalPages}>Sonraki</Button>
       </div>
 
       {/* Report Modal */}

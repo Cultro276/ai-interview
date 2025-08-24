@@ -17,4 +17,3 @@ class User(SQLAlchemyBaseUserTable[int], Base):
         default=func.now(), nullable=False, server_default=func.now()
     )
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True) 

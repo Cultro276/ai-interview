@@ -20,6 +20,7 @@ class Interview(Base):
     transcript_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prepared_first_question: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         default=func.now(), nullable=False, server_default=func.now()
     )

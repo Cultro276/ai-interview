@@ -65,8 +65,8 @@ class PublicConversationMessageCreate(ConversationMessageCreate):
 @public_router.post("/messages-public", response_model=ConversationMessageRead, status_code=status.HTTP_201_CREATED)
 async def create_message_public(
     message_in: PublicConversationMessageCreate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
-    request: Request = None,
 ):
     # Simple IP/token rate-limit: 10 requests per 10 seconds
     try:
@@ -123,7 +123,8 @@ async def create_message_public(
                 .order_by(ConversationMessage.sequence_number.desc())
             )
         ).scalars().first()
-        if last and last.role == message_in.role and last.content.strip() == message_in.content.strip():
+        # Compare enum value to incoming string to avoid false mismatches
+        if last and getattr(last.role, "value", str(last.role)) == message_in.role and last.content.strip() == message_in.content.strip():
             return last
     except Exception:
         pass
@@ -131,9 +132,24 @@ async def create_message_public(
     payload = {
         "interview_id": message_in.interview_id,
         "role": message_in.role,
-        "content": message_in.content,
+        "content": (message_in.content or "").strip(),
         "sequence_number": message_in.sequence_number,
     }
+    # Drop empty user messages (often STT artifacts like "..."), but keep assistant/system
+    from src.db.models.conversation import MessageRole as _Role
+    try:
+        if payload["role"] == _Role.USER.value and len(payload["content"]) < 2:
+            # Return a synthetic no-op response to keep client stable
+            return ConversationMessage(
+                id=0,
+                interview_id=message_in.interview_id,
+                role=_Role.USER,
+                content="",
+                timestamp=None,  # type: ignore[arg-type]
+                sequence_number=message_in.sequence_number,
+            )
+    except Exception:
+        pass
     message = ConversationMessage(**payload)
     session.add(message)
     await session.commit()

@@ -51,14 +51,25 @@ async def tts_speak(req: TTSRequest):
         return _defaults
 
     def _azure_ssml(text: str) -> str:
-        rate = "-8%" if (req.preset or "").lower() == "corporate" else "-5%"
-        pitch = "+0%" if (req.preset or "").lower() == "corporate" else "+1%"
+        """Humanized SSML: slight speed-up, neutral pitch, micro-pauses between clauses.
+
+        We avoid overusing pauses; keep them short to sound natural.
+        """
+        rate = "+2%" if (req.preset or "").lower() == "corporate" else "+6%"
+        pitch = "+0%"
         voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
+        # Insert short breaks after sentence boundaries.
+        import re as _re
+        def _inject_pauses(t: str) -> str:
+            t = t.strip()
+            t = _re.sub(r"([.!?])\s+", r"\\1 <break time='150ms'/> ", t)
+            return t
+        body = _inject_pauses(text)
         return f"""
 <speak version='1.0' xml:lang='{req.lang}'>
   <voice name='{voice}'>
     <prosody rate='{rate}' pitch='{pitch}'>
-      {text}
+      {body}
     </prosody>
   </voice>
 </speak>
