@@ -28,7 +28,7 @@ def ensure_schema() -> None:
     asyncio.get_event_loop().run_until_complete(_create())
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_tts_elevenlabs_returns_audio_when_env_present_and_http_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     os.environ["ELEVENLABS_API_KEY"] = "test-key"
     os.environ["ELEVENLABS_VOICE_ID"] = "test-voice"
@@ -67,7 +67,7 @@ async def test_tts_elevenlabs_returns_audio_when_env_present_and_http_ok(monkeyp
     assert resp.headers.get("content-type", "").startswith("audio/")
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_upload_transcript_marks_completed() -> None:
     # Arrange: create job, candidate, interview with audio_url set
     async with async_session_factory() as session:
