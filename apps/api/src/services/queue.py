@@ -15,7 +15,7 @@ from src.db.models.interview import Interview
 from src.db.models.conversation import ConversationMessage
 from src.db.models.candidate import Candidate
 from src.db.session import async_session_factory
-from src.services.stt import transcribe_with_whisper
+from src.services.stt import transcribe_audio_batch
 from src.services.analysis import (
     generate_rule_based_analysis,
     merge_enrichment_into_analysis,
@@ -74,12 +74,12 @@ async def process_interview(interview_id: int) -> None:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     resp = await client.get(presigned_get)
                     resp.raise_for_status()
-                    text = await transcribe_with_whisper(
+                    text, provider = await transcribe_audio_batch(
                         resp.content, resp.headers.get("Content-Type") or "audio/webm"
                     )
                     if text:
                         interview.transcript_text = text
-                        interview.transcript_provider = "whisper"
+                        interview.transcript_provider = provider or "unknown"
                         await session.commit()
                         await session.refresh(interview)
                         await _maybe_complete_interview(session, interview)

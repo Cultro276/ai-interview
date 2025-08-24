@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.session import get_session
-from src.services.stt import transcribe_with_whisper
+from src.services.stt import transcribe_audio_batch
 from src.core.config import settings
 import asyncio
 import json
@@ -23,12 +23,12 @@ class STTRequest(BaseModel):
 async def stt_transcribe_file(interview_id: int, file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
     try:
         data = await file.read()
-        text = await transcribe_with_whisper(data, file.content_type or "audio/webm")
+        text, provider = await transcribe_audio_batch(data, file.content_type or "audio/webm")
         if not text:
             raise HTTPException(status_code=502, detail="STT provider returned empty transcript")
         # Save transcript via existing endpoint logic (in-memory stub for now)
         from .interviews import upload_transcript, TranscriptPayload  # reuse
-        payload = TranscriptPayload(text=text, provider="whisper")
+        payload = TranscriptPayload(text=text, provider=provider or "unknown")
         await upload_transcript(interview_id, payload, session)
         return {"interview_id": interview_id, "length": len(text), "text": text}
     except HTTPException:

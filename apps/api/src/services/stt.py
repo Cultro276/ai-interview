@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 
 from src.core.config import settings
+from anyio import to_thread
 
 
 async def transcribe_with_whisper(audio_bytes: bytes, content_type: str = "audio/webm") -> str:
@@ -69,3 +70,70 @@ async def transcribe_with_whisper(audio_bytes: bytes, content_type: str = "audio
         return ""
 
 
+
+async def transcribe_with_azure(audio_bytes: bytes, content_type: str = "audio/webm") -> str:
+    """Transcribe audio via Azure Speech SDK (short/batch) when configured.
+
+    Supports common compressed containers (webm/opus, ogg/opus, mp3). Falls back to empty string on failure.
+    """
+    if not (settings.azure_speech_key and settings.azure_speech_region):
+        return ""
+    try:
+        import azure.cognitiveservices.speech as speechsdk  # type: ignore
+        try:
+            from azure.cognitiveservices.speech.audio import (  # type: ignore
+                AudioStreamFormat,
+                AudioStreamContainerFormat,
+                PushAudioInputStream,
+            )
+        except Exception:
+            return ""
+
+        ct = (content_type or "audio/webm").lower()
+        container = AudioStreamContainerFormat.WEBM_OPUS
+        if "ogg" in ct:
+            container = AudioStreamContainerFormat.OGG_OPUS
+        elif "mp3" in ct or "mpeg" in ct:
+            try:
+                container = AudioStreamContainerFormat.MP3  # type: ignore[attr-defined]
+            except Exception:
+                container = AudioStreamContainerFormat.WEBM_OPUS
+
+        stream_format = AudioStreamFormat(compressed_stream_format=container)
+        push_stream = PushAudioInputStream(stream_format)
+
+        # Write bytes to push stream in thread (SDK is sync/blocking)
+        def _recognize() -> str:
+            speech_config = speechsdk.SpeechConfig(subscription=settings.azure_speech_key, region=settings.azure_speech_region)
+            speech_config.speech_recognition_language = "tr-TR"
+            audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+            # Feed bytes
+            push_stream.write(audio_bytes)
+            push_stream.close()
+            result = recognizer.recognize_once()
+            if result and getattr(result, "text", None):
+                return result.text
+            return ""
+
+        text = await to_thread.run_sync(_recognize)
+        return text or ""
+    except Exception as e:
+        print(f"[STT DEBUG] Azure batch error: {type(e).__name__}: {str(e)}")
+        return ""
+
+
+async def transcribe_audio_batch(audio_bytes: bytes, content_type: str = "audio/webm") -> tuple[str, str]:
+    """Prefer Azure batch STT; fallback to Whisper if configured.
+
+    Returns (text, provider).
+    """
+    # Try Azure first
+    text = await transcribe_with_azure(audio_bytes, content_type)
+    if text:
+        return text, "azure"
+    # Fallback to Whisper if available
+    text = await transcribe_with_whisper(audio_bytes, content_type)
+    if text:
+        return text, "whisper"
+    return "", ""
