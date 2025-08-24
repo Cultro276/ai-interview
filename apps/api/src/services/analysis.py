@@ -22,9 +22,8 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
     )
     messages: List[ConversationMessage] = list(result.scalars().all())
 
-    # Pull job description and requirements config for context
+    # Pull job description for context
     job_desc = ""
-    requirements_config: Dict[str, Any] | None = None
     job = (
         await session.execute(
             select(Job)
@@ -32,13 +31,8 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
             .where(Interview.id == interview_id)
         )
     ).scalar_one_or_none()
-    if job:
-        if job.description:
-            job_desc = job.description
-        try:
-            requirements_config = job.requirements_config  # type: ignore[attr-defined]
-        except Exception:
-            requirements_config = None
+    if job and job.description:
+        job_desc = job.description
 
     if not messages:
         summary = "No conversation captured."
@@ -60,8 +54,11 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
 
         # Scores (0-100)
         communication_score = max(0.0, min(100.0, 60.0 + (avg_user_len * 2) - (filler_count * 5)))
-        technical_score = 50.0 + min(30.0, len([m for m in user_msgs if any(k in m.content.lower() for k in ["api", "database", "microservice", "docker", "aws"])]) * 10.0)
-        cultural_fit_score = 50.0 + min(30.0, len([m for m in user_msgs if any(k in m.content.lower() for k in ["takım", "iletişim", "liderlik", "uyum"])]) * 10.0)
+        _tech_kws = ["api", "database", "microservice", "docker", "aws"]
+        _culture_kws = ["takım", "iletişim", "liderlik", "uyum"]
+        technical_score = 50.0 + min(30.0, len([m for m in user_msgs if any(k in m.content.lower() for k in _tech_kws)]) * 10.0)
+        cultural_fit_score = 50.0 + min(30.0, len([m for m in user_msgs if any(k in m.content.lower() for k in _culture_kws)]) * 10.0)
+        # Simple unweighted overall (average of available dimensions)
         overall = round((communication_score + technical_score + cultural_fit_score) / 3.0, 2)
 
         # Summary
@@ -97,36 +94,37 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
         tech = round(technical_score, 2)
         culture = round(cultural_fit_score, 2)
 
-        # Optional: compute requirements coverage from job config
-        coverage_summary = None
-        if requirements_config and isinstance(requirements_config, dict):
-            reqs = requirements_config.get("requirements") or []
-            coverage_items: List[Dict[str, Any]] = []
-            for req in reqs:
-                rid = req.get("id") or req.get("label") or "req"
-                keywords: List[str] = [str(k).lower() for k in (req.get("keywords") or [])]
-                matched = set()
-                evidences: List[Dict[str, Any]] = []
-                for m in user_msgs:
-                    low = m.content.lower()
-                    hits = [k for k in keywords if k and k in low]
-                    if hits:
-                        matched.update(hits)
-                        evidences.append({
-                            "message_seq": m.sequence_number,
-                            "text": m.content[:240],
-                            "weight": min(1.0, len(hits) / max(1, len(keywords)))
-                        })
-                coverage_score = 0.0
-                if keywords:
-                    coverage_score = round(100.0 * len(matched) / len(keywords), 2)
-                coverage_items.append({
-                    "id": rid,
-                    "coverage_score": coverage_score,
-                    "matched_keywords": sorted(list(matched)),
-                    "evidence_snippets": evidences[:5],
-                })
-            coverage_summary = coverage_items
+        # Timing metrics (average seconds)
+        try:
+            from datetime import timedelta
+            ans_latencies: List[float] = []
+            for idx, m in enumerate(messages):
+                if m.role.value != "assistant":
+                    continue
+                # Find next user message after this assistant message
+                for j in range(idx + 1, len(messages)):
+                    mj = messages[j]
+                    if mj.role.value == "user":
+                        delta = (mj.timestamp - m.timestamp).total_seconds() if mj.timestamp and m.timestamp else None
+                        if isinstance(delta, (int, float)) and 0 <= delta <= 3600 * 3:
+                            ans_latencies.append(float(delta))
+                        break
+            q_times = [m.timestamp for m in messages if m.role.value == "assistant" and m.timestamp]
+            q_gaps: List[float] = []
+            for a, b in zip(q_times, q_times[1:]):
+                try:
+                    d = (b - a).total_seconds()
+                    if isinstance(d, (int, float)) and 0 <= d <= 3600 * 6:
+                        q_gaps.append(float(d))
+                except Exception:
+                    pass
+            avg_ans_latency = round(sum(ans_latencies) / len(ans_latencies), 1) if ans_latencies else None
+            avg_q_gap = round(sum(q_gaps) / len(q_gaps), 1) if q_gaps else None
+        except Exception:
+            avg_ans_latency = None
+            avg_q_gap = None
+
+        # Removed requirements coverage
 
     # Upsert analysis
     existing = (
@@ -134,6 +132,19 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
             select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id)
         )
     ).scalar_one_or_none()
+
+    # Prepare competency JSON for technical_assessment
+    # Build meta stats for UI
+    meta = {
+        "question_count": len([m for m in messages if m.role.value == "assistant"]) if 'messages' in locals() else None,
+        "answer_count": len([m for m in messages if m.role.value == "user"]) if 'messages' in locals() else None,
+        "avg_answer_length_words": round((sum(len(m.content.split()) for m in messages if m.role.value == "user") / max(1, len([m for m in messages if m.role.value == "user"]))), 1) if 'messages' in locals() else None,
+        "filler_word_count": filler_count if 'filler_count' in locals() else None,
+        "top_keywords": sorted(list({k for m in (messages or []) if m.role.value == "user" for k in (["api","database","microservice","docker","aws","takım","iletişim","liderlik","uyum"]) if k in m.content.lower()})) if 'messages' in locals() else [],
+        "avg_answer_latency_seconds": avg_ans_latency,
+        "avg_inter_question_gap_seconds": avg_q_gap,
+    }
+    competency_json = {"competencies": {"communication": comm, "technical": tech, "cultural_fit": culture}, "meta": meta}
 
     if existing:
         existing.overall_score = overall
@@ -143,9 +154,11 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
         existing.communication_score = comm
         existing.technical_score = tech
         existing.cultural_fit_score = culture
-        if 'coverage_summary' in locals() and coverage_summary is not None:
+        try:
             import json
-            existing.technical_assessment = json.dumps({"requirements_coverage": coverage_summary}, ensure_ascii=False)
+            existing.technical_assessment = json.dumps(competency_json, ensure_ascii=False)
+        except Exception:
+            pass
         await session.commit()
         await session.refresh(existing)
         return existing
@@ -161,9 +174,11 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
             cultural_fit_score=culture,
             model_used="rule-based-v1",
         )
-        if 'coverage_summary' in locals() and coverage_summary is not None:
+        try:
             import json
-            analysis.technical_assessment = json.dumps({"requirements_coverage": coverage_summary}, ensure_ascii=False)
+            analysis.technical_assessment = json.dumps(competency_json, ensure_ascii=False)
+        except Exception:
+            pass
         session.add(analysis)
         await session.commit()
         await session.refresh(analysis)
@@ -213,7 +228,7 @@ async def enrich_with_job_and_hr(
     from src.db.models.job import Job
     from src.db.models.candidate import Candidate
     from src.db.models.candidate_profile import CandidateProfile
-    from src.services.nlp import assess_hr_criteria, assess_job_fit
+    from src.services.nlp import assess_hr_criteria, assess_job_fit, opinion_on_candidate
 
     interview = (
         await session.execute(_select(Interview).where(Interview.id == interview_id))
@@ -261,10 +276,12 @@ async def enrich_with_job_and_hr(
 
     hr = await assess_hr_criteria(transcript_text)
     fit = await assess_job_fit(job_desc, transcript_text, resume_text)
+    op = await opinion_on_candidate(job_desc, transcript_text, resume_text)
 
     await merge_enrichment_into_analysis(session, interview_id, {
         "hr_criteria": hr,
         "job_fit": fit,
+        "ai_opinion": op,
     })
 
 

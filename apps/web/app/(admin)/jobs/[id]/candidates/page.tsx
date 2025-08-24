@@ -45,7 +45,7 @@ export default function JobCandidatesPage() {
     | "last_update_asc"
     | "duration_desc"
     | "duration_asc"
-  >("created");
+  >("score");
 
   // URL params <-> state sync
   const sp = useSearchParams();
@@ -169,6 +169,31 @@ export default function JobCandidatesPage() {
       setReportLoading(false);
     }
   };
+
+  // Inline component definitions must be before return; define TranscriptBlock here
+  const TranscriptBlock = ({ interviewId }: { interviewId: number }) => {
+    const [text, setText] = useState<string | null>(null);
+    const [loadingT, setLoadingT] = useState(false);
+    const [errT, setErrT] = useState<string | null>(null);
+    useEffect(() => {
+      let mounted = true;
+      setLoadingT(true);
+      apiFetch<{ text: string }>(`/api/v1/interviews/${interviewId}/transcript`)
+        .then((res) => { if (mounted) setText(res.text || ""); })
+        .catch((e:any) => { if (mounted) setErrT(e.message || "Transkript alınamadı"); })
+        .finally(() => { if (mounted) setLoadingT(false); });
+      return () => { mounted = false; };
+    }, [interviewId]);
+    if (loadingT) return <div className="py-3 text-sm text-gray-500">Yükleniyor…</div>;
+    if (errT) return <div className="py-3 text-sm text-rose-600">{errT}</div>;
+    if (!text) return <div className="py-3 text-sm text-gray-500">Transkript yok</div>;
+    return (
+      <pre className="mt-2 whitespace-pre-wrap text-sm bg-gray-50 p-3 rounded border border-gray-200 max-h-[40vh] overflow-y-auto">{text}</pre>
+    );
+  };
+  
+  // (removed duplicate TranscriptBlock definition)
+  // Scorecard UI kaldırıldı
 
   const exportReportPdf = () => {
     // Simple client-side print for now; can be replaced with server-side Puppeteer
@@ -483,8 +508,8 @@ export default function JobCandidatesPage() {
             <label className="text-sm text-gray-600 flex items-center gap-2">
               Sırala:
               <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
-                <option value="created">Varsayılan</option>
                 <option value="score">Genel Puan (yüksek→düşük)</option>
+                <option value="created">Varsayılan</option>
                 <option value="last_update_desc">Son güncelleme (en yeni)</option>
                 <option value="last_update_asc">Son güncelleme (en eski)</option>
                 <option value="duration_desc">Süre (en uzun)</option>
@@ -511,6 +536,7 @@ export default function JobCandidatesPage() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Son Güncelleme</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Video</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Rapor</th>
+              {/* Scorecard kaldırıldı */}
             </tr>
           </thead>
           <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
@@ -585,7 +611,15 @@ export default function JobCandidatesPage() {
               .map((c) => (
               <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-neutral-800">
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">#{c.id}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-neutral-100">{c.name}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-neutral-100 flex items-center gap-2">
+                  <span>{c.name}</span>
+                  {(() => {
+                    const it: any = findLatestInterview(c.id);
+                    const score = typeof it?.overall_score === 'number' ? Math.round(it.overall_score) : null;
+                    if (score === null) return null;
+                    return <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-700">{score}/100</span>;
+                  })()}
+                </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
@@ -617,6 +651,7 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   <Button variant="ghost" onClick={() => openReportForCandidate(c.id)} className="p-0 h-auto">Rapor</Button>
                 </td>
+                {/* Scorecard aksiyonu kaldırıldı */}
               </tr>
             ))}
           </tbody>
@@ -627,14 +662,14 @@ export default function JobCandidatesPage() {
 
       {/* Report Modal */}
       <Dialog open={reportOpen} onOpenChange={setReportOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-4xl w-[90vw]">
           <DialogHeader>
             <DialogTitle>Aday Raporu</DialogTitle>
             <DialogDescription>
               İşe uygunluk, HR kriterleri ve soft-skill özetleri.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex justify-end mb-2">
+          <div className="flex justify-end mb-2 print:hidden">
             <Button variant="outline" onClick={exportReportPdf}>PDF Olarak Kaydet</Button>
           </div>
           {reportLoading ? (
@@ -644,7 +679,7 @@ export default function JobCandidatesPage() {
               {(() => {
                 const a = reportAnalysis;
                 return (
-                  <div className="space-y-4">
+                  <div className="space-y-6">
                     {a.overall_score && (
                       <div>
                         <span className="text-sm font-medium text-gray-700">Genel Puan</span>
@@ -656,10 +691,69 @@ export default function JobCandidatesPage() {
                         </div>
                       </div>
                     )}
+                    {/* AI Opinion */}
+                    {(() => {
+                      try {
+                        const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
+                        const op = ta && ta.ai_opinion ? ta.ai_opinion : null;
+                        if (!op || !(op.opinion_label || op.opinion_text)) return null;
+                        return (
+                          <div className="p-3 rounded-md bg-amber-50 border border-amber-200">
+                            <div className="text-sm font-medium text-amber-900">Yapay Zeka Görüşü: {op.opinion_label || '—'}</div>
+                            {op.opinion_text && <p className="text-sm text-amber-900 mt-1">{op.opinion_text}</p>}
+                          </div>
+                        );
+                      } catch { return null; }
+                    })()}
                     {a.summary && (
                       <div>
                         <span className="text-sm font-medium text-gray-700">Özet</span>
                         <p className="text-sm text-gray-600 mt-1">{a.summary}</p>
+                      </div>
+                    )}
+                    {(typeof a.communication_score === 'number' || typeof a.technical_score === 'number' || typeof a.cultural_fit_score === 'number') && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-700">Yetkinlik Puanları</span>
+                        <div className="mt-2 space-y-2">
+                          {typeof a.communication_score === 'number' && (
+                            <div>
+                              <div className="flex justify-between text-xs text-gray-600"><span>İletişim</span><span>{a.communication_score}/100</span></div>
+                              <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.communication_score}%` }}></div></div>
+                            </div>
+                          )}
+                          {typeof a.technical_score === 'number' && (
+                            <div>
+                              <div className="flex justify-between text-xs text-gray-600"><span>Teknik</span><span>{a.technical_score}/100</span></div>
+                              <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.technical_score}%` }}></div></div>
+                            </div>
+                          )}
+                          {typeof a.cultural_fit_score === 'number' && (
+                            <div>
+                              <div className="flex justify-between text-xs text-gray-600"><span>Kültürel Uyum</span><span>{a.cultural_fit_score}/100</span></div>
+                              <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.cultural_fit_score}%` }}></div></div>
+                            </div>
+                          )}
+                        </div>
+                        {/* HR ortalaması (görüntüleme için, varsa) */}
+                        {(() => {
+                          try {
+                            const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
+                            const arr = ta && ta.hr_criteria && Array.isArray(ta.hr_criteria.criteria) ? ta.hr_criteria.criteria : [];
+                            if (!arr.length) return null;
+                            const valid = arr.filter((c:any)=> typeof c.score_0_100 === 'number');
+                            if (!valid.length) return null;
+                            const avg = Math.round(valid.reduce((s:any,c:any)=> s + c.score_0_100, 0) / valid.length);
+                            return (
+                              <div className="mt-4">
+                                <span className="text-sm font-medium text-gray-700">HR Ortalama</span>
+                                <div className="w-full bg-gray-200 rounded-full h-2 mt-1"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${avg}%` }}></div></div>
+                                <span className="text-sm text-gray-600">{avg}/100</span>
+                              </div>
+                            );
+                          } catch {
+                            return null;
+                          }
+                        })()}
                       </div>
                     )}
                     {(() => {
@@ -689,10 +783,34 @@ export default function JobCandidatesPage() {
                                 {ta.hr_criteria.summary && <p className="text-sm text-gray-600 mt-1">{ta.hr_criteria.summary}</p>}
                               </div>
                             )}
+                            {ta.job_fit && Array.isArray(ta.job_fit.recommendations) && ta.job_fit.recommendations.length > 0 && (
+                              <div>
+                                <span className="text-sm font-medium text-gray-700">Öneriler</span>
+                                <ul className="mt-2 space-y-1 list-disc list-inside text-sm text-gray-700">
+                                  {ta.job_fit.recommendations.map((r: any, idx: number) => (<li key={idx}>{r}</li>))}
+                                </ul>
+                              </div>
+                            )}
                             {ta.job_fit && (
                               <div>
                                 <span className="text-sm font-medium text-gray-700">İşe Uygunluk</span>
                                 {ta.job_fit.job_fit_summary && <p className="text-sm text-gray-600 mt-1">{ta.job_fit.job_fit_summary}</p>}
+                                {Array.isArray(ta.job_fit.requirements_matrix) && ta.job_fit.requirements_matrix.length > 0 && (
+                                  <div className="mt-2">
+                                    <span className="text-xs font-medium text-gray-600">Gereksinim Karşılama</span>
+                                    <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      {ta.job_fit.requirements_matrix.map((r:any, i:number) => (
+                                        <div key={i} className="text-sm">
+                                          <div className="flex items-center justify-between">
+                                            <span className="font-medium">{r.label}</span>
+                                            <span className={`${r.meets==='yes'?'bg-emerald-100 text-emerald-700':r.meets==='partial'?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'} text-xs px-2 py-0.5 rounded-full`}>{r.meets}</span>
+                                          </div>
+                                          {r.evidence && <div className="text-xs text-gray-600 mt-1">{r.evidence}</div>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                                 {Array.isArray(ta.job_fit.key_matches) && ta.job_fit.key_matches.length > 0 && (
                                   <div className="mt-2">
                                     <span className="text-xs font-medium text-gray-600">Eşleşen Yönler</span>
@@ -713,6 +831,27 @@ export default function JobCandidatesPage() {
                                 )}
                               </div>
                             )}
+                            {/* Gereksinim Karşılama kaldırıldı */}
+                            {ta.meta && (
+                              <div>
+                                <span className="text-sm font-medium text-gray-700">Konuşma İstatistikleri</span>
+                                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm text-gray-700">
+                                  <div>Toplam Soru: <strong>{ta.meta.question_count ?? '—'}</strong></div>
+                                  <div>Toplam Cevap: <strong>{ta.meta.answer_count ?? '—'}</strong></div>
+                                  <div>Ortalama Cevap Uzunluğu: <strong>{ta.meta.avg_answer_length_words ?? '—'}</strong> kelime</div>
+                                  <div>Dolgu Sözcük Sayısı: <strong>{ta.meta.filler_word_count ?? '—'}</strong></div>
+                                  {typeof ta.meta.avg_answer_latency_seconds === 'number' && (
+                                    <div>Ortalama Cevap Latency: <strong>{Math.round(ta.meta.avg_answer_latency_seconds)} sn</strong></div>
+                                  )}
+                                  {typeof ta.meta.avg_inter_question_gap_seconds === 'number' && (
+                                    <div>Sorular Arası Ortalama Süre: <strong>{Math.round(ta.meta.avg_inter_question_gap_seconds)} sn</strong></div>
+                                  )}
+                                  {Array.isArray(ta.meta.top_keywords) && ta.meta.top_keywords.length > 0 && (
+                                    <div className="md:col-span-2">Öne Çıkan Anahtar Kelimeler: <span>{ta.meta.top_keywords.join(', ')}</span></div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       } catch (e) {
@@ -726,8 +865,16 @@ export default function JobCandidatesPage() {
           ) : (
             <div className="py-6 text-sm text-gray-500">Rapor bulunamadı</div>
           )}
+          {/* Transcript toggle */}
+          {reportInterviewId && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-sm text-brand-700">Transkripti Göster</summary>
+              <TranscriptBlock interviewId={reportInterviewId} />
+            </details>
+          )}
         </DialogContent>
       </Dialog>
+      {/* Scorecard Modal kaldırıldı */}
 
       {/* Invite Link Modal */}
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>

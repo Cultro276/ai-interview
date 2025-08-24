@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { apiFetch } from "@/lib/api";
 import { listen } from "@/lib/voice";
 import { Steps } from "@/components/ui/Steps";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 
 export default function InterviewPage({ params }: { params: { token: string } }) {
   const { token } = params;
+  const forceWhisper = typeof window !== "undefined" && process.env.NEXT_PUBLIC_FORCE_WHISPER === "true";
   const [status, setStatus] = useState<
     | "loading"
     | "invalid"
@@ -37,11 +38,19 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const [question, setQuestion] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "speaking" | "listening" | "thinking">("idle");
   const [history, setHistory] = useState<{ role: "assistant" | "user"; text: string }[]>([]);
+  const askedCount = useMemo(() => history.filter(t => t.role === "assistant").length, [history]);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  // Accessibility toggles
+  const [showCaptions, setShowCaptions] = useState(true);
   
   // Conversation tracking
   const [interviewId, setInterviewId] = useState<number | null>(null);
   const [interviewJobId, setInterviewJobId] = useState<number | null>(null);
   const sequenceNumberRef = useRef<number>(0);
+  const audioStartIndexRef = useRef<number>(0);
+  // Dedicated per-answer audio recorder to produce a single valid container
+  const answerRecorderRef = useRef<MediaRecorder | null>(null);
+  const answerChunksRef = useRef<Blob[]>([]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   // WebAudio for mixing mic + TTS
@@ -217,22 +226,97 @@ export default function InterviewPage({ params }: { params: { token: string } })
     if (status !== "interview" || question === null) return;
 
     let rec: any = null;
+
+    // Anti-cheat: tab visibility / focus loss events (best-effort)
+    const sendSignal = async (kind: string, meta?: string) => {
+      try {
+        const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+        await fetch(`${base}/api/v1/signals/public`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, interview_id: interviewId, kind, meta }),
+        });
+      } catch {}
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) sendSignal("tab_hidden");
+    };
+    const handleWindowBlur = () => sendSignal("focus_lost");
+
     // Force ElevenLabs when available by adding provider in query body
     playTTS(question, () => {
       setPhase("listening");
+      // mark the start index for recent audio chunks to enable Whisper fallback STT per answer
+      try { audioStartIndexRef.current = audioChunksRef.current.length; } catch {}
+      // Start a dedicated per-answer audio recorder to ensure a single self-contained blob
+      try {
+        const audioOnlyStream = mixDestRef.current && mixDestRef.current.stream.getAudioTracks().length
+          ? mixDestRef.current.stream
+          : (stream ? new MediaStream(stream.getAudioTracks()) : null);
+        if (audioOnlyStream && audioOnlyStream.getAudioTracks().length) {
+          answerChunksRef.current = [];
+          const mimeCandidates = [
+            "audio/webm",
+            "audio/ogg;codecs=opus",
+            "audio/mp4",
+          ];
+          const chosen = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
+            ? mimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
+            : undefined;
+          const ansRec = new MediaRecorder(audioOnlyStream, chosen ? { mimeType: chosen } : undefined);
+          ansRec.ondataavailable = (e) => { answerChunksRef.current.push(e.data); };
+          // Start without timeslice to get a single final Blob upon stop
+          ansRec.start();
+          answerRecorderRef.current = ansRec;
+        }
+      } catch {}
 
       let buffer: string[] = [];
       let silenceTimer: any = null;
       let hardStopTimer: any = null;
 
-      const finalize = () => {
+      const finalize = async () => {
         if (rec && rec.stop) rec.stop();
+        // Stop per-answer recorder to finalize a single blob
+        if (answerRecorderRef.current && answerRecorderRef.current.state !== "inactive") {
+          try { (answerRecorderRef.current as any).requestData?.(); } catch {}
+          answerRecorderRef.current.stop();
+          await new Promise(resolve => {
+            answerRecorderRef.current!.addEventListener("stop", resolve, { once: true });
+          });
+        }
         if (silenceTimer) clearTimeout(silenceTimer);
         if (hardStopTimer) clearTimeout(hardStopTimer);
         let full = buffer.join(" ").trim();
-        if (!full) {
-          // Fallback: proceed even if no speech captured, to avoid getting stuck
-          full = "...";
+        if (forceWhisper) {
+          full = ""; // always force server-side Whisper
+        }
+        // If browser STT is empty or too short, try Whisper on recent mixed audio
+        if (!full || full.length < 10) {
+          try {
+            // Prefer the dedicated per-answer recording if available
+            const hasAnswerBlob = answerChunksRef.current.length > 0;
+            if (hasAnswerBlob) {
+              const type = answerChunksRef.current[0]?.type || "audio/webm";
+              const clip = new Blob(answerChunksRef.current, { type });
+              const fd = new FormData();
+              const ext = type.includes("mp4") ? "mp4" : type.includes("ogg") ? "ogg" : type.includes("webm") ? "webm" : type.includes("wav") ? "wav" : "bin";
+              fd.append("file", clip, `answer.${ext}`);
+              const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+              const resp = await fetch(`${base}/api/v1/stt/transcribe-file?interview_id=${interviewId}`, { method: "POST", body: fd });
+              if (resp.ok) {
+                const data = await resp.json();
+                const whisperText = (data?.text || "").trim();
+                if (whisperText) {
+                  full = whisperText;
+                }
+              }
+            }
+          } catch {}
+          if (!full) {
+            // Last resort fallback to avoid getting stuck
+            full = "...";
+          }
         }
 
         // Update history with user's answer
@@ -283,6 +367,9 @@ export default function InterviewPage({ params }: { params: { token: string } })
       };
 
       const listenStart = Date.now();
+
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      window.addEventListener("blur", handleWindowBlur);
       rec = listen(
         (t) => {
           buffer.push(t);
@@ -301,8 +388,20 @@ export default function InterviewPage({ params }: { params: { token: string } })
     return () => {
       if (rec && rec.stop) rec.stop();
       try { currentTtsSourceRef.current?.stop(0); } catch {}
+      try { document.removeEventListener("visibilitychange", handleVisibilityChange); } catch (e) {}
+      try { window.removeEventListener("blur", handleWindowBlur); } catch (e) {}
+      // Clean up timers if needed
+      if (typeof (window as any).silenceTimer !== "undefined" && (window as any).silenceTimer) clearTimeout((window as any).silenceTimer);
+      if (typeof (window as any).hardStopTimer !== "undefined" && (window as any).hardStopTimer) clearTimeout((window as any).hardStopTimer);
     };
   }, [status, question]);
+
+  // Lightweight timer (no user interaction)
+  useEffect(() => {
+    if (status !== "interview") return;
+    const id = setInterval(() => setElapsedSec((s)=>s+1), 1000);
+    return () => clearInterval(id);
+  }, [status]);
 
   // --- Start recording when interview begins ---
   // 1) Video+Audio recorder with codec fallback and timeslice chunks
@@ -369,10 +468,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
         : new MediaStream(stream.getAudioTracks());
       if (audioOnlyStream.getAudioTracks().length) {
         const audioMimeCandidates = [
-          "audio/webm;codecs=opus",
-          "audio/webm",
+          "audio/mp4",              // ← En uyumlu format önce
+          "audio/webm",             // ← Codec olmadan WebM
           "audio/ogg;codecs=opus",
-          "audio/mp4",
+          "audio/webm;codecs=opus", // ← Sorunlu codec en sona
         ];
         const chosenAudioMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
           ? audioMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
@@ -488,6 +587,9 @@ export default function InterviewPage({ params }: { params: { token: string } })
         <p className="text-gray-700">
           Bu video mülâkat sırasında kaydedilen görüntü ve ses verileriniz, işe alım sürecinin yürütülmesi amacıyla işlenecek ve saklanacaktır.
         </p>
+        <p className="text-sm mt-2">
+          Tam metni okumak için <a href="/privacy" target="_blank" rel="noreferrer" className="text-brand-700 underline">KVKK / Gizlilik Metni</a>
+        </p>
         <label className="block my-4">
           <input
             type="checkbox"
@@ -497,7 +599,22 @@ export default function InterviewPage({ params }: { params: { token: string } })
           />
           KVKK metnini okudum ve kabul ediyorum.
         </label>
-        <Button disabled={!accepted} onClick={() => setStatus("permissions")}>Devam Et</Button>
+        <Button
+          disabled={!accepted}
+          onClick={async () => {
+            try {
+              // Persist consent before moving to permissions
+              await apiFetch(`/api/v1/tokens/consent`, {
+                method: "POST",
+                body: JSON.stringify({ token, interview_id: interviewId, text_version: "v1" }),
+              });
+            } catch (e) {
+              // best-effort; do not block candidate flow
+              console.warn("consent failed", e);
+            }
+            setStatus("permissions");
+          }}
+        >Devam Et</Button>
       </div>
     );
   }
@@ -555,6 +672,12 @@ export default function InterviewPage({ params }: { params: { token: string } })
         <p>
           Birazdan yapay zekâ destekli sesli bir görüşme başlayacak. Karşınızdaki avatar soruları sesli olarak soracak; siz de kameraya bakarak sesli yanıt vereceksiniz. Yanıtlarınız otomatik olarak metne dönüştürülecek ve sonraki sorular buna göre oluşturulacak.
         </p>
+        <div className="mt-4 space-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={showCaptions} onChange={(e)=> setShowCaptions(e.target.checked)} />
+            Soru metinlerini göster (altyazı)
+          </label>
+        </div>
         <label className="block my-4">
           <input
             type="checkbox"
@@ -573,6 +696,14 @@ export default function InterviewPage({ params }: { params: { token: string } })
     return (
       <div className="p-6 text-center">
         <Steps steps={["Aydınlatma", "İzinler", "Cihaz Testi", "Tanıtım", "Mülakat"]} current={4} className="mb-6 justify-center" />
+        <div className="mx-auto max-w-2xl mb-3 flex items-center justify-between text-sm text-gray-600">
+          <div>
+            Soru: {askedCount}
+          </div>
+          <div>
+            Süre: {Math.floor(elapsedSec/60).toString().padStart(2,'0')}:{(elapsedSec%60).toString().padStart(2,'0')}
+          </div>
+        </div>
         <div className="flex gap-8 justify-center">
           {/* Avatar placeholder */}
           <div className="w-40 h-40 rounded-full bg-gray-200" />
@@ -593,7 +724,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           {phase === "thinking" && "Yanıt işleniyor…"}
           {phase === "idle" && "Görüşme yakında başlayacak…"}
         </p>
-        {question && (
+        {question && showCaptions && (
           <div className="mt-3 max-w-2xl mx-auto text-gray-800 border border-gray-200 rounded-lg p-3 bg-white">
             <div className="text-sm font-medium text-gray-600 mb-1">Soru</div>
             <div className="text-base">{question}</div>
@@ -625,4 +756,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
   return null; // fallback
 }
 
+
+function onVisibility(this: Document, ev: Event) {
+  throw new Error("Function not implemented.");
+}
 // --- Conversation side effects (hooks must be after component definition) --- 

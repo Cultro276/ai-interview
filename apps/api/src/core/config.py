@@ -15,6 +15,19 @@ class Settings:
     aws_access_key_id: str | None = os.getenv("AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str | None = os.getenv("AWS_SECRET_ACCESS_KEY")
     s3_bucket: str | None = os.getenv("S3_BUCKET")
+    # Retention
+    @property
+    def retention_media_days(self) -> int:
+        try:
+            return int(os.getenv("RETENTION_MEDIA_DAYS", "365"))
+        except Exception:
+            return 365
+    @property
+    def retention_transcript_days(self) -> int:
+        try:
+            return int(os.getenv("RETENTION_TRANSCRIPT_DAYS", "365"))
+        except Exception:
+            return 365
 
     @property
     def database_url(self) -> str:

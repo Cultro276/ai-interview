@@ -290,7 +290,7 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
         ).scalar_one_or_none()
         if not job:
             raise HTTPException(status_code=400, detail="No job available to attach interview")
-        interview = Interview(job_id=job.id, candidate_id=cand.id, status="completed")
+        interview = Interview(job_id=job.id, candidate_id=cand.id, status="pending")
         session.add(interview)
         await session.flush()
     if media_in.audio_url:

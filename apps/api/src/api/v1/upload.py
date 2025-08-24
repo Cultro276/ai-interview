@@ -14,5 +14,11 @@ class PresignRequest(BaseModel):
 
 @router.post("/presign")
 async def presign(req: PresignRequest, user=Depends(current_active_user)):
+    # Restrict accepted content types for security
+    ct = (req.content_type or "").lower()
+    allowed = {"image/", "application/pdf", "text/plain"}
+    if not any(ct.startswith(p) for p in allowed):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Unsupported content type")
     # Keep uploads prefix for generic admin uploads
     return generate_presigned_put_url(req.file_name, req.content_type, prefix="uploads")

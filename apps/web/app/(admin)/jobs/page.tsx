@@ -113,6 +113,7 @@ export default function JobsPage() {
                   <Link href={`/jobs/${job.id}/candidates`} aria-label={`${job.title} ilanı adaylarını görüntüle`}>
                     <Button variant="outline" size="sm">Adayları Görüntüle</Button>
                   </Link>
+                  {/* Editor deprecated; hide link */}
                   <Dialog>
                     <DialogTrigger asChild>
                       <Button variant="ghost" size="sm">Düzenle</Button>

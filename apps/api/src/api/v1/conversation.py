@@ -10,8 +10,8 @@ from src.db.models.job import Job
 from src.db.models.candidate import Candidate
 from src.db.models.candidate_profile import CandidateProfile
 
-from src.core.gemini import generate_question, generate_question_robust, polish_question, extract_requirements_from_text
-from src.services.dialog import generate_next_question, extract_keywords
+from src.core.gemini import generate_question, generate_question_robust, polish_question
+from src.services.dialog import extract_keywords
 from src.core.metrics import collector
 import asyncio
 
@@ -69,13 +69,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 resume_text = ""
 
         history = [t.dict() for t in req.history]
-        if not req_cfg and job_desc:
-            # On-the-fly requirements extraction to tailor questions to job posting
-            try:
-                cfg = await extract_requirements_from_text(job_desc)
-                req_cfg = cfg.get("requirements_config") or None
-            except Exception:
-                req_cfg = None
+        # No requirements-config extraction; rely on LLM with job description and resume only
 
         # If this is the very first assistant turn, craft a CV+job tailored opening question
         asked = sum(1 for t in history if t.get("role") == "assistant")
@@ -123,16 +117,17 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
 
         # Blend: take rule-based suggestion as a hint, but let LLM drive final when available
         rb = None
-        if req_cfg:
-            rb = generate_next_question(history, req_cfg)
         # Prefer LLM chain (Gemini -> OpenAI); only if they fail use rule-based
         try:
             combined_ctx = ("Job Description:\n" + (job_desc or "")).strip()
             if resume_text:
                 combined_ctx += ("\n\nCandidate Resume (summary text):\n" + resume_text[:4000])
-            result = await asyncio.wait_for(generate_question_robust(history, combined_ctx), timeout=6.0)
+            # Fixed max questions; job-level manual dialog settings removed
+            max_q = 7
+            result = await asyncio.wait_for(generate_question_robust(history, combined_ctx, max_questions=max_q), timeout=6.0)
         except Exception:
-            result = rb or generate_next_question(history, {"requirements": [], "dialog": {"max_questions": 7, "language": "tr"}})
+            # Fallback: ask a generic probing question
+            result = {"question": "Bu deneyiminizde üstlendiğiniz sorumlulukları biraz açar mısınız?", "done": False}
 
         # Optional LLM-based polish layer for more human-like tone
         if result and result.get("question"):

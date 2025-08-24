@@ -12,6 +12,10 @@ from .conversation import router as convo_router
 from .metrics import router as metrics_router
 from .tts import router as tts_router
 from .stt import router as stt_router
+from .signals import router as signals_router
+from slowapi.util import get_remote_address
+from slowapi import Limiter
+from fastapi import Request
 
 router = APIRouter(tags=["utils"])
 
@@ -34,3 +38,4 @@ router.include_router(convo_router)
 router.include_router(metrics_router)
 router.include_router(tts_router)
 router.include_router(stt_router)
+router.include_router(signals_router)

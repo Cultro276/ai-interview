@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
@@ -22,6 +22,42 @@ class UploadPresignRequest(BaseModel):
 
 
 router = APIRouter(prefix="/tokens", tags=["tokens"])
+class ConsentBody(BaseModel):
+    token: str
+    interview_id: int
+    text_version: str | None = None
+
+
+@router.post("/consent")
+async def record_consent(body: ConsentBody, request: Request, session: AsyncSession = Depends(get_session)):
+    # Validate token and interview ownership
+    cand = (await session.execute(select(Candidate).where(Candidate.token == body.token))).scalar_one_or_none()
+    now_utc = datetime.now(timezone.utc)
+    if not cand or cand.expires_at <= now_utc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
+    from src.db.models.interview import Interview
+    from sqlalchemy import select as _select
+    interview = (
+        await session.execute(_select(Interview).where(Interview.id == body.interview_id))
+    ).scalar_one_or_none()
+    if not interview or interview.candidate_id != cand.id:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Persist consent
+    try:
+        from src.db.models.consent import CandidateConsent
+        ip = None
+        try:
+            ip = request.client.host if request and request.client else None
+        except Exception:
+            ip = None
+        consent = CandidateConsent(candidate_id=cand.id, interview_id=interview.id, ip=ip, text_version=body.text_version)
+        session.add(consent)
+        await session.commit()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post("/verify", response_model=CandidateRead)
@@ -75,6 +111,12 @@ async def presign_upload(req: UploadPresignRequest, session: AsyncSession = Depe
     if completed is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Interview already completed")
 
+    # Content-type whitelist (audio/video only)
+    ct = (req.content_type or "").lower()
+    allowed_prefixes = ("audio/", "video/")
+    if not any(ct.startswith(p) for p in allowed_prefixes):
+        raise HTTPException(status_code=400, detail="Unsupported content type")
+
     # Build server-side file name: "{first_last}_{kind}_{YYYYMMDDHHMMSS}.{ext}"
     def slugify(value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
@@ -103,14 +145,23 @@ async def presign_upload(req: UploadPresignRequest, session: AsyncSession = Depe
             presigned = generate_presigned_put_url_at_key(key, req.content_type)
         else:
             presigned = generate_presigned_put_url(server_file_name, req.content_type, prefix="media")
-        print(f"[S3 PRESIGN] bucket={settings.s3_bucket} key={presigned['key']} content_type={req.content_type}")
+        # Log only minimal presign info; avoid leaking bucket/key in prod
+        try:
+            import logging
+            logging.getLogger(__name__).info("[S3 PRESIGN] content_type=%s", req.content_type)
+        except Exception:
+            pass
         # mark presign issued to measure upload duration when client later calls media PATCH
         collector.mark_presign_issued(req.token)
     except Exception as e:
         # Smooth dev fallback: return localhost fake URL to avoid hard failures when S3 is not configured
         fake_key = f"media/dev/{server_file_name}"
         fake_url = f"http://localhost:8000/dev-upload/{fake_key}"
-        print(f"[S3 PRESIGN:FALLBACK] {e} → using {fake_url}")
+        try:
+            import logging
+            logging.getLogger(__name__).warning("[S3 PRESIGN:FALLBACK] using dev upload", exc_info=False)
+        except Exception:
+            pass
         return {"presigned_url": fake_url, "url": fake_url, "key": fake_key}
 
     return {"presigned_url": presigned["url"], "url": presigned["url"], "key": presigned["key"]}

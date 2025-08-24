@@ -19,6 +19,11 @@ from src.api.v1.schemas import (
 )
 from src.services.analysis import generate_rule_based_analysis
 from src.core.metrics import collector, Timer
+from fastapi import Request
+from slowapi.util import get_remote_address
+from slowapi import Limiter
+from src.core.config import settings
+from datetime import datetime, timezone, timedelta
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -61,7 +66,16 @@ class PublicConversationMessageCreate(ConversationMessageCreate):
 async def create_message_public(
     message_in: PublicConversationMessageCreate,
     session: AsyncSession = Depends(get_session),
+    request: Request = None,
 ):
+    # Simple IP/token rate-limit: 10 requests per 10 seconds
+    try:
+        from fastapi import Request as _FReq
+        req: _FReq = request  # type: ignore[assignment]
+        limiter: Limiter = req.app.state.limiter  # type: ignore[attr-defined]
+        await limiter.limit("10/10seconds")(lambda: None)(req)
+    except Exception:
+        pass
     # Verify candidate token is valid and belongs to the interview's candidate
     cand = (
         await session.execute(select(Candidate).where(Candidate.token == message_in.token))
@@ -98,6 +112,21 @@ async def create_message_public(
     ).scalar_one_or_none()
     if existing:
         return existing
+
+    # Prevent duplicate consecutive assistant questions in case of front-end replays
+    try:
+        from sqlalchemy import desc as _desc
+        last = (
+            await session.execute(
+                select(ConversationMessage)
+                .where(ConversationMessage.interview_id == message_in.interview_id)
+                .order_by(ConversationMessage.sequence_number.desc())
+            )
+        ).scalar_one_or_none()
+        if last and last.role == message_in.role and last.content.strip() == message_in.content.strip():
+            return last
+    except Exception:
+        pass
 
     payload = {
         "interview_id": message_in.interview_id,
@@ -188,6 +217,28 @@ async def get_analysis(
         return analysis
     # Auto-generate if missing
     return await generate_rule_based_analysis(session, interview_id)
+
+
+@router.delete("/analysis/{interview_id}")
+async def delete_analysis_if_expired(interview_id: int, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    # Verify ownership
+    interview = await session.execute(
+        select(Interview)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Interview.id == interview_id, Job.user_id == current_user.id)
+    )
+    interview = interview.scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    # Enforce transcript retention: if older than retention, null out transcript_text
+    try:
+        if interview.created_at and interview.created_at < datetime.now(timezone.utc) - timedelta(days=settings.retention_transcript_days):
+            interview.transcript_text = None
+            await session.commit()
+            return {"ok": True, "cleared": True}
+    except Exception:
+        pass
+    return {"ok": True, "cleared": False}
 
 
 @router.put("/analysis/{interview_id}", response_model=InterviewAnalysisRead)

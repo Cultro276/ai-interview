@@ -1,8 +1,9 @@
 "use client";
 import { useDashboard } from "@/context/DashboardContext";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
+import { apiFetch } from "@/lib/api";
 
 export default function DashboardPage() {
   const { candidates, jobs, interviews, loading, refreshData } = useDashboard();
@@ -25,7 +26,12 @@ export default function DashboardPage() {
     };
   };
 
-  useEffect(() => {}, []);
+  const [weekly, setWeekly] = useState<{interviews_created_7d:number;interviews_completed_7d:number} | null>(null);
+  useEffect(() => {
+    (async ()=>{
+      try { const w = await apiFetch<any>("/api/v1/metrics/weekly"); setWeekly(w); } catch {}
+    })();
+  }, []);
 
   if (loading) {
     return (
@@ -58,6 +64,36 @@ export default function DashboardPage() {
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Total Candidates</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{candidates.length}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+          <CardContent className="p-6">
+            <div className="flex items-center">
+              <div className="p-2 bg-teal-100 dark:bg-teal-900/30 rounded-lg">
+                <svg className="w-6 h-6 text-teal-600 dark:text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 3a1 1 0 012 0v4a1 1 0 01-2 0V3zM4.22 5.22a1 1 0 011.42 0L8 7.59a1 1 0 11-1.42 1.41L4.22 6.64a1 1 0 010-1.42zM3 13a1 1 0 100-2h4a1 1 0 100 2H3zm1.22 5.78a1 1 0 011.42 0L8 16.41a1 1 0 00-1.42-1.41l-1.36 1.36a1 1 0 000 1.42zM13 17a1 1 0 112 0v4a1 1 0 11-2 0v-4zM16.41 8a1 1 0 001.41-1.41l-1.36-1.36a1 1 0 00-1.41 1.41L16.41 8zM17 11a1 1 0 110-2h4a1 1 0 110 2h-4z" />
+                </svg>
+              </div>
+              <div className="ml-4">
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">7 Gün Yeni</p>
+                <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{weekly?.interviews_created_7d ?? "—"}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+          <CardContent className="p-6">
+            <div className="flex items-center">
+              <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
+                <svg className="w-6 h-6 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div className="ml-4">
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">7 Gün Tamamlanan</p>
+                <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{weekly?.interviews_completed_7d ?? "—"}</p>
               </div>
             </div>
           </CardContent>

@@ -95,7 +95,7 @@ async def assess_job_fit(job_desc: str, transcript_text: str, resume_text: str |
     prompt = (
         "İş tanımı ile adayın cevabını (ve varsa özgeçmişini) karşılaştır.\n"
         "Özet + güçlü/zayıf eşleşmeler + eksik alanlar + öneriler ver. JSON dön.\n"
-        "{\"job_fit_summary\": str, \"key_matches\": [str], \"gaps\": [str], \"recommendations\": [str]}\n"
+        "{\"job_fit_summary\": str, \"key_matches\": [str], \"gaps\": [str], \"recommendations\": [str], \"requirements_matrix\": [{\"label\": str, \"meets\": \"yes\"|\"partial\"|\"no\", \"evidence\": str}]}\n"
         f"İş Tanımı: {job_desc[:4000]}\n"
         f"Cevap/Transkript: {transcript_text[:4000]}\n"
         f"Özgeçmiş: { (resume_text or '')[:2000] }"
@@ -104,6 +104,34 @@ async def assess_job_fit(job_desc: str, transcript_text: str, resume_text: str |
     body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
     try:
         async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            import json as _json
+            return _json.loads(data["choices"][0]["message"]["content"])
+    except Exception:
+        return {}
+
+
+async def opinion_on_candidate(job_desc: str, transcript_text: str, resume_text: str | None = None) -> Dict[str, Any]:
+    """Return a concise AI opinion for the candidate: label + 2-3 sentence rationale.
+
+    Returns JSON: {"opinion_label": str, "opinion_text": str, "confidence_0_1": number}
+    """
+    if not (settings.openai_api_key and (job_desc.strip() and transcript_text.strip())):
+        return {}
+    prompt = (
+        "Aşağıdaki iş tanımı ve aday transkriptine göre kısa bir işe alım görüşü ver.\n"
+        "Türkçe ve doğal ol. 2-3 cümlelik gerekçe yaz.\n"
+        "JSON dön: {\"opinion_label\": \"Strong Hire|Hire|Hold|No Hire\", \"opinion_text\": str, \"confidence_0_1\": number}.\n"
+        f"İş Tanımı: {job_desc[:3500]}\n"
+        f"Transkript: {transcript_text[:3500]}\n"
+        f"Özgeçmiş: {(resume_text or '')[:1500]}"
+    )
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()

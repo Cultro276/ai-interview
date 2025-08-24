@@ -113,3 +113,37 @@ def get_object_bytes(key: str) -> tuple[bytes, str]:
     body = obj["Body"].read()
     content_type = obj.get("ContentType") or "application/octet-stream"
     return body, content_type
+
+
+def upsert_lifecycle_rule(prefix: str, expire_days: int) -> dict:
+    """Create or update a bucket lifecycle rule for a given prefix.
+
+    Returns the resulting lifecycle configuration dict.
+    """
+    if not settings.s3_bucket:
+        raise RuntimeError("S3_BUCKET not configured")
+    bucket = settings.s3_bucket
+    rules = []
+    try:
+        existing = _client.get_bucket_lifecycle_configuration(Bucket=bucket)
+        rules = list(existing.get("Rules", []))
+    except Exception:
+        rules = []
+
+    rule_id = f"ttl-{prefix.strip('/').replace('/', '_')}"
+    new_rule = {
+        "ID": rule_id,
+        "Status": "Enabled",
+        "Filter": {"Prefix": prefix},
+        "Expiration": {"Days": int(expire_days)},
+    }
+    found = False
+    for i, r in enumerate(rules):
+        if r.get("ID") == rule_id or (r.get("Filter", {}).get("Prefix") == prefix):
+            rules[i] = new_rule
+            found = True
+            break
+    if not found:
+        rules.append(new_rule)
+    _client.put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration={"Rules": rules})
+    return {"bucket": bucket, "rules": rules}

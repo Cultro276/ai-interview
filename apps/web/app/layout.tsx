@@ -10,6 +10,9 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'sw
 export const metadata = {
   title: 'Hirevision - AI Interview Platform',
   description: 'Boost your hiring process with AI solution',
+  icons: {
+    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+  },
 }
 
 export default function RootLayout({

@@ -142,8 +142,15 @@ def enqueue_process_interview(interview_id: int) -> None:
     try:
         asyncio.create_task(process_interview(interview_id))
     except Exception:
-        # As a last resort, run synchronously
-        asyncio.run(process_interview(interview_id))
+        # Fallback: run in a background thread with its own event loop
+        try:
+            import threading
+            threading.Thread(
+                target=lambda: asyncio.run(process_interview(interview_id)),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
 
 def run_sqs_worker(poll_interval_seconds: float = 2.0) -> None:
