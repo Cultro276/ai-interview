@@ -1,6 +1,7 @@
 "use client";
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 interface Job {
   id: number;
@@ -49,6 +50,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [interviews, setInterviews] = useState<Interview[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const { user, token } = useAuth();
+
+  const cacheKey = typeof window !== 'undefined' && user ? `dashboardData:${user.id}` : null;
 
   const loadData = async () => {
     try {
@@ -73,9 +77,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       setJobs(nextJobs);
       setInterviews(nextInterviews);
 
-      // Save to session storage as backup (always persist the latest known-good values)
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('dashboardData', JSON.stringify({
+      // Save per-user backup cache
+      if (typeof window !== 'undefined' && cacheKey) {
+        sessionStorage.setItem(cacheKey, JSON.stringify({
           candidates: nextCandidates,
           jobs: nextJobs,
           interviews: nextInterviews,
@@ -124,16 +128,19 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         }
       }
       // Try to load from session storage first
-      if (typeof window !== 'undefined') {
-        const savedData = sessionStorage.getItem('dashboardData');
+      if (typeof window !== 'undefined' && cacheKey) {
+        const savedData = sessionStorage.getItem(cacheKey);
         if (savedData) {
           try {
             const { candidates: savedCandidates, jobs: savedJobs, interviews: savedInterviews } = JSON.parse(savedData);
             setCandidates(savedCandidates || []);
             setJobs(savedJobs || []);
             setInterviews(savedInterviews || []);
+            // Do not return early; kick off a background refresh to avoid stale cache
             setDataLoaded(true);
             setLoading(false);
+            // Reconcile with server in background
+            loadData();
             return;
           } catch (e) {
             //
@@ -144,7 +151,19 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       // If no saved data, load from API
       loadData();
     }
-  }, [dataLoaded]);
+  }, [dataLoaded, cacheKey]);
+
+  // On user or token change, reset data to avoid cross-tenant leakage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Best-effort: clear old generic cache key if present
+      try { sessionStorage.removeItem('dashboardData'); } catch {}
+    }
+    setCandidates([]);
+    setJobs([]);
+    setInterviews([]);
+    setDataLoaded(false);
+  }, [user?.id, token]);
 
   return (
     <DashboardContext.Provider

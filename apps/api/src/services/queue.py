@@ -17,7 +17,7 @@ from src.db.models.candidate import Candidate
 from src.db.session import async_session_factory
 from src.services.stt import transcribe_audio_batch
 from src.services.analysis import (
-    generate_rule_based_analysis,
+    generate_llm_full_analysis,
     merge_enrichment_into_analysis,
     enrich_with_job_and_hr,
 )
@@ -87,9 +87,9 @@ async def process_interview(interview_id: int) -> None:
                 # Leave to retry if using queue
                 pass
 
-        # Run analysis baseline
+        # Run LLM analysis baseline
         try:
-            await generate_rule_based_analysis(session, interview.id)
+            await generate_llm_full_analysis(session, interview.id)
         except Exception:
             pass
 

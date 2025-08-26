@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.auth import current_active_user
+from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
 from src.db.models.conversation import ConversationMessage, InterviewAnalysis
 from src.db.models.interview import Interview
@@ -17,7 +17,7 @@ from src.api.v1.schemas import (
     InterviewAnalysisCreate,
     InterviewAnalysisRead
 )
-from src.services.analysis import generate_rule_based_analysis
+from src.services.analysis import generate_llm_full_analysis
 from src.core.metrics import collector, Timer
 from fastapi import Request
 from slowapi.util import get_remote_address
@@ -41,10 +41,12 @@ async def create_message(
     current_user: User = Depends(current_active_user)
 ):
     # Verify user owns the interview
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Interview.id == message_in.interview_id, Job.user_id == current_user.id)
+        .where(Interview.id == message_in.interview_id, Job.user_id == owner_id)
     )
     interview = interview.scalar_one_or_none()
     if not interview:
@@ -164,10 +166,12 @@ async def get_conversation(
     current_user: User = Depends(current_active_user)
 ):
     # Verify user owns the interview
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Interview.id == interview_id, Job.user_id == current_user.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
     )
     interview = interview.scalar_one_or_none()
     if not interview:
@@ -191,18 +195,20 @@ async def create_analysis(
     current_user: User = Depends(current_active_user)
 ):
     # Verify user owns the interview
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Interview.id == analysis_in.interview_id, Job.user_id == current_user.id)
+        .where(Interview.id == analysis_in.interview_id, Job.user_id == owner_id)
     )
     interview = interview.scalar_one_or_none()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    # Always run rule-based analysis to (re)generate content
+    # Run LLM-based analysis to (re)generate content
     with Timer() as t:
-        result = await generate_rule_based_analysis(session, analysis_in.interview_id)
+        result = await generate_llm_full_analysis(session, analysis_in.interview_id)
     collector.record_analysis_ms(t.ms)
     return result
 
@@ -214,16 +220,18 @@ async def get_analysis(
     current_user: User = Depends(current_active_user)
 ):
     # Verify user owns the interview
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Interview.id == interview_id, Job.user_id == current_user.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
     )
     interview = interview.scalar_one_or_none()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
-    # Get analysis
+    # Get or generate analysis (LLM)
     result = await session.execute(
         select(InterviewAnalysis)
         .where(InterviewAnalysis.interview_id == interview_id)
@@ -231,17 +239,18 @@ async def get_analysis(
     analysis = result.scalar_one_or_none()
     if analysis:
         return analysis
-    # Auto-generate if missing
-    return await generate_rule_based_analysis(session, interview_id)
+    return await generate_llm_full_analysis(session, interview_id)
 
 
 @router.delete("/analysis/{interview_id}")
 async def delete_analysis_if_expired(interview_id: int, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
     # Verify ownership
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Interview.id == interview_id, Job.user_id == current_user.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
     )
     interview = interview.scalar_one_or_none()
     if not interview:
@@ -265,17 +274,19 @@ async def update_analysis(
     current_user: User = Depends(current_active_user)
 ):
     # Verify user owns the interview
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Interview.id == interview_id, Job.user_id == current_user.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
     )
     interview = interview.scalar_one_or_none()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    # Recompute analysis from conversation messages
+    # Recompute analysis from conversation messages (LLM)
     with Timer() as t:
-        result = await generate_rule_based_analysis(session, interview_id)
+        result = await generate_llm_full_analysis(session, interview_id)
     collector.record_analysis_ms(t.ms)
     return result

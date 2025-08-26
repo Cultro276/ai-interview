@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from src.db.session import get_session
 from src.db.models.candidate import Candidate
 from src.db.models.interview import Interview
-from src.db.models.interview_signal import InterviewSignal
+## NOTE: interview_signals table removed; persist is disabled to avoid 500s
 
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -30,9 +30,12 @@ async def create_public_signal(body: SignalCreate, session: AsyncSession = Depen
     interview = (await session.execute(select(Interview).where(Interview.id == body.interview_id))).scalar_one_or_none()
     if not interview or interview.candidate_id != cand.id:
         raise HTTPException(status_code=404, detail="Interview not found")
-    sig = InterviewSignal(interview_id=interview.id, kind=body.kind[:50], meta=(body.meta or None))
-    session.add(sig)
-    await session.commit()
+    # Best-effort: do not persist signals; simply acknowledge to client.
+    # This endpoint is used for UX telemetry (focus/tab events). We intentionally no-op.
+    try:
+        await session.commit()
+    except Exception:
+        pass
     return {"ok": True}
 
 

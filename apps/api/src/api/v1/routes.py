@@ -13,6 +13,8 @@ from .metrics import router as metrics_router
 from .tts import router as tts_router
 from .stt import router as stt_router
 from .signals import router as signals_router
+from .team import router as team_router
+from .internal import router as internal_router
 from slowapi.util import get_remote_address
 from slowapi import Limiter
 from fastapi import Request
@@ -39,3 +41,5 @@ router.include_router(metrics_router)
 router.include_router(tts_router)
 router.include_router(stt_router)
 router.include_router(signals_router)
+router.include_router(team_router)
+router.include_router(internal_router)

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.auth import current_active_user
+from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
 from src.db.models.job import Job
 from src.db.models.interview import Interview
@@ -15,7 +15,7 @@ from src.db.session import get_session
 from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUpdate, InterviewMediaUpdate
 from src.core.s3 import generate_presigned_get_url
 from urllib.parse import urlparse
-from src.services.analysis import generate_rule_based_analysis
+from src.services.analysis import generate_llm_full_analysis
 from src.services.analysis import merge_enrichment_into_analysis
 from src.core.metrics import collector, Timer
 from pydantic import BaseModel
@@ -37,10 +37,11 @@ async def create_interview(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user),
 ):
-    # Enforce tenant boundaries: job and candidate must belong to the current user
+    # Enforce tenant boundaries: job and candidate must belong to the tenant owner
+    owner_id = get_effective_owner_id(current_user)
     job = (
         await session.execute(
-            select(Job).where(Job.id == int_in.job_id, Job.user_id == current_user.id)
+            select(Job).where(Job.id == int_in.job_id, Job.user_id == owner_id)
         )
     ).scalar_one_or_none()
     if not job:
@@ -48,7 +49,7 @@ async def create_interview(
 
     cand = (
         await session.execute(
-            select(Candidate).where(Candidate.id == int_in.candidate_id, Candidate.user_id == current_user.id)
+            select(Candidate).where(Candidate.id == int_in.candidate_id, Candidate.user_id == owner_id)
         )
     ).scalar_one_or_none()
     if not cand:
@@ -127,8 +128,8 @@ async def _maybe_complete_interview(
 async def upload_transcript(
     int_id: int,
     payload: TranscriptPayload,
+    request: Request,
     session: AsyncSession = Depends(get_session),
-    request: Request | None = None,
 ):
     interview = (
         await session.execute(select(Interview).where(Interview.id == int_id))
@@ -190,11 +191,12 @@ async def list_interviews(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    # Only show interviews for jobs that belong to the current user
+    # Only show interviews for jobs that belong to the tenant owner
+    owner_id = get_effective_owner_id(current_user)
     result = await session.execute(
         select(Interview)
         .join(Job, Interview.job_id == Job.id)
-        .where(Job.user_id == current_user.id)
+        .where(Job.user_id == owner_id)
     )
     return result.scalars().all()
 
@@ -242,11 +244,13 @@ async def media_download_urls(
     current_user: User = Depends(current_active_user),
 ):
     # Ensure ownership
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = (
         await session.execute(
             select(Interview)
             .join(Job, Interview.job_id == Job.id)
-            .where(Interview.id == int_id, Job.user_id == current_user.id)
+            .where(Interview.id == int_id, Job.user_id == owner_id)
         )
     ).scalar_one_or_none()
     if not interview:
@@ -279,11 +283,13 @@ async def update_status(
     current_user: User = Depends(current_active_user),
 ):
     # Ensure the interview belongs to a job owned by the current user
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     interview = (
         await session.execute(
             select(Interview)
             .join(Job, Interview.job_id == Job.id)
-            .where(Interview.id == int_id, Job.user_id == current_user.id)
+            .where(Interview.id == int_id, Job.user_id == owner_id)
         )
     ).scalar_one_or_none()
     if not interview:
@@ -298,7 +304,7 @@ async def update_status(
 
 
 @candidate_router.patch("/{token}/media", response_model=InterviewRead)
-async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSession=Depends(get_session), request: Request | None = None):
+async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Request, session:AsyncSession=Depends(get_session)):
     # Find interview by candidate token (latest)
     from src.db.models.candidate import Candidate
     cand = (await session.execute(select(Candidate).where(Candidate.token==token))).scalar_one_or_none()
@@ -361,7 +367,7 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, session:AsyncSe
     try:
         if interview.status == "completed":
             with Timer() as t:
-                await generate_rule_based_analysis(session, interview.id)
+                await generate_llm_full_analysis(session, interview.id)
             collector.record_analysis_ms(t.ms)
     except Exception:
         # Non-blocking; log only

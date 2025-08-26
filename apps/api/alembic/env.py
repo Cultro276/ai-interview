@@ -4,6 +4,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import asyncio
 from logging.config import fileConfig
+from typing import Any, Dict
 
 from alembic import context
 from sqlalchemy import pool
@@ -49,9 +50,11 @@ def do_run_migrations(connection):
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode with async engine."""
+    section = config.get_section(config.config_ini_section) or {}
+    configuration: Dict[str, Any] = dict(section)
+    configuration["sqlalchemy.url"] = get_url()
     connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section),
-        url=get_url(),
+        configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

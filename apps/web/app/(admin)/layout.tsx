@@ -1,5 +1,5 @@
 "use client";
-import { AuthProvider } from "@/context/AuthContext";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { DashboardProvider } from "@/context/DashboardContext";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
@@ -50,6 +50,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     <Link href="/jobs" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                       Jobs
                     </Link>
+                    <TeamLink />
+                    {/* Founders link is fully hidden to all users; remove from navigation. */}
                     {/* Interviews page removed; all actions under each Job's candidates */}
                     <ThemeToggle />
                   </div>
@@ -73,3 +75,37 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     </AuthProvider>
   );
 } 
+
+function TeamLink() {
+  try {
+    const { user } = useAuth();
+    if (!user) return null;
+    if (user.is_admin || user.can_manage_members) {
+      return (
+        <Link href="/team" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+          Team
+        </Link>
+      );
+    }
+  } catch {}
+  return null;
+}
+
+function InternalLink() {
+  try {
+    const { user } = useAuth();
+    if (!user) return null;
+    // Platform admins (founders) have is_superuser in backend; not present in user payload by default.
+    // As a simple client gate, hide link unless the email is a known founder alias.
+    // Real enforcement is on the API via platform_admin_required.
+    const founderEmails = ["admin@example.com", "owner2@example.com"]; // adjust as needed for local dev
+    if (founderEmails.includes(user.email)) {
+      return (
+        <Link href="/internal" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+          Founders
+        </Link>
+      );
+    }
+  } catch {}
+  return null;
+}

@@ -242,14 +242,164 @@ async def merge_enrichment_into_analysis(
             blob = json.loads(analysis.technical_assessment)
     except Exception:
         blob = {}
-    # Merge keys conservatively
-    for k in ("soft_skills", "speech", "vision", "llm_summary"):
+    # Merge keys conservatively; accept broader set used across the pipeline
+    mergeable_scalar_keys = (
+        "soft_skills",
+        "speech",
+        "vision",
+        "llm_summary",
+        "dialog_plan",
+        "hr_criteria",
+        "job_fit",
+        "ai_opinion",
+    )
+    for k in mergeable_scalar_keys:
         if k in enrichment and enrichment[k]:
             blob[k] = enrichment[k]
+
+    # Turn-level evidence: append to a list for chronological inspection
+    if "turn_evidence" in enrichment and enrichment["turn_evidence"]:
+        try:
+            existing_list = blob.get("turn_evidence")
+            if not isinstance(existing_list, list):
+                existing_list = []
+            # Normalize single item vs list
+            incoming = enrichment["turn_evidence"]
+            if isinstance(incoming, list):
+                existing_list.extend([it for it in incoming if it])
+            else:
+                existing_list.append(incoming)
+            blob["turn_evidence"] = existing_list[-200:]  # cap to last N to avoid unbounded growth
+        except Exception:
+            # If anything goes wrong, skip silently to avoid blocking analysis merge
+            pass
     analysis.technical_assessment = json.dumps(blob, ensure_ascii=False)
     await session.commit()
     await session.refresh(analysis)
     return analysis
+
+
+# --- LLM-based full analysis (job + resume + transcript) ---
+
+async def generate_llm_full_analysis(session: AsyncSession, interview_id: int) -> InterviewAnalysis:
+    """Generate a comprehensive LLM-based analysis using job description, resume text, and transcript.
+
+    Uses OpenAI via services.nlp helpers. Falls back to existing record if inputs are missing.
+    """
+    from sqlalchemy import select as _select
+    from src.db.models.job import Job
+    from src.db.models.candidate import Candidate
+    from src.db.models.candidate_profile import CandidateProfile
+    from src.services.nlp import assess_hr_criteria, assess_job_fit, opinion_on_candidate
+
+    interview = (
+        await session.execute(_select(Interview).where(Interview.id == interview_id))
+    ).scalar_one_or_none()
+    if not interview:
+        raise ValueError("Interview not found")
+
+    job = (
+        await session.execute(_select(Job).where(Job.id == interview.job_id))
+    ).scalar_one_or_none()
+    job_desc = (getattr(job, "description", None) or "").strip()
+
+    resume_text = ""
+    try:
+        cand = (
+            await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
+        ).scalar_one_or_none()
+        if cand:
+            profile = (
+                await session.execute(_select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
+            ).scalar_one_or_none()
+            if profile and profile.resume_text:
+                resume_text = profile.resume_text
+    except Exception:
+        resume_text = ""
+
+    # Assemble transcript text
+    transcript_text = (interview.transcript_text or "").strip()
+    if not transcript_text:
+        msgs = (
+            await session.execute(
+                _select(ConversationMessage)
+                .where(ConversationMessage.interview_id == interview_id)
+                .order_by(ConversationMessage.sequence_number)
+            )
+        ).scalars().all()
+        if msgs:
+            def _prefix(m):
+                return ("Interviewer" if m.role.value == "assistant" else ("Candidate" if m.role.value == "user" else "System"))
+            transcript_text = "\n\n".join([f"{_prefix(m)}: {m.content.strip()}" for m in msgs if (m.content or "").strip()])
+
+    # If inputs are partial, proceed with what we have (no rule-based fallback)
+    if not transcript_text.strip() and resume_text.strip():
+        # Use resume as proxy transcript for analysis
+        transcript_text = resume_text[:5000]
+
+    # Call LLM helpers
+    hr = await assess_hr_criteria(transcript_text)
+    fit = await assess_job_fit(job_desc, transcript_text, resume_text)
+    op = await opinion_on_candidate(job_desc, transcript_text, resume_text)
+
+    # Derive simple overall score from HR criteria average if available; else 0
+    overall = None
+    try:
+        crit = hr.get("criteria", []) if isinstance(hr, dict) else []
+        if crit:
+            scores = [float(c.get("score_0_100", 0.0)) for c in crit if isinstance(c, dict)]
+            if scores:
+                overall = round(sum(scores) / len(scores), 2)
+    except Exception:
+        overall = None
+
+    # Upsert
+    existing = (
+        await session.execute(
+            select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id)
+        )
+    ).scalar_one_or_none()
+    import json
+    blob = {"hr_criteria": hr, "job_fit": fit, "ai_opinion": op}
+    if existing:
+        if overall is not None:
+            existing.overall_score = overall
+        existing.summary = (fit.get("job_fit_summary") if isinstance(fit, dict) else None) or existing.summary
+        existing.model_used = "llm-full-v1"
+        try:
+            base = {}
+            if existing.technical_assessment:
+                try:
+                    base = json.loads(existing.technical_assessment)
+                except Exception:
+                    base = {}
+            base.update(blob)
+            existing.technical_assessment = json.dumps(base, ensure_ascii=False)
+        except Exception:
+            pass
+        await session.commit()
+        await session.refresh(existing)
+        return existing
+    else:
+        analysis = InterviewAnalysis(
+            interview_id=interview_id,
+            overall_score=overall,
+            summary=(fit.get("job_fit_summary") if isinstance(fit, dict) else None),
+            strengths=None,
+            weaknesses=None,
+            communication_score=None,
+            technical_score=None,
+            cultural_fit_score=None,
+            model_used="llm-full-v1",
+        )
+        try:
+            analysis.technical_assessment = json.dumps(blob, ensure_ascii=False)
+        except Exception:
+            pass
+        session.add(analysis)
+        await session.commit()
+        await session.refresh(analysis)
+        return analysis
 
 
 async def enrich_with_job_and_hr(

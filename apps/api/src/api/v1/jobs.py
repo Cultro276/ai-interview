@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.job import Job
 from src.db.session import get_session
-from src.auth import current_active_user
+from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
 from src.api.v1.schemas import JobCreate, JobRead, JobUpdate, CandidateCreate, CandidateRead
 from src.db.models.candidate import Candidate
@@ -35,7 +35,8 @@ async def list_jobs(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    result = await session.execute(select(Job).where(Job.user_id == current_user.id))
+    owner_id = get_effective_owner_id(current_user)
+    result = await session.execute(select(Job).where(Job.user_id == owner_id))
     return result.scalars().all()
 
 
@@ -48,11 +49,12 @@ async def create_job(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
+    ensure_permission(current_user, manage_jobs=True)
     expiry = job_in.expires_in_days if (job_in.expires_in_days and job_in.expires_in_days > 0) else 7
     job = Job(
         title=job_in.title,
         description=job_in.description,
-        user_id=current_user.id,
+        user_id=get_effective_owner_id(current_user),
         default_invite_expiry_days=expiry,
     )
     session.add(job)
@@ -68,7 +70,9 @@ async def update_job(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    result = await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    ensure_permission(current_user, manage_jobs=True)
+    owner_id = get_effective_owner_id(current_user)
+    result = await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -89,7 +93,9 @@ async def delete_job(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    result = await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+    ensure_permission(current_user, manage_jobs=True)
+    owner_id = get_effective_owner_id(current_user)
+    result = await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -117,7 +123,9 @@ async def bulk_upload_candidates(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user),
 ):
-    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))).scalar_one_or_none()
+    ensure_permission(current_user, manage_candidates=True)
+    owner_id = get_effective_owner_id(current_user)
+    job = (await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -140,15 +148,11 @@ async def bulk_upload_candidates(
         # Upload resume under cvs/{job_id}/... fixed path
         safe_name = (f.filename or "resume").split("/")[-1]
         key = f"cvs/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
-        try:
-            resume_url = put_object_bytes(key, content, f.content_type or "application/octet-stream")
-        except Exception:
-            # Smooth-dev: allow missing S3 by skipping resume storage
-            resume_url = None
+        resume_url = put_object_bytes(key, content, f.content_type or "application/octet-stream")
 
         # Create candidate
         cand = Candidate(
-            user_id=current_user.id,
+            user_id=owner_id,
             name=name or "Candidate",
             email=email or f"no-email-{int(datetime.utcnow().timestamp())}@example.com",
             resume_url=resume_url,
@@ -195,8 +199,10 @@ async def create_candidate_for_job(
     current_user: User = Depends(current_active_user),
 ):
     # Ensure job belongs to current user
+    ensure_permission(current_user, manage_candidates=True)
+    owner_id = get_effective_owner_id(current_user)
     job = (
-        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))
     ).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -206,7 +212,7 @@ async def create_candidate_for_job(
     from src.core.mail import send_email_resend
     expires_days = cand_in.expires_in_days or job.default_invite_expiry_days or 7
     candidate = Candidate(
-        user_id=current_user.id,
+        user_id=owner_id,
         name=cand_in.name,
         email=cand_in.email,
         resume_url=cand_in.resume_url,
@@ -305,8 +311,9 @@ async def presign_single_candidate_cv(
     current_user: User = Depends(current_active_user),
 ):
     # Verify job ownership
+    owner_id = get_effective_owner_id(current_user)
     job = (
-        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))
     ).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -342,8 +349,10 @@ async def job_leaderboard(
     current_user: User = Depends(current_active_user),
 ):
     # Verify ownership
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
     job = (
-        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user.id))
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))
     ).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

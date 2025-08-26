@@ -91,11 +91,7 @@ def healthcheck():
     return {"status": "ok", **collector.snapshot()}
 
 
-# Dev-only stub endpoint for fake uploads when S3 is not configured
-@app.put("/dev-upload/{path:path}", tags=["dev"], include_in_schema=False)
-def dev_upload_stub(path: str):
-    # Accept payload and return 200 to simulate S3 upload success
-    return JSONResponse({"ok": True, "path": path})
+# Remove dev-upload stub; real S3 is used in production
 
 
 # Versioned API

@@ -36,6 +36,8 @@ class NextQuestionRequest(BaseModel):
 class NextQuestionResponse(BaseModel):
     question: str | None = None
     done: bool
+    # Optional live insights for recruiter-side UX (not shown to candidate)
+    live: dict | None = None
 
 
 @router.post("/next-question", response_model=NextQuestionResponse)
@@ -99,11 +101,12 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 low = q0.lower()
                 if any(p in low for p in leak_phrases) or not q0:
                     q0 = "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?"
-                return NextQuestionResponse(question=q0, done=False)
+                return NextQuestionResponse(question=q0, done=False, live=None)
             except Exception:
                 return NextQuestionResponse(
                     question="Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?",
                     done=False,
+                    live=None,
                 )
 
         # Blend: take dialog plan and behavior signals as hints, but let LLM drive final
@@ -240,7 +243,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
     question_out: str | None = q_any if isinstance(q_any, str) else None
     d_any = result.get("done")
     done_out: bool = True if isinstance(d_any, bool) and d_any else False
-    return NextQuestionResponse(question=question_out, done=done_out) 
+    return NextQuestionResponse(question=question_out, done=done_out, live=None)
 
 
 # --- STT -> Analysis -> Next Question pipeline ---
@@ -331,7 +334,61 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
         interview_id=body.interview_id,
         signals=body.signals,
     )
+    # 5.1) Per-turn LLM-backed quick analysis for early-stop and live insights
+    from src.services.analysis import generate_llm_full_analysis, merge_enrichment_into_analysis
+    from src.core.metrics import Timer
+    live: dict | None = None
+    try:
+        with Timer() as t:
+            analysis = await generate_llm_full_analysis(session, body.interview_id)
+        # Build turn evidence snippet from the last user message
+        last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
+        turn_ev = {
+            "seq": next_seq,
+            "text": last_user_text[:500],
+            "ts_ms": t.ms,
+            "comm": analysis.communication_score,
+            "tech": analysis.technical_score,
+            "culture": analysis.cultural_fit_score,
+            "overall": analysis.overall_score,
+        }
+        await merge_enrichment_into_analysis(session, body.interview_id, {"turn_evidence": turn_ev})
+        # Prepare live insights for recruiter dashboard (not exposed to candidate UI)
+        live = {
+            "overall": analysis.overall_score,
+            "communication": analysis.communication_score,
+            "technical": analysis.technical_score,
+            "cultural_fit": analysis.cultural_fit_score,
+            "analysis_ms": t.ms,
+        }
+    except Exception:
+        live = None
+
+    # 5.2) Dynamic max question bound and early-stop heuristic
+    dynamic_max_q = 7
+    try:
+        if live and isinstance(live.get("overall"), (int, float)):
+            ov = float(live["overall"])
+            # If very strong candidate early, stop sooner to save time/cost
+            if ov >= 85:
+                dynamic_max_q = 5
+            elif ov >= 70:
+                dynamic_max_q = 6
+    except Exception:
+        dynamic_max_q = 7
+
+    # If we've already asked enough, stop here
+    asked_count = sum(1 for t in history if t.get("role") == "assistant")
+    if asked_count >= dynamic_max_q:
+        return NextQuestionResponse(question=None, done=True, live=live)
+
+    # 5.3) Delegate to next_question logic to craft next prompt
     result = await next_question(req, session)  # returns NextQuestionResponse
+    # Attach live insights to the response
+    try:
+        result.live = live  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     # 6) Persist assistant question if any
     if result.question:

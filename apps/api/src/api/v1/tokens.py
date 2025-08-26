@@ -154,14 +154,7 @@ async def presign_upload(req: UploadPresignRequest, session: AsyncSession = Depe
         # mark presign issued to measure upload duration when client later calls media PATCH
         collector.mark_presign_issued(req.token)
     except Exception as e:
-        # Smooth dev fallback: return localhost fake URL to avoid hard failures when S3 is not configured
-        fake_key = f"media/dev/{server_file_name}"
-        fake_url = f"http://localhost:8000/dev-upload/{fake_key}"
-        try:
-            import logging
-            logging.getLogger(__name__).warning("[S3 PRESIGN:FALLBACK] using dev upload", exc_info=False)
-        except Exception:
-            pass
-        return {"presigned_url": fake_url, "url": fake_url, "key": fake_key}
+        # In production (real S3), fail fast on presign errors
+        raise HTTPException(status_code=500, detail=f"S3 presign failed: {str(e)}")
 
     return {"presigned_url": presigned["url"], "url": presigned["url"], "key": presigned["key"]}

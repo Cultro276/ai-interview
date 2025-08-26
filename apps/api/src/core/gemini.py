@@ -183,19 +183,19 @@ def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None
 
 
 async def generate_question_robust(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 7, total_timeout_s: float = 5.0) -> dict[str, str | bool]:
-    """Two-tier LLM strategy: Gemini first, then OpenAI; last resort local canned.
+    """Two-tier LLM strategy: OpenAI first, then Gemini; last resort local canned.
 
-    Ensures kural tabanlıya düşme çok nadir olur.
+    OpenAI (gpt-4o-mini) is preferred for lower latency and Turkish fluency; Gemini remains as backup.
     """
-    # 1) Gemini (fast path)
+    # 1) OpenAI (preferred)
     try:
-        return await to_thread.run_sync(_sync_generate, history, job_context, max_questions)
+        return await to_thread.run_sync(_openai_sync_generate, history, job_context, max_questions)
     except Exception:
         pass
 
-    # 2) OpenAI (fallback)
+    # 2) Gemini (backup)
     try:
-        return await to_thread.run_sync(_openai_sync_generate, history, job_context, max_questions)
+        return await to_thread.run_sync(_sync_generate, history, job_context, max_questions)
     except Exception:
         pass
 

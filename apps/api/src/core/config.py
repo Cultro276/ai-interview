@@ -93,6 +93,11 @@ class Settings:
     def mail_from_name(self) -> str | None:
         return os.getenv("MAIL_FROM_NAME")
 
+    # Internal admin console
+    @property
+    def internal_admin_secret(self) -> str:
+        return os.getenv("INTERNAL_ADMIN_SECRET", "dev-internal-secret")
+
 
 @lru_cache
 def get_settings() -> Settings:

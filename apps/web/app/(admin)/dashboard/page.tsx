@@ -2,36 +2,32 @@
 import { useDashboard } from "@/context/DashboardContext";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { Card, CardContent } from "@/components/ui/Card";
+import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { apiFetch } from "@/lib/api";
+import { Users, TimerReset, CheckCircle2, Briefcase, MessageSquare } from "lucide-react";
+
+type Weekly = { interviews_created_7d:number; interviews_completed_7d:number };
+type Leader = { interview_id:number; candidate_id:number; candidate_name:string|null; overall_score:number|null };
 
 export default function DashboardPage() {
   const { candidates, jobs, interviews, loading, refreshData } = useDashboard();
-  
-  // Get job statistics
-  const getJobStats = (jobId: number) => {
-    const jobCandidates = candidates.filter(candidate => 
-      interviews.some(interview => 
-        interview.job_id === jobId && interview.candidate_id === candidate.id
-      )
-    );
-    const jobInterviews = interviews.filter(interview => interview.job_id === jobId);
-    const completedInterviews = jobInterviews.filter(interview => interview.status === "completed");
-    
-    return {
-      totalCandidates: jobCandidates.length,
-      totalInterviews: jobInterviews.length,
-      completedInterviews: completedInterviews.length,
-      pendingInterviews: jobInterviews.length - completedInterviews.length
-    };
-  };
 
-  const [weekly, setWeekly] = useState<{interviews_created_7d:number;interviews_completed_7d:number} | null>(null);
+  const [weekly, setWeekly] = useState<Weekly | null>(null);
+  const [leaders, setLeaders] = useState<Record<number, Leader[]>>({});
+
   useEffect(() => {
     (async ()=>{
-      try { const w = await apiFetch<any>("/api/v1/metrics/weekly"); setWeekly(w); } catch {}
+      try { const w = await apiFetch<Weekly>("/api/v1/metrics/weekly"); setWeekly(w); } catch {}
+      // Preload leaderboards for latest up to 3 jobs
+      try {
+        const topJobs = jobs.slice(0, 3);
+        const entries = await Promise.all(topJobs.map(j => apiFetch<Leader[]>(`/api/v1/jobs/${j.id}/leaderboard`)));
+        const mapped: Record<number, Leader[]> = {};
+        topJobs.forEach((j, idx) => { mapped[j.id] = entries[idx] || []; });
+        setLeaders(mapped);
+      } catch {}
     })();
-  }, []);
+  }, [jobs.length]);
 
   if (loading) {
     return (
@@ -47,19 +43,17 @@ export default function DashboardPage() {
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Dashboard Overview</h1>
-        <Button onClick={refreshData}>Refresh Data</Button>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Dashboard</h1>
+        <Button onClick={refreshData}>Yenile</Button>
       </div>
 
-      {/* Overview Cards */}
+      {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-6">
             <div className="flex items-center">
-              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
-                <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg text-blue-600 dark:text-blue-400">
+                <Users className="w-6 h-6" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Total Candidates</p>
@@ -71,10 +65,8 @@ export default function DashboardPage() {
         <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-6">
             <div className="flex items-center">
-              <div className="p-2 bg-teal-100 dark:bg-teal-900/30 rounded-lg">
-                <svg className="w-6 h-6 text-teal-600 dark:text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 3a1 1 0 012 0v4a1 1 0 01-2 0V3zM4.22 5.22a1 1 0 011.42 0L8 7.59a1 1 0 11-1.42 1.41L4.22 6.64a1 1 0 010-1.42zM3 13a1 1 0 100-2h4a1 1 0 100 2H3zm1.22 5.78a1 1 0 011.42 0L8 16.41a1 1 0 00-1.42-1.41l-1.36 1.36a1 1 0 000 1.42zM13 17a1 1 0 112 0v4a1 1 0 11-2 0v-4zM16.41 8a1 1 0 001.41-1.41l-1.36-1.36a1 1 0 00-1.41 1.41L16.41 8zM17 11a1 1 0 110-2h4a1 1 0 110 2h-4z" />
-                </svg>
+              <div className="p-2 bg-teal-100 dark:bg-teal-900/30 rounded-lg text-teal-600 dark:text-teal-400">
+                <TimerReset className="w-6 h-6" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">7 Gün Yeni</p>
@@ -86,10 +78,8 @@ export default function DashboardPage() {
         <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-6">
             <div className="flex items-center">
-              <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg">
-                <svg className="w-6 h-6 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
+              <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg text-amber-600 dark:text-amber-400">
+                <CheckCircle2 className="w-6 h-6" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">7 Gün Tamamlanan</p>
@@ -102,10 +92,8 @@ export default function DashboardPage() {
         <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-6">
             <div className="flex items-center">
-                <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
-                <svg className="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2-2v2m8 0V6a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8a2 2 0 012-2V6" />
-                </svg>
+              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg text-green-600 dark:text-green-400">
+                <Briefcase className="w-6 h-6" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Active Jobs</p>
@@ -118,10 +106,8 @@ export default function DashboardPage() {
         <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-6">
             <div className="flex items-center">
-              <div className="p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg">
-                <svg className="w-6 h-6 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
+              <div className="p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg text-purple-600 dark:text-purple-400">
+                <MessageSquare className="w-6 h-6" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Total Interviews</p>
@@ -134,10 +120,8 @@ export default function DashboardPage() {
         <Card className="shadow border border-gray-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
           <CardContent className="p-6">
             <div className="flex items-center">
-              <div className="p-2 bg-orange-100 dark:bg-orange-900/30 rounded-lg">
-                <svg className="w-6 h-6 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+              <div className="p-2 bg-orange-100 dark:bg-orange-900/30 rounded-lg text-orange-600 dark:text-orange-400">
+                <CheckCircle2 className="w-6 h-6" />
               </div>
               <div className="ml-4">
                 <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Completed</p>
@@ -148,12 +132,37 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Removed noisy metric cards to keep dashboard focused */}
+      {/* Pipeline (funnel) */}
+      <Card className="bg-white dark:bg-neutral-900 shadow border border-gray-200 dark:border-neutral-800 mb-8">
+        <CardHeader className="flex items-center justify-between">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Süreç Özeti</h3>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="rounded-lg p-4 border border-gray-100 dark:border-neutral-800">
+              <div className="text-sm text-gray-500 dark:text-gray-300">Adaylar</div>
+              <div className="text-2xl font-semibold text-gray-900 dark:text-neutral-100">{candidates.length}</div>
+            </div>
+            <div className="rounded-lg p-4 border border-gray-100 dark:border-neutral-800">
+              <div className="text-sm text-gray-500 dark:text-gray-300">Görüşmeler</div>
+              <div className="text-2xl font-semibold text-gray-900 dark:text-neutral-100">{interviews.length}</div>
+            </div>
+            <div className="rounded-lg p-4 border border-gray-100 dark:border-neutral-800">
+              <div className="text-sm text-gray-500 dark:text-gray-300">Tamamlanan</div>
+              <div className="text-2xl font-semibold text-gray-900 dark:text-neutral-100">{interviews.filter(i => i.status === "completed").length}</div>
+            </div>
+            <div className="rounded-lg p-4 border border-gray-100 dark:border-neutral-800">
+              <div className="text-sm text-gray-500 dark:text-gray-300">7 Gün Tamamlanan</div>
+              <div className="text-2xl font-semibold text-gray-900 dark:text-neutral-100">{weekly?.interviews_completed_7d ?? "—"}</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      {/* Recent Interviews with Conversation Data */}
+      {/* Recent Interviews */}
       <div className="bg-white dark:bg-neutral-900 rounded-lg shadow border border-gray-200 dark:border-neutral-800 mb-8">
         <div className="px-6 py-4 border-b border-gray-200 dark:border-neutral-800">
-          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Recent Interviews</h3>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Son Görüşmeler</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800">
@@ -227,26 +236,34 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Job-specific Statistics (localized labels) */}
-      <div className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-neutral-100 mb-4">İş İstatistikleri</h3>
-        <div className="space-y-4">
-          {jobs.slice(0, 3).map((job) => {
-            const stats = getJobStats(job.id);
-            return (
-              <div key={job.id} className="flex items-center justify-between p-4 border border-gray-100 dark:border-neutral-800 rounded-lg hover:bg-gray-50 dark:hover:bg-neutral-800">
+      {/* Job leaderboards */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {jobs.slice(0, 3).map(job => (
+          <Card key={job.id} className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800">
+            <CardHeader>
+              <div className="flex items-center justify-between">
                 <div>
-                  <h4 className="font-medium text-gray-900 dark:text-neutral-100">{job.title}</h4>
-                  <p className="text-sm text-gray-500 dark:text-gray-300 truncate max-w-md">{job.description}</p>
+                  <div className="text-sm text-gray-500 dark:text-gray-300">İş</div>
+                  <div className="text-base font-semibold text-gray-900 dark:text-neutral-100">{job.title}</div>
                 </div>
-                <div className="flex items-center space-x-4 text-sm">
-                  <span className="text-brand-700 dark:text-brand-300">{stats.totalCandidates} aday</span>
-                  <span className="text-green-600 dark:text-green-400">{stats.completedInterviews} tamamlandı</span>
-                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Top 5</div>
               </div>
-            );
-          })}
-        </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <ul className="divide-y divide-gray-200 dark:divide-neutral-800">
+                {(leaders[job.id] || []).slice(0, 5).map((row) => (
+                  <li key={row.interview_id} className="px-4 py-3 flex items-center justify-between text-sm">
+                    <span className="truncate max-w-[70%] text-gray-900 dark:text-neutral-100">{row.candidate_name || `#${row.candidate_id}`}</span>
+                    <span className="text-gray-700 dark:text-gray-300">{row.overall_score ?? "—"}</span>
+                  </li>
+                ))}
+                {(!leaders[job.id] || leaders[job.id].length === 0) && (
+                  <li className="px-4 py-6 text-sm text-gray-500 dark:text-gray-400">Veri yok</li>
+                )}
+              </ul>
+            </CardContent>
+          </Card>
+        ))}
       </div>
     </div>
   );

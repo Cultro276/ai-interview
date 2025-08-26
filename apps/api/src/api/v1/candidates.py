@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 
-from src.auth import current_active_user
+from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
 from src.api.v1.schemas import CandidateCreate, CandidateRead, CandidateUpdate
 from src.core.s3 import generate_presigned_get_url
@@ -31,7 +31,8 @@ async def list_candidates(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    result = await session.execute(select(Candidate).where(Candidate.user_id == current_user.id))
+    owner_id = get_effective_owner_id(current_user)
+    result = await session.execute(select(Candidate).where(Candidate.user_id == owner_id))
     rows: List[Candidate] = list(result.scalars().all())
     # Sanitize potentially invalid emails to avoid 500 due to response model validation
     safe_list: List[CandidateRead] = []
@@ -60,8 +61,9 @@ async def create_candidate(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
+    ensure_permission(current_user, manage_candidates=True)
     candidate_data = candidate_in.dict(exclude={'expires_in_days'})
-    candidate = Candidate(**candidate_data, user_id=current_user.id)
+    candidate = Candidate(**candidate_data, user_id=get_effective_owner_id(current_user))
     candidate.token = uuid4().hex
     # If caller didn't specify, fallback to 7 days
     candidate.expires_at = datetime.utcnow() + timedelta(days=candidate_in.expires_in_days or 7)
@@ -105,7 +107,9 @@ async def resend_link(
     expires_in_days: int | None = None,
     payload: SendLinkRequest | None = None,
 ):
-    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
+    ensure_permission(current_user, manage_candidates=True)
+    owner_id = get_effective_owner_id(current_user)
+    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
     # Optionally update expiry
@@ -141,9 +145,11 @@ async def notify_final(
     current_user: User = Depends(current_active_user),
     payload: FinalInviteRequest | None = None,
 ):
+    ensure_permission(current_user, manage_candidates=True)
+    owner_id = get_effective_owner_id(current_user)
     cand = (
         await session.execute(
-            select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id)
+            select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id)
         )
     ).scalar_one_or_none()
     if not cand:
@@ -162,7 +168,8 @@ async def get_invite_link(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user),
 ):
-    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
+    owner_id = get_effective_owner_id(current_user)
+    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
     url = f"http://localhost:3000/interview/{cand.token}"
@@ -176,7 +183,8 @@ async def resume_download_url(
     current_user: User = Depends(current_active_user),
     expires_in: int = 300,
 ):
-    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
+    owner_id = get_effective_owner_id(current_user)
+    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
     if not cand.resume_url:
@@ -214,7 +222,9 @@ async def update_candidate(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
+    ensure_permission(current_user, manage_candidates=True)
+    owner_id = get_effective_owner_id(current_user)
+    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
     for field, value in cand_in.dict(exclude_unset=True).items():
@@ -230,7 +240,9 @@ async def delete_candidate(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user)
 ):
-    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == current_user.id))).scalar_one_or_none()
+    ensure_permission(current_user, manage_candidates=True)
+    owner_id = get_effective_owner_id(current_user)
+    cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
     await session.delete(cand)

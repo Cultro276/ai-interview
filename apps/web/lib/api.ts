@@ -5,12 +5,17 @@ export async function apiFetch<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const foundersSecret = typeof window !== "undefined" ? localStorage.getItem("founders_secret") : null;
+  // Allow caller to opt out of JSON content-type via options.headers
   const headers: Record<string, string> = {
     ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
     ...(options.headers as Record<string, string>),
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+  }
+  if (foundersSecret) {
+    headers["X-Internal-Secret"] = foundersSecret;
   }
 
   // Resolve API base URL with solid fallback for all environments
