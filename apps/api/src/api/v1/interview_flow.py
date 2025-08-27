@@ -126,6 +126,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     import json as _json
                     blob = _json.loads(ia.technical_assessment)
                     dp = blob.get("dialog_plan")
+                    req_spec = blob.get("requirements_spec") or {"items": []}
                     if dp:
                         topics = dp.get("topics") or []
                         targeted = dp.get("targeted_questions") or []
@@ -137,6 +138,24 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         if seed and asked == 0:
                             # Strongly bias LLM to use seed for the first question
                             combined_ctx += "\n\nFirstQuestionHint: " + seed
+                    # Add requirements coverage steering if we have job_fit and req_spec
+                    try:
+                        from src.services.dialog import build_requirements_ctx, pick_next_requirement_target
+                        job_fit = blob.get("job_fit") or {}
+                        # asked_counts by simple label matching in prior assistant questions
+                        asked_counts: dict[str, int] = {}
+                        for t in history:
+                            if t.get("role") != "assistant":
+                                continue
+                            txt = (t.get("text") or "").lower()
+                            for it in (req_spec.get("items") or [])[:12]:
+                                lab = str(it.get("label", "")).lower()
+                                if lab and lab in txt:
+                                    asked_counts[lab] = asked_counts.get(lab, 0) + 1
+                        target = pick_next_requirement_target(req_spec, (job_fit.get("requirements_matrix") or []), asked_counts)
+                        combined_ctx += "\n\n" + build_requirements_ctx(req_spec, job_fit, target)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             if resume_text:
@@ -154,8 +173,9 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     combined_ctx += ("\n\nBehavior Signals: " + ", ".join(set(sigs)))
             except Exception:
                 pass
-            # Fixed max questions; job-level manual dialog settings removed
-            max_q = 7
+            # Tunable max questions
+            from src.core.config import settings as _settings
+            max_q = _settings.interview_max_questions_default
             # Steer model when the last user message is empty/too short (likely STT artifact)
             try:
                 last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
@@ -364,23 +384,61 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
     except Exception:
         live = None
 
-    # 5.2) Dynamic max question bound and early-stop heuristic
-    dynamic_max_q = 7
+    # 5.2) Dynamic max question bound and evidence-based early-stop
+    from src.core.config import settings as _settings2
+    dynamic_max_q = _settings2.interview_max_questions_default
     try:
         if live and isinstance(live.get("overall"), (int, float)):
             ov = float(live["overall"])
             # If very strong candidate early, stop sooner to save time/cost
-            if ov >= 85:
-                dynamic_max_q = 5
-            elif ov >= 70:
-                dynamic_max_q = 6
+            if ov >= _settings2.interview_overall_score_strong_threshold:
+                dynamic_max_q = min(dynamic_max_q, 5)
+            elif ov >= _settings2.interview_overall_score_good_threshold:
+                dynamic_max_q = min(dynamic_max_q, 6)
     except Exception:
-        dynamic_max_q = 7
+        dynamic_max_q = _settings2.interview_max_questions_default
 
     # If we've already asked enough, stop here
     asked_count = sum(1 for t in history if t.get("role") == "assistant")
     if asked_count >= dynamic_max_q:
         return NextQuestionResponse(question=None, done=True, live=live)
+
+    # Evidence-based early finish: if requirements coverage is clearly sufficient (positive or negative), end
+    try:
+        from sqlalchemy import select as _select
+        from src.db.models.conversation import InterviewAnalysis
+        ia = (
+            await session.execute(_select(InterviewAnalysis).where(InterviewAnalysis.interview_id == body.interview_id))
+        ).scalar_one_or_none()
+        if ia and ia.technical_assessment:
+            import json as _json
+            blob = _json.loads(ia.technical_assessment)
+            req_spec = (blob.get("requirements_spec") or {}).get("items") or []
+            job_fit = blob.get("job_fit") or {}
+            matrix = job_fit.get("requirements_matrix") or []
+            if isinstance(matrix, list) and matrix:
+                cover = {str(m.get("label", "")): str(m.get("meets", "")).lower() for m in matrix if isinstance(m, dict)}
+                must_labels = [str(it.get("label", "")) for it in req_spec if isinstance(it, dict) and bool(it.get("must", False))]
+                # If no explicit must, pick top-3 by weight as critical
+                if not must_labels:
+                    tmp = sorted([it for it in req_spec if isinstance(it, dict)], key=lambda it: float(it.get("weight", 0.5) or 0.5), reverse=True)
+                    must_labels = [str(it.get("label", "")) for it in tmp[:3]]
+                must_labels = [l for l in must_labels if l]
+                must_yes = all(cover.get(l) == "yes" for l in must_labels) if must_labels else False
+                must_no = any(cover.get(l) == "no" for l in must_labels) if must_labels else False
+                must_partial_count = sum(1 for l in must_labels if cover.get(l) == "partial") if must_labels else 0
+                ov = float(live["overall"]) if live and isinstance(live.get("overall"), (int, float)) else None
+                # Positive: all critical requirements met → finish if minimum interaction achieved
+                if asked_count >= _settings2.interview_min_questions_positive and must_yes:
+                    return NextQuestionResponse(question=None, done=True, live=live)
+                # Negative: any critical requirement explicitly not met and enough exchange → finish
+                if asked_count >= _settings2.interview_min_questions_negative and must_no:
+                    return NextQuestionResponse(question=None, done=True, live=live)
+                # Mixed: many partials and low overall → finish to avoid dragging
+                if asked_count >= _settings2.interview_min_questions_mixed and must_partial_count >= 2 and (ov is not None and ov <= _settings2.interview_low_score_threshold):
+                    return NextQuestionResponse(question=None, done=True, live=live)
+    except Exception:
+        pass
 
     # 5.3) Delegate to next_question logic to craft next prompt
     result = await next_question(req, session)  # returns NextQuestionResponse

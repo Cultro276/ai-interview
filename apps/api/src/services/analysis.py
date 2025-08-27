@@ -482,7 +482,7 @@ async def precompute_dialog_plan(session: AsyncSession, interview_id: int) -> di
     from src.db.models.job import Job
     from src.db.models.candidate import Candidate
     from src.db.models.candidate_profile import CandidateProfile
-    from src.services.nlp import extract_resume_spotlights, make_targeted_question_from_spotlight
+    from src.services.nlp import extract_resume_spotlights, make_targeted_question_from_spotlight, extract_requirements_spec
 
     interview = (
         await session.execute(_select(Interview).where(Interview.id == interview_id))
@@ -531,6 +531,11 @@ async def precompute_dialog_plan(session: AsyncSession, interview_id: int) -> di
         return uniq
 
     topics = _job_topics(job_desc)
+    # Extract normalized requirements spec from job description (best-effort)
+    try:
+        req_spec = await extract_requirements_spec(job_desc)
+    except Exception:
+        req_spec = {"items": []}
     spotlights = extract_resume_spotlights(resume_text, max_items=3) if resume_text else []
     targeted = [make_targeted_question_from_spotlight(s) for s in spotlights]
     first_seed = None
@@ -544,7 +549,7 @@ async def precompute_dialog_plan(session: AsyncSession, interview_id: int) -> di
         "first_question_seed": first_seed,
     }
 
-    await merge_enrichment_into_analysis(session, interview_id, {"dialog_plan": plan})
+    await merge_enrichment_into_analysis(session, interview_id, {"dialog_plan": plan, "requirements_spec": req_spec})
     # Also prepare a concrete first question and store on Interview
     try:
         from src.core.gemini import generate_question_robust

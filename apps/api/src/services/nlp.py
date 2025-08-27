@@ -142,6 +142,94 @@ async def opinion_on_candidate(job_desc: str, transcript_text: str, resume_text:
 
 
 
+# --- Job requirements extraction (normalize spec from Turkish job description) ---
+
+async def extract_requirements_spec(job_desc: str) -> Dict[str, Any]:
+    """Normalize job requirements from a Turkish job description into a structured spec.
+
+    Shape:
+    {
+      "items": [
+        {
+          "id": str,
+          "label": str,
+          "must": bool,
+          "level": "junior|mid|senior|lead",
+          "weight": float (0..1),
+          "keywords": [str],
+          "success_rubric": str,
+          "question_templates": [str]
+        }
+      ]
+    }
+
+    Falls back to a simple keyword-based list if LLM is unavailable.
+    """
+    if not (job_desc or "").strip():
+        return {"items": []}
+
+    # Fallback when no OpenAI key: build a lightweight spec from tokens
+    if not settings.openai_api_key:
+        import re as _re
+        toks = [t for t in _re.split(r"[^a-zA-ZçğıöşüÇĞİÖŞÜ0-9\+\.#]+", job_desc.lower()) if len(t) >= 3]
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for t in toks:
+            if t in seen:
+                continue
+            seen.add(t)
+            uniq.append(t)
+            if len(uniq) >= 12:
+                break
+        items = []
+        for i, k in enumerate(uniq):
+            items.append({
+                "id": f"kw_{i}",
+                "label": k,
+                "must": False,
+                "level": "mid",
+                "weight": 0.5,
+                "keywords": [k],
+                "success_rubric": "Somut örnek, rolünüz, yaptığınız eylemler ve ölçülebilir sonuç.",
+                "question_templates": [f"{k} ile ilgili somut bir örnek ve sonucu paylaşır mısınız?"],
+            })
+        return {"items": items}
+
+    # LLM path
+    import httpx  # local import in function scope
+    import json as _json
+    prompt = (
+        "Aşağıdaki iş ilanından gereksinimleri çıkar ve normalize et. JSON dön.\n"
+        "Şema: {\"items\":[{\"id\":str,\"label\":str,\"must\":bool,\"level\":\"junior|mid|senior|lead\","
+        "\"weight\":0-1,\"keywords\":[str],\"success_rubric\":str,\"question_templates\":[str]}]}\n"
+        f"İlan Metni:\n{job_desc[:5000]}"
+    )
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            spec = _json.loads(data["choices"][0]["message"]["content"])
+            # Defensive normalization
+            items = spec.get("items") if isinstance(spec, dict) else None
+            if not isinstance(items, list):
+                return {"items": []}
+            for i, it in enumerate(items):
+                if not isinstance(it, dict):
+                    continue
+                it.setdefault("id", f"req_{i}")
+                it["weight"] = float(it.get("weight", 0.5) or 0.5)
+                kws = it.get("keywords") or []
+                if not isinstance(kws, list) or not kws:
+                    it["keywords"] = [it.get("label", "")]
+                qts = it.get("question_templates") or []
+                if not isinstance(qts, list) or not qts:
+                    it["question_templates"] = [f"{it.get('label','')} ile ilgili somut bir örnek anlatır mısınız?"]
+            return {"items": items}
+    except Exception:
+        return {"items": []}
 # --- CV parsing helpers (bytes -> text) and spotlights ---
 
 def _read_pdf_bytes(data: bytes) -> str:

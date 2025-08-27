@@ -98,6 +98,63 @@ class Settings:
     def internal_admin_secret(self) -> str:
         return os.getenv("INTERNAL_ADMIN_SECRET", "dev-internal-secret")
 
+    # Interview thresholds (tunable via env)
+    @property
+    def interview_max_questions_default(self) -> int:
+        try:
+            return int(os.getenv("INTERVIEW_MAX_Q_DEFAULT", "7"))
+        except Exception:
+            return 7
+
+    @property
+    def interview_overall_score_good_threshold(self) -> float:
+        try:
+            return float(os.getenv("INTERVIEW_SCORE_GOOD", "70"))
+        except Exception:
+            return 70.0
+
+    @property
+    def interview_overall_score_strong_threshold(self) -> float:
+        try:
+            return float(os.getenv("INTERVIEW_SCORE_STRONG", "85"))
+        except Exception:
+            return 85.0
+
+    @property
+    def interview_min_questions_positive(self) -> int:
+        try:
+            return int(os.getenv("INTERVIEW_MIN_Q_POSITIVE", "3"))
+        except Exception:
+            return 3
+
+    @property
+    def interview_min_questions_negative(self) -> int:
+        try:
+            return int(os.getenv("INTERVIEW_MIN_Q_NEGATIVE", "4"))
+        except Exception:
+            return 4
+
+    @property
+    def interview_min_questions_mixed(self) -> int:
+        try:
+            return int(os.getenv("INTERVIEW_MIN_Q_MIXED", "5"))
+        except Exception:
+            return 5
+
+    @property
+    def interview_low_score_threshold(self) -> float:
+        try:
+            return float(os.getenv("INTERVIEW_LOW_SCORE", "55"))
+        except Exception:
+            return 55.0
+
+    @property
+    def interview_critical_requirements_top_k(self) -> int:
+        try:
+            return int(os.getenv("INTERVIEW_CRITICAL_REQ_TOP_K", "3"))
+        except Exception:
+            return 3
+
 
 @lru_cache
 def get_settings() -> Settings:

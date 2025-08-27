@@ -1,0 +1,42 @@
+{
+  "mcpServers": {
+    "browser": {
+      "command": "npx",
+      "args": ["-y", "@agentdeskai/browser-tools-mcp"],
+      "windowsCreateProcess": true
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp"],
+      "windowsCreateProcess": true
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp", "--api-key", "${CONTEXT7_API_KEY}"],
+      "windowsCreateProcess": true
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@smithery/cli", "run", "@smithery-ai/github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      },
+      "windowsCreateProcess": true
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "windowsCreateProcess": true
+    },
+    "openapi": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-openapi", "--schema", "${OPENAPI_SCHEMA_URL}"],
+      "windowsCreateProcess": true
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\kayra\\OneDrive\\Masaüstü\\ai-interview"],
+      "windowsCreateProcess": true
+    }
+  }
+}

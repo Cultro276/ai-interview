@@ -242,6 +242,65 @@ async def get_analysis(
     return await generate_llm_full_analysis(session, interview_id)
 
 
+# --- Requirements coverage (for dashboard heatmap) ---
+
+@router.get("/analysis/{interview_id}/requirements-coverage")
+async def get_requirements_coverage(
+    interview_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user)
+):
+    """Return compact coverage data for a given interview.
+
+    Shape: { items: [{ label, must, weight, meets, evidence }], summary: str }
+    """
+    # Verify ownership
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    interview = await session.execute(
+        select(Interview)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
+    )
+    interview = interview.scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    result = await session.execute(
+        select(ConversationMessage, InterviewAnalysis)
+        .join(InterviewAnalysis, InterviewAnalysis.interview_id == interview_id)
+        .where(ConversationMessage.interview_id == interview_id)
+    )
+    row = await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    analysis = row.scalar_one_or_none()
+    if not analysis or not getattr(analysis, "technical_assessment", None):
+        # Trigger analysis generation if missing
+        analysis = await generate_llm_full_analysis(session, interview_id)
+
+    try:
+        import json as _json
+        blob = _json.loads(analysis.technical_assessment or "{}")
+        spec = (blob.get("requirements_spec") or {}).get("items") or []
+        matrix = (blob.get("job_fit") or {}).get("requirements_matrix") or []
+        cover_map = {str(m.get("label","")): m for m in matrix if isinstance(m, dict)}
+        out_items = []
+        for it in spec:
+            if not isinstance(it, dict):
+                continue
+            label = str(it.get("label",""))
+            cov = cover_map.get(label, {})
+            out_items.append({
+                "label": label,
+                "must": bool(it.get("must", False)),
+                "weight": float(it.get("weight", 0.5) or 0.5),
+                "meets": cov.get("meets", None),
+                "evidence": cov.get("evidence", None),
+            })
+        return {"items": out_items, "summary": (blob.get("job_fit") or {}).get("job_fit_summary")}
+    except Exception:
+        return {"items": [], "summary": None}
+
+
 @router.delete("/analysis/{interview_id}")
 async def delete_analysis_if_expired(interview_id: int, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
     # Verify ownership
