@@ -27,8 +27,8 @@ export default function NewJobPage() {
 
   const validate = () => {
     const next: { title?: string; description?: string } = {};
-    if (!title.trim()) next.title = "Title is required";
-    if (description.trim().length > 0 && description.trim().length < 20) next.description = "Description should be at least 20 characters";
+    if (!title.trim()) next.title = "Başlık gerekli";
+    if (description.trim().length > 0 && description.trim().length < 20) next.description = "Açıklama en az 20 karakter olmalı";
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -61,7 +61,7 @@ export default function NewJobPage() {
         }
       }
       await refreshData();
-      success("Job created");
+      success("İlan oluşturuldu");
       router.push("/jobs");
     } catch (e: any) {
       error(e.message || "Failed to create job");
@@ -69,10 +69,10 @@ export default function NewJobPage() {
   };
   return (
     <div className="max-w-3xl mx-auto p-6">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Create New Job</h1>
+      <h1 className="text-2xl font-bold text-gray-900 mb-6">Yeni İlan Oluştur</h1>
       <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-4">
         <div>
-          <Label htmlFor="title" className="block text-sm font-medium text-gray-700 mb-1">Title</Label>
+          <Label htmlFor="title" className="block text-sm font-medium text-gray-700 mb-1">Başlık</Label>
           <Input
             id="title"
             aria-label="Job title"
@@ -81,14 +81,14 @@ export default function NewJobPage() {
             ref={titleRef}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="Senior Backend Engineer"
+            placeholder="Kıdemli Backend Mühendisi"
           />
           {errors.title && (
             <p id="title-error" className="mt-1 text-sm text-red-600">{errors.title}</p>
           )}
         </div>
         <div>
-          <Label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">Job Description</Label>
+          <Label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">İş Tanımı</Label>
           <textarea
             id="description"
             aria-label="Job description"
@@ -97,7 +97,7 @@ export default function NewJobPage() {
             ref={descRef}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Responsibilities, requirements, nice-to-haves..."
+            placeholder="Sorumluluklar, gereksinimler, artılar..."
             rows={10}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
           />
@@ -107,7 +107,7 @@ export default function NewJobPage() {
           <p className="text-xs text-gray-500 mt-1">Bu açıklama AI analizine bağlam olarak gönderilir.</p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Link Expiry (days)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Bağlantı süresi (gün)</label>
           <input
             type="number"
             min={1}
@@ -119,8 +119,8 @@ export default function NewJobPage() {
           <p className="text-xs text-gray-500 mt-1">Bu değer varsayılan aday daveti süresine kopyalanır.</p>
         </div>
         <div className="flex justify-end">
-          <Button onClick={submit} aria-label="Save job" disabled={extracting}>
-            {extracting ? "Kaydediliyor ve AI çıkarılıyor…" : "Save Job"}
+          <Button onClick={submit} aria-label="İlanı kaydet" disabled={extracting}>
+            {extracting ? "Kaydediliyor ve AI çıkarılıyor…" : "İlanı Kaydet"}
           </Button>
         </div>
         {autoReqJson && (

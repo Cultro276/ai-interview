@@ -20,42 +20,42 @@ export default function NewCandidatePage() {
   };
   return (
     <div style={{ padding: "1rem", maxWidth: "500px" }}>
-      <h1>New Candidate</h1>
+      <h1>Yeni Aday</h1>
       {error && <p style={{color:"red"}}>{error}</p>}
       <div style={{ marginBottom: "1rem" }}>
-        <label htmlFor="name">Name:</label>
+        <label htmlFor="name">Ad Soyad:</label>
         <input 
           id="name"
           value={name} 
           onChange={e=>setName(e.target.value)} 
-          placeholder="Candidate name"
+          placeholder="Aday adı"
           style={{ width: "100%", padding: "0.5rem", marginTop: "0.25rem" }}
         />
       </div>
       <div style={{ marginBottom: "1rem" }}>
-        <label htmlFor="email">Email:</label>
+        <label htmlFor="email">E‑posta:</label>
         <input 
           id="email"
           type="email"
           value={email} 
           onChange={e=>setEmail(e.target.value)} 
-          placeholder="candidate@example.com"
+          placeholder="aday@example.com"
           style={{ width: "100%", padding: "0.5rem", marginTop: "0.25rem" }}
         />
       </div>
       <div style={{ marginBottom: "1rem" }}>
-        <label htmlFor="expires">Link Duration:</label>
+        <label htmlFor="expires">Bağlantı Süresi:</label>
         <select 
           id="expires"
           value={expiresInDays} 
           onChange={e=>setExpiresInDays(parseInt(e.target.value))}
           style={{ width: "100%", padding: "0.5rem", marginTop: "0.25rem" }}
         >
-          <option value={1}>1 Day</option>
-          <option value={3}>3 Days</option>
-          <option value={7}>1 Week</option>
-          <option value={14}>2 Weeks</option>
-          <option value={30}>1 Month</option>
+          <option value={1}>1 Gün</option>
+          <option value={3}>3 Gün</option>
+          <option value={7}>1 Hafta</option>
+          <option value={14}>2 Hafta</option>
+          <option value={30}>1 Ay</option>
         </select>
       </div>
       <button 
@@ -69,7 +69,7 @@ export default function NewCandidatePage() {
           cursor: "pointer"
         }}
       >
-        Create Candidate
+        Aday Oluştur
       </button>
     </div>
   );

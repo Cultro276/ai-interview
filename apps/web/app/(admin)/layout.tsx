@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { productName } from "@/lib/brand";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   // Simple client-side guard for admin routes
@@ -40,15 +41,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="flex justify-between h-16">
                   <div className="flex items-center">
-                    <h1 className="text-xl font-bold text-gray-900 dark:text-neutral-100">Hirevision Admin</h1>
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-neutral-100">{productName} Yönetim</h1>
                   </div>
                   <div className="flex items-center space-x-4">
                     <Link href="/dashboard" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                      Dashboard
+                      Panel
                     </Link>
                     {/* Removed top-level Candidates page; candidate management lives under each Job */}
                     <Link href="/jobs" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                      Jobs
+                      İlanlar
                     </Link>
                     <TeamLink />
                     {/* Founders link is fully hidden to all users; remove from navigation. */}
@@ -83,7 +84,7 @@ function TeamLink() {
     if (user.is_admin || user.can_manage_members) {
       return (
         <Link href="/team" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-          Team
+          Ekip
         </Link>
       );
     }

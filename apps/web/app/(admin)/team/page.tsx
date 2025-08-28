@@ -4,6 +4,7 @@ import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { useRouter } from "next/navigation";
 
 type Member = {
   id: number;
@@ -21,6 +22,7 @@ type Member = {
 };
 
 export default function TeamPage() {
+  const router = useRouter();
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,28 +44,31 @@ export default function TeamPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Team</h1>
-        <CreateMember onCreated={load} />
+        <h1 className="text-2xl font-bold">Ekip</h1>
+        <div className="flex items-center gap-2">
+          <CreateMember onCreated={load} />
+          <LogoutButton onLogout={() => router.replace("/login")} />
+        </div>
       </div>
       {error && <div className="text-red-600 mb-4 text-sm">{error}</div>}
       <Card className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
         <CardHeader>
-          <h3 className="text-lg font-semibold">Members</h3>
+          <h3 className="text-lg font-semibold">Üyeler</h3>
         </CardHeader>
         <CardContent>
           {loading ? (
-            <div>Loading...</div>
+            <div>Yükleniyor...</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800 text-sm">
                 <thead className="bg-gray-50 dark:bg-neutral-900">
                   <tr>
-                    <th className="px-4 py-2 text-left">User</th>
-                    <th className="px-4 py-2 text-left">Role</th>
-                    <th className="px-4 py-2 text-left">Jobs</th>
-                    <th className="px-4 py-2 text-left">Candidates</th>
-                    <th className="px-4 py-2 text-left">Interviews</th>
-                    <th className="px-4 py-2 text-left">Members</th>
+                    <th className="px-4 py-2 text-left">Kullanıcı</th>
+                    <th className="px-4 py-2 text-left">Rol</th>
+                    <th className="px-4 py-2 text-left">İşler</th>
+                    <th className="px-4 py-2 text-left">Adaylar</th>
+                    <th className="px-4 py-2 text-left">Mülakatlar</th>
+                    <th className="px-4 py-2 text-left">Üyeler</th>
                     <th className="px-4 py-2"></th>
                   </tr>
                 </thead>
@@ -108,7 +113,7 @@ function MemberRow({ member, onChanged }: { member: Member; onChanged: () => Pro
         <div className="font-medium">{member.first_name || member.last_name ? `${member.first_name || ""} ${member.last_name || ""}`.trim() : member.email}</div>
         <div className="text-gray-500 text-xs">{member.email}</div>
       </td>
-      <td className="px-4 py-3">{member.is_admin ? "Owner/Admin" : (member.role || "Assistant")}</td>
+      <td className="px-4 py-3">{member.is_admin ? "Sahip/Yönetici" : (member.role || "Asistan")}</td>
       <td className="px-4 py-3">
         <Toggle value={member.is_admin || member.owner_user_id == null ? true : member.can_manage_jobs} onChange={() => toggle("can_manage_jobs")} disabled={member.is_admin || member.owner_user_id == null} />
       </td>
@@ -123,7 +128,7 @@ function MemberRow({ member, onChanged }: { member: Member; onChanged: () => Pro
       </td>
       <td className="px-4 py-3 text-right space-x-2">
         {!member.is_admin && (
-          <Button variant="secondary" onClick={del} disabled={saving}>Remove</Button>
+          <Button variant="secondary" onClick={del} disabled={saving}>Kaldır</Button>
         )}
       </td>
     </tr>
@@ -185,28 +190,28 @@ function CreateMember({ onCreated }: { onCreated: () => Promise<void> }) {
 
   return (
     <div>
-      <Button onClick={() => setOpen(true)}>Add Member</Button>
+      <Button onClick={() => setOpen(true)}>Üye Ekle</Button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="bg-white dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-800 w-full max-w-lg p-6">
-            <h3 className="text-lg font-semibold mb-4">Create Member</h3>
+            <h3 className="text-lg font-semibold mb-4">Üye Oluştur</h3>
             <div className="grid grid-cols-1 gap-4">
-              <Input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              <Input placeholder="Temporary Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <Input placeholder="E‑posta" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <Input placeholder="Geçici Parola" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
               <div className="grid grid-cols-2 gap-4">
-                <Input placeholder="First name" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-                <Input placeholder="Last name" value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                <Input placeholder="Ad" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+                <Input placeholder="Soyad" value={lastName} onChange={(e) => setLastName(e.target.value)} />
               </div>
-              <Input placeholder="Role (optional)" value={role} onChange={(e) => setRole(e.target.value)} />
+              <Input placeholder="Rol (opsiyonel)" value={role} onChange={(e) => setRole(e.target.value)} />
               <div className="grid grid-cols-2 gap-4 mt-2">
-                <LabeledToggle label="Manage jobs" value={perms.jobs} onChange={() => setPerms(p => ({ ...p, jobs: !p.jobs }))} />
-                <LabeledToggle label="Manage candidates" value={perms.candidates} onChange={() => setPerms(p => ({ ...p, candidates: !p.candidates }))} />
-                <LabeledToggle label="View interviews" value={perms.interviews} onChange={() => setPerms(p => ({ ...p, interviews: !p.interviews }))} />
-                <LabeledToggle label="Manage members" value={perms.members} onChange={() => setPerms(p => ({ ...p, members: !p.members }))} />
+                <LabeledToggle label="İlanları yönet" value={perms.jobs} onChange={() => setPerms(p => ({ ...p, jobs: !p.jobs }))} />
+                <LabeledToggle label="Adayları yönet" value={perms.candidates} onChange={() => setPerms(p => ({ ...p, candidates: !p.candidates }))} />
+                <LabeledToggle label="Mülakatları görüntüle" value={perms.interviews} onChange={() => setPerms(p => ({ ...p, interviews: !p.interviews }))} />
+                <LabeledToggle label="Üyeleri yönet" value={perms.members} onChange={() => setPerms(p => ({ ...p, members: !p.members }))} />
               </div>
               <div className="flex justify-end gap-2 mt-4">
-                <Button variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
-                <Button onClick={submit} disabled={saving || !email || !password}>Create</Button>
+                <Button variant="secondary" onClick={() => setOpen(false)}>İptal</Button>
+                <Button onClick={submit} disabled={saving || !email || !password}>Oluştur</Button>
               </div>
             </div>
           </div>
@@ -222,6 +227,23 @@ function LabeledToggle({ label, value, onChange }: { label: string; value: boole
       <span className="text-sm">{label}</span>
       <Toggle value={value} onChange={onChange} />
     </div>
+  );
+}
+
+function LogoutButton({ onLogout }: { onLogout: () => void }) {
+  const [working, setWorking] = useState(false);
+  const doLogout = () => {
+    setWorking(true);
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("token");
+      }
+    } catch {}
+    onLogout();
+    setWorking(false);
+  };
+  return (
+    <Button variant="secondary" onClick={doLogout} disabled={working}>Çıkış Yap</Button>
   );
 }
 

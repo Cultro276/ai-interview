@@ -45,7 +45,7 @@ export default function DashboardPage() {
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600 mx-auto mb-4"></div>
-          <p className="text-gray-600 dark:text-gray-300">Loading dashboard...</p>
+          <p className="text-gray-600 dark:text-gray-300">Panel yükleniyor...</p>
         </div>
       </div>
     );
@@ -54,7 +54,7 @@ export default function DashboardPage() {
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Dashboard</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Panel</h1>
         <Button onClick={refreshData}>Yenile</Button>
       </div>
 
@@ -67,7 +67,7 @@ export default function DashboardPage() {
                 <Users className="w-6 h-6" />
               </div>
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Total Candidates</p>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Toplam Aday</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{candidates.length}</p>
               </div>
             </div>
@@ -107,7 +107,7 @@ export default function DashboardPage() {
                 <Briefcase className="w-6 h-6" />
               </div>
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Active Jobs</p>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Aktif İlan</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{jobs.length}</p>
               </div>
             </div>
@@ -121,7 +121,7 @@ export default function DashboardPage() {
                 <MessageSquare className="w-6 h-6" />
               </div>
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Total Interviews</p>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Toplam Mülakat</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{interviews.length}</p>
               </div>
             </div>
@@ -135,7 +135,7 @@ export default function DashboardPage() {
                 <CheckCircle2 className="w-6 h-6" />
               </div>
               <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Completed</p>
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Tamamlanan</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-neutral-100">{interviews.filter(i => i.status === "completed").length}</p>
               </div>
             </div>
@@ -146,7 +146,7 @@ export default function DashboardPage() {
       {/* Pipeline (funnel) */}
       <Card className="bg-white dark:bg-neutral-900 shadow border border-gray-200 dark:border-neutral-800 mb-8">
         <CardHeader className="flex items-center justify-between">
-          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Süreç Özeti</h3>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Süreç özeti</h3>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -179,21 +179,11 @@ export default function DashboardPage() {
           <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800">
             <thead className="bg-gray-50 dark:bg-neutral-900">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Candidate
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Job
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Date
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Recording
-                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Aday</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">İlan</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Durum</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Tarih</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Kayıt</th>
               </tr>
             </thead>
             <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
@@ -224,7 +214,7 @@ export default function DashboardPage() {
                       <div className="flex space-x-2">
                         {interview.audio_url && (
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            Audio ✓
+                            Ses ✓
                           </span>
                         )}
                         {interview.video_url && (
@@ -234,7 +224,7 @@ export default function DashboardPage() {
                         )}
                         {!interview.audio_url && !interview.video_url && (
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                            No Recording
+                            Kayıt yok
                           </span>
                         )}
                       </div>

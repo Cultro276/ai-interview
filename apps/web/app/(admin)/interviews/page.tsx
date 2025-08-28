@@ -7,5 +7,5 @@ export default function InterviewsPage() {
       window.location.replace("/jobs");
     }
   }, []);
-  return <div>Interviews page deprecated. Redirecting to Jobs…</div>;
+  return <div>Mülakatlar sayfası kullanımdan kaldırıldı. İlanlara yönlendiriliyor…</div>;
 } 

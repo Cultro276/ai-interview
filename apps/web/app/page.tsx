@@ -11,38 +11,71 @@ export default function HomePage() {
       {/* Hero Section */}
       <section className="px-6 py-20 text-center bg-gradient-to-b from-brand-25 to-white dark:from-neutral-900 dark:to-neutral-950 animate-in fade-in-0 slide-in-from-top-2 duration-700">
         <div className="max-w-4xl mx-auto">
+          <div className="mb-6 flex justify-center">
+            <img src="/logo.png" alt="Logo" className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
+          </div>
           <div className="inline-flex items-center px-3 py-1 mb-6 text-sm text-brand-700 bg-brand-100 dark:text-brand-300 dark:bg-brand-700/20 rounded-full">
             <span className="mr-2">🆕</span>
-            Create teams in Organisation
+            Kuruluş içinde ekipler oluşturun
           </div>
           <h1 className="mb-6 text-5xl font-bold text-gray-900 dark:text-neutral-100 leading-tight">
-            Boost your hiring process with AI solution
+            İşe alım sürecinizi yapay zekâ ile hızlandırın
           </h1>
           <p className="mb-8 text-xl text-gray-600 dark:text-gray-300 max-w-2xl mx-auto">
-            Hirevision is used by numerous businesses, institutions, and recruiters to significantly enhance their screening and recruitment procedures.
+            RecruiterAI, çok sayıda işletme, kurum ve işe alım uzmanı tarafından ön eleme ve işe alım süreçlerini önemli ölçüde iyileştirmek için kullanılmaktadır.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
-            <Button size="lg">Request Demo</Button>
-            <Button size="lg" variant="outline">Learn more</Button>
+            <a href="/contact?utm_source=site&utm_medium=cta&utm_campaign=hero" className="inline-block">
+              <Button size="lg">Demo Talep Et</Button>
+            </a>
+            <a href="/how-it-works?utm_source=site&utm_medium=cta&utm_campaign=hero_more" className="inline-block">
+              <Button size="lg" variant="outline">Daha fazla bilgi</Button>
+            </a>
           </div>
-          <p className="text-gray-500 dark:text-gray-400 mb-8">Trusted already by 1.2k+</p>
-          <p className="text-lg font-semibold text-gray-700 dark:text-gray-200">Already chosen by the world leaders</p>
+          {/* Güven unsurları kaldırıldı */}
+        </div>
+      </section>
+
+      {/* Gerçek Hayat Senaryoları */}
+      <section className="px-6 py-16">
+        <div className="max-w-6xl mx-auto">
+          <h2 className="text-3xl font-bold text-gray-900 dark:text-neutral-100 text-center mb-10">Gerçek Hayat Senaryoları</h2>
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="p-6 border rounded-lg bg-white dark:bg-neutral-900 dark:border-neutral-800">
+              <div className="text-3xl mb-2">📈</div>
+              <h3 className="text-lg font-semibold mb-2">Yoğun başvuru dönemleri</h3>
+              <p className="text-gray-600 dark:text-gray-300 mb-3">İlanınız bir günde yüzlerce başvuru alıyor. RecruiterAI aday yanıtlarını özetleyip skorluyor; İK ilk 20 adaya dakikalar içinde odaklanıyor.</p>
+              <a href="/contact?utm_source=site&utm_medium=cta&utm_campaign=scenario_high_volume" className="text-brand-700 font-semibold">Demo ile deneyin →</a>
+            </div>
+            <div className="p-6 border rounded-lg bg-white dark:bg-neutral-900 dark:border-neutral-800">
+              <div className="text-3xl mb-2">🧑‍💻</div>
+              <h3 className="text-lg font-semibold mb-2">Dağıtık ekiplerde değerlendirme</h3>
+              <p className="text-gray-600 dark:text-gray-300 mb-3">Ekip üyeleri farklı şehirlerde. Ortak rapor ve kısa özetler karar toplantısını hızlandırıyor, herkes aynı veriye bakıyor.</p>
+              <a href="/how-it-works?utm_source=site&utm_medium=cta&utm_campaign=scenario_remote" className="text-brand-700 font-semibold">Nasıl çalıştığını görün →</a>
+            </div>
+            <div className="p-6 border rounded-lg bg-white dark:bg-neutral-900 dark:border-neutral-800">
+              <div className="text-3xl mb-2">⚖️</div>
+              <h3 className="text-lg font-semibold mb-2">Önyargıyı azaltma</h3>
+              <p className="text-gray-600 dark:text-gray-300 mb-3">Standart soru setleri ve rubric ile adaylar tutarlı kriterlerle değerlendiriliyor; subjektif yorumların etkisi azalıyor.</p>
+              <a href="/solutions?utm_source=site&utm_medium=cta&utm_campaign=scenario_bias" className="text-brand-700 font-semibold">Çözümleri inceleyin →</a>
+            </div>
+          </div>
         </div>
       </section>
 
       {/* How It Works */}
       <section className="px-6 py-16 bg-gray-50 dark:bg-neutral-900 animate-in fade-in-0 slide-in-from-bottom-2 duration-700">
         <div className="max-w-6xl mx-auto text-center">
-          <p className="text-brand-700 dark:text-brand-300 font-semibold mb-4">HOW IT WORKS</p>
+          <p className="text-brand-700 dark:text-brand-300 font-semibold mb-4">NASIL ÇALIŞIR</p>
           <h2 className="text-4xl font-bold text-gray-900 dark:text-neutral-100 mb-4">
-            Easy implementation in three easy steps
+            Üç basit adımda kolay kurulum
           </h2>
           <p className="text-gray-600 dark:text-gray-300 mb-12 max-w-2xl mx-auto">
-            Cutting-edge, user-friendly AI tool and growth analytics designed to boost user conversion, engagement, and retention.
+            Kullanımı kolay yapay zekâ aracı ve büyüme analitiği; dönüşüm, etkileşim ve elde tutmayı artırmak için tasarlanmıştır.
           </p>
           <Steps
             current={0}
-            steps={["Create a job", "Invite candidates", "Review AI analysis"]}
+            steps={["İlan oluştur", "Adayları davet et", "AI analizini incele"]}
             className="justify-center"
           />
         </div>
@@ -53,96 +86,99 @@ export default function HomePage() {
         <div className="max-w-6xl mx-auto">
           <div className="grid md:grid-cols-3 gap-8">
             <div className="p-8 border border-gray-200 dark:border-neutral-800 rounded-lg hover:shadow-lg transition-shadow bg-white dark:bg-neutral-900">
-              <p className="text-brand-700 dark:text-brand-300 font-semibold mb-2">FEATURE</p>
+              <p className="text-brand-700 dark:text-brand-300 font-semibold mb-2">ÖZELLİK</p>
               <h3 className="text-xl font-bold text-gray-900 dark:text-neutral-100 mb-4">
-                Automated Candidate Ranking
+                Otomatik Aday Sıralama
               </h3>
               <p className="text-gray-600 dark:text-gray-300 mb-6">
-                Let AI analyze and rank applicants based on qualifications, experience, and skills, ensuring you focus on the most promising candidates first.
+                Yapay zekâ, adayları nitelik, deneyim ve becerilere göre analiz edip sıralar; böylece en umut verici adaylara odaklanırsınız.
               </p>
               <button className="text-brand-700 font-semibold hover:text-brand-600">
-                Request demo →
+                Demo talep et →
               </button>
             </div>
             
             <div className="p-8 border border-gray-200 dark:border-neutral-800 rounded-lg hover:shadow-lg transition-shadow bg-white dark:bg-neutral-900">
-              <p className="text-brand-700 dark:text-brand-300 font-semibold mb-2">FEATURE</p>
+              <p className="text-brand-700 dark:text-brand-300 font-semibold mb-2">ÖZELLİK</p>
               <h3 className="text-xl font-bold text-gray-900 dark:text-neutral-100 mb-4">
-                Real-Time Applicant Analytics
+                Gerçek Zamanlı Aday Analitiği
               </h3>
               <p className="text-gray-600 dark:text-gray-300 mb-6">
-                Get comprehensive insights into candidate performance and interview metrics to make data-driven hiring decisions.
+                Aday performansı ve mülakat metrikleri hakkında kapsamlı içgörüler elde ederek veriye dayalı işe alım kararları verin.
               </p>
               <button className="text-brand-700 font-semibold hover:text-brand-600">
-                Request demo →
+                Demo talep et →
               </button>
             </div>
             
             <div className="p-8 border border-gray-200 dark:border-neutral-800 rounded-lg hover:shadow-lg transition-shadow bg-white dark:bg-neutral-900">
-              <p className="text-brand-700 dark:text-brand-300 font-semibold mb-2">FEATURE</p>
+              <p className="text-brand-700 dark:text-brand-300 font-semibold mb-2">ÖZELLİK</p>
               <h3 className="text-xl font-bold text-gray-900 dark:text-neutral-100 mb-4">
-                Seamless Multilingual Support
+                Kesintisiz Çok Dilli Destek
               </h3>
               <p className="text-gray-600 dark:text-gray-300 mb-6">
-                Conduct interviews in multiple languages with AI-powered translation and analysis capabilities.
+                Yapay zekâ destekli çeviri ve analiz yetenekleriyle birden fazla dilde mülakatlar gerçekleştirin.
               </p>
               <button className="text-brand-700 font-semibold hover:text-brand-600">
-                Request demo →
+                Demo talep et →
               </button>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Metrics */}
+      {/* Neden RecruiterAI? */}
       <section className="px-6 py-16 bg-gray-50 dark:bg-neutral-900">
-        <div className="max-w-6xl mx-auto text-center">
-          <p className="text-brand-700 dark:text-brand-300 font-semibold mb-4">METRICS</p>
-          <h3 className="text-2xl font-bold text-gray-900 dark:text-neutral-100 mb-12">Numbers speaking for themselves</h3>
-          <div className="grid md:grid-cols-3 gap-8">
-            <div>
-              <div className="text-4xl font-bold text-brand-600 mb-2">75%</div>
-              <p className="text-gray-600">Candidate match rate</p>
+        <div className="max-w-6xl mx-auto">
+          <h2 className="text-3xl font-bold text-gray-900 dark:text-neutral-100 text-center mb-10">Neden RecruiterAI?</h2>
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="p-6 border rounded-lg bg-white dark:bg-neutral-900 dark:border-neutral-800">
+              <h3 className="text-lg font-semibold mb-2">Türkçe Yapay Zekâ</h3>
+              <p className="text-gray-600 dark:text-gray-300">TR pazarına uygun dil anlama, transkript ve rapor üretimi. KVKK odaklı mimari.</p>
             </div>
-            <div>
-              <div className="text-4xl font-bold text-brand-600 mb-2">4,000+</div>
-              <p className="text-gray-600">Successful placement</p>
+            <div className="p-6 border rounded-lg bg-white dark:bg-neutral-900 dark:border-neutral-800">
+              <h3 className="text-lg font-semibold mb-2">Dakikalar İçinde Kurulum</h3>
+              <p className="text-gray-600 dark:text-gray-300">Ekstra yazılım kurmadan, tarayıcı üzerinden hızlı devreye alma ve davet.</p>
             </div>
-            <div>
-              <div className="text-4xl font-bold text-brand-600 mb-2">50+</div>
-              <p className="text-gray-600">Operating countries</p>
+            <div className="p-6 border rounded-lg bg-white dark:bg-neutral-900 dark:border-neutral-800">
+              <h3 className="text-lg font-semibold mb-2">Şeffaf Skor & Rapor</h3>
+              <p className="text-gray-600 dark:text-gray-300">İletişim, teknik ve kültürel uyum skorları; özet yorumlar ve paylaşılabilir rapor.</p>
+            </div>
+          </div>
+          <div className="text-center mt-8">
+            <a href="/contact?utm_source=site&utm_medium=cta&utm_campaign=why_recruiterai" className="inline-block">
+              <Button size="lg">Demo Talep Et</Button>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* SSS */}
+      <section className="px-6 py-16">
+        <div className="max-w-4xl mx-auto">
+          <h2 className="text-3xl font-bold text-gray-900 dark:text-neutral-100 text-center mb-10">Sıkça Sorulan Sorular</h2>
+          <div className="space-y-4">
+            {[
+              { q: "Kurulum için teknik ekip gerekiyor mu?", a: "Hayır. Tarayıcı üzerinden çalışır; davet linkiyle adayı içeri alırsınız." },
+              { q: "Perakende dönemsel yoğunlukta ilk görüşmeleri nasıl yetiştirirsiniz?", a: "Standart soru seti ile kısa video yanıtları toplanır, özetlenir ve sıralanır; ekip yalnızca uygun adaylara odaklanır." },
+              { q: "Çağrı merkezinde tutarlılığı nasıl korursunuz?", a: "İletişim/empati gibi yetkinlikler aynı rubric ile puanlanır; değerlendiriciler arası fark azalır." },
+            ].map((item, idx) => (
+              <details key={idx} className="group border border-neutral-200 dark:border-neutral-800 rounded-lg p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between">
+                  <span className="font-semibold">{item.q}</span>
+                  <span className="transition-transform group-open:rotate-45">＋</span>
+                </summary>
+                <p className="mt-2 text-gray-700 dark:text-gray-300">{item.a}</p>
+              </details>
+            ))}
+            <div className="text-center pt-2">
+              <a className="text-brand-700 font-semibold" href="/faq">Tüm SSS’leri gör →</a>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Testimonials */}
-      <section className="px-6 py-16 bg-white dark:bg-neutral-950">
-        <div className="max-w-6xl mx-auto text-center">
-          <p className="text-brand-700 dark:text-brand-300 font-semibold mb-4">TESTIMONIALS</p>
-          <h2 className="text-4xl font-bold text-gray-900 dark:text-neutral-100 mb-12">Don't take our word for it</h2>
-          <div className="grid md:grid-cols-3 gap-8">
-            <div className="p-6 bg-gray-50 dark:bg-neutral-900 rounded-lg">
-              <p className="text-gray-600 dark:text-gray-300 mb-4">
-                "We struggled to find the right talent globally, but with their automated candidate ranking, we quickly identified top-notch candidates who perfectly fit our requirements."
-              </p>
-              <p className="font-semibold text-gray-900 dark:text-neutral-100">John Smith, HR Manager at ABC Tech Solutions.</p>
-            </div>
-            <div className="p-6 bg-gray-50 dark:bg-neutral-900 rounded-lg">
-              <p className="text-gray-600 dark:text-gray-300 mb-4">
-                "As a fast-growing startup, we needed an efficient way to find skilled professionals from various regions. This AI tool exceeded our expectations."
-              </p>
-              <p className="font-semibold text-gray-900 dark:text-neutral-100">Sarah Johnson, CEO of XYZ Innovations.</p>
-            </div>
-            <div className="p-6 bg-gray-50 dark:bg-neutral-900 rounded-lg">
-              <p className="text-gray-600 dark:text-gray-300 mb-4">
-                "The platform's emphasis on diversity and inclusion impressed me, helping us create a more inclusive workforce."
-              </p>
-              <p className="font-semibold text-gray-900 dark:text-neutral-100">Michael Chen, HR Director at Acme Enterprises.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+      {/* Testimonials kaldırıldı */}
 
       <MarketingFooter />
     </div>

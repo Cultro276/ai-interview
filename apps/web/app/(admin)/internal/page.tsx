@@ -78,38 +78,38 @@ export default function InternalAdmin() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Founders Console</h1>
+      <h1 className="text-2xl font-bold mb-6">Kurucular Konsolu</h1>
       {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
       <Card className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
         <CardHeader>
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold">Tenants</h3>
+            <h3 className="text-lg font-semibold">Kiracılar</h3>
             <div className="flex items-center gap-2">
-              <Button onClick={load}>Refresh</Button>
+              <Button onClick={load}>Yenile</Button>
             </div>
           </div>
         </CardHeader>
         <CardContent>
           <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-            <Input placeholder="Owner email" value={email} onChange={(e)=>setEmail(e.target.value)} />
-            <Input placeholder="Temp password" value={password} type="password" onChange={(e)=>setPassword(e.target.value)} />
-            <Input placeholder="First name (opt)" value={firstName} onChange={(e)=>setFirstName(e.target.value)} />
-            <Input placeholder="Last name (opt)" value={lastName} onChange={(e)=>setLastName(e.target.value)} />
+            <Input placeholder="Sahip e‑postası" value={email} onChange={(e)=>setEmail(e.target.value)} />
+            <Input placeholder="Geçici şifre" value={password} type="password" onChange={(e)=>setPassword(e.target.value)} />
+            <Input placeholder="Ad (opsiyonel)" value={firstName} onChange={(e)=>setFirstName(e.target.value)} />
+            <Input placeholder="Soyad (opsiyonel)" value={lastName} onChange={(e)=>setLastName(e.target.value)} />
             <div>
-              <Button onClick={createOwner} disabled={creating || !email || !password}>Create owner</Button>
+              <Button onClick={createOwner} disabled={creating || !email || !password}>Sahip oluştur</Button>
             </div>
           </div>
           {loading ? (
-            <div>Loading...</div>
+            <div>Yükleniyor...</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200 dark:divide-neutral-800 text-sm">
                 <thead>
                   <tr>
                     <th className="px-4 py-2 text-left">ID</th>
-                    <th className="px-4 py-2 text-left">Email</th>
-                    <th className="px-4 py-2 text-left">Owner?</th>
-                    <th className="px-4 py-2 text-left">Created</th>
+                    <th className="px-4 py-2 text-left">E‑posta</th>
+                    <th className="px-4 py-2 text-left">Sahip?</th>
+                    <th className="px-4 py-2 text-left">Oluşturma</th>
                     <th className="px-4 py-2"></th>
                   </tr>
                 </thead>
@@ -118,16 +118,16 @@ export default function InternalAdmin() {
                     <tr key={t.id} className="border-b border-gray-200 dark:border-neutral-800">
                       <td className="px-4 py-3">{t.id}</td>
                       <td className="px-4 py-3">{t.email}</td>
-                      <td className="px-4 py-3">{t.is_admin ? "Yes" : "No"}</td>
-                      <td className="px-4 py-3">{new Date(t.created_at).toLocaleString()}</td>
+                      <td className="px-4 py-3">{t.is_admin ? "Evet" : "Hayır"}</td>
+                      <td className="px-4 py-3">{new Date(t.created_at).toLocaleString('tr-TR')}</td>
                       <td className="px-4 py-3 text-right space-x-2">
-                        <Button variant="secondary" onClick={() => overview(t.id)}>Overview</Button>
-                        <Button variant="secondary" onClick={() => resetPassword(t.id)}>Reset PW</Button>
-                        <Button variant="secondary" onClick={() => impersonate(t.id)}>Impersonate</Button>
+                        <Button variant="secondary" onClick={() => overview(t.id)}>Genel Bakış</Button>
+                        <Button variant="secondary" onClick={() => resetPassword(t.id)}>Şifre Sıfırla</Button>
+                        <Button variant="secondary" onClick={() => impersonate(t.id)}>Taklit et</Button>
                         {t.is_active !== false ? (
-                          <Button variant="secondary" onClick={() => deactivate(t.id)}>Deactivate</Button>
+                          <Button variant="secondary" onClick={() => deactivate(t.id)}>Devre dışı bırak</Button>
                         ) : (
-                          <Button variant="secondary" onClick={() => reactivate(t.id)}>Reactivate</Button>
+                          <Button variant="secondary" onClick={() => reactivate(t.id)}>Yeniden etkinleştir</Button>
                         )}
                       </td>
                     </tr>

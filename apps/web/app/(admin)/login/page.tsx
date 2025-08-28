@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { productName } from "@/lib/brand";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -35,8 +36,8 @@ export default function LoginPage() {
     <div className="min-h-screen bg-gray-50 dark:bg-neutral-950 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <div className="text-center">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-neutral-100 mb-2">Hirevision</h1>
-          <h2 className="text-xl text-gray-600 dark:text-gray-300">Company Dashboard</h2>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-neutral-100 mb-2">{productName}</h1>
+          <h2 className="text-xl text-gray-600 dark:text-gray-300">Şirket Paneli</h2>
         </div>
       </div>
 
@@ -45,7 +46,7 @@ export default function LoginPage() {
           <div className="space-y-6">
             <div>
               <h3 className="text-2xl font-bold text-gray-900 dark:text-neutral-100 text-center mb-6">
-                Sign in to your account
+                Hesabınıza giriş yapın
               </h3>
             </div>
 
@@ -57,7 +58,7 @@ export default function LoginPage() {
 
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Email address
+                E‑posta adresi
               </label>
               <div className="mt-1">
                 <input
@@ -69,14 +70,14 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="appearance-none block w-full px-3 py-2 border border-gray-300 dark:border-neutral-700 rounded-md placeholder-gray-400 dark:placeholder-gray-500 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-brand-500 focus:border-brand-500"
-                  placeholder="Enter your email"
+                  placeholder="E‑posta adresinizi girin"
                 />
               </div>
             </div>
 
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Password
+                Şifre
               </label>
               <div className="mt-1">
                 <input
@@ -88,7 +89,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="appearance-none block w-full px-3 py-2 border border-gray-300 dark:border-neutral-700 rounded-md placeholder-gray-400 dark:placeholder-gray-500 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-brand-500 focus:border-brand-500"
-                  placeholder="Enter your password"
+                  placeholder="Şifrenizi girin"
                 />
               </div>
             </div>
@@ -102,13 +103,13 @@ export default function LoginPage() {
                   className="h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 dark:border-neutral-700 rounded"
                 />
                 <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900 dark:text-neutral-200">
-                  Remember me
+                  Beni hatırla
                 </label>
               </div>
 
               <div className="text-sm">
                 <a href="#" className="font-medium text-brand-600 hover:text-brand-500">
-                  Forgot your password?
+                  Şifrenizi mi unuttunuz?
                 </a>
               </div>
             </div>
@@ -119,15 +120,15 @@ export default function LoginPage() {
                 disabled={loading}
                 className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50"
               >
-                {loading ? "Signing in..." : "Sign in"}
+                {loading ? "Giriş yapılıyor..." : "Giriş yap"}
               </button>
             </div>
 
             <div className="text-center">
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                Don't have an account?{" "}
+                Hesabınız yok mu?{" "}
                 <a href="/contact" className="font-medium text-brand-600 hover:text-brand-500">
-                  Contact sales
+                  Satışla iletişime geçin
                 </a>
               </p>
             </div>

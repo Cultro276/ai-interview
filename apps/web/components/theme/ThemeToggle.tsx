@@ -22,19 +22,19 @@ export function ThemeToggle() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button aria-label="Toggle theme" className="p-2 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
+        <button aria-label="Temayı değiştir" className="p-2 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
           {icon}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={() => setTheme("light")}>
-          <Sun className="h-4 w-4 mr-2" /> Light
+          <Sun className="h-4 w-4 mr-2" /> Açık
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme("dark")}>
-          <Moon className="h-4 w-4 mr-2" /> Dark
+          <Moon className="h-4 w-4 mr-2" /> Koyu
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme("system")}>
-          <Laptop className="h-4 w-4 mr-2" /> System
+          <Laptop className="h-4 w-4 mr-2" /> Sistem
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

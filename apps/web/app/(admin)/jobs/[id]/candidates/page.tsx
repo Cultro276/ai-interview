@@ -445,7 +445,7 @@ export default function JobCandidatesPage() {
           <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Toplu CV Yükleme</h3>
           <Dialog>
             <DialogTrigger asChild>
-              <Button variant="outline">Send Links to All</Button>
+              <Button variant="outline">Tümüne Davet Linki Gönder</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
@@ -459,7 +459,7 @@ export default function JobCandidatesPage() {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link Süresi</label>
                   <Select value={String(expiresDays)} onValueChange={(v) => setExpiresDays(Number(v))}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select" />
+                      <SelectValue placeholder="Seçin" />
                     </SelectTrigger>
                     <SelectContent>
                       {[1,3,7,14,30].map((d) => (
@@ -520,7 +520,7 @@ export default function JobCandidatesPage() {
             />
           </div>
           <div className="md:col-span-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Upload CV (optional)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">CV Yükle (opsiyonel)</label>
             <input type="file" accept=".pdf,.doc,.docx,.txt" onChange={(e) => setSingleFile((e.target.files && e.target.files[0]) || null)} className="block w-full text-sm text-gray-600" />
             {singleFile && <p className="text-xs text-gray-500 mt-1">{singleFile.name}</p>}
           </div>
@@ -609,7 +609,7 @@ export default function JobCandidatesPage() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">ID</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Ad Soyad</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-posta</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">View CV</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">CV</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Link</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Durum</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Süre</th>
@@ -637,7 +637,7 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
-                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">View CV</Button>
+                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV’yi Görüntüle</Button>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
