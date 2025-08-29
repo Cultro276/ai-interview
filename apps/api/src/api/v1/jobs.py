@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.job import Job
-from src.db.session import get_session
+from src.db.session import get_session, async_session_factory
 from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
 from src.api.v1.schemas import JobCreate, JobRead, JobUpdate, CandidateCreate, CandidateRead
@@ -19,7 +19,10 @@ from src.db.models.conversation import InterviewAnalysis
 from src.core.s3 import put_object_bytes, generate_presigned_put_url_at_key, generate_presigned_get_url
 from fastapi import Body
 from datetime import datetime, timedelta
+from uuid import uuid4
 import re
+from src.services.nlp import parse_resume_bytes, extract_candidate_fields, extract_candidate_fields_smart
+import json
 
 # Hint pyright that 3rd-party imports are available at runtime
 if TYPE_CHECKING:
@@ -28,6 +31,34 @@ if TYPE_CHECKING:
     import pydantic  # noqa: F401
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def create_name_slug(name: str, candidate_id: int) -> str:
+    """Create URL-safe slug from candidate name for S3 paths."""
+    name_for_path = (name or "unknown").lower()
+    
+    # Replace Turkish characters
+    char_map = {'ç': 'c', 'ğ': 'g', 'ı': 'i', 'ö': 'o', 'ş': 's', 'ü': 'u'}
+    for tr_char, en_char in char_map.items():
+        name_for_path = name_for_path.replace(tr_char, en_char)
+    
+    # Clean up: keep only alphanumeric, spaces, and dashes
+    name_for_path = re.sub(r'[^a-z0-9\s-]', '', name_for_path)
+    # Replace spaces with dashes
+    name_for_path = re.sub(r'\s+', '-', name_for_path.strip())
+    # Remove multiple consecutive dashes
+    name_for_path = re.sub(r'-+', '-', name_for_path)
+    
+    # Limit length and clean edges
+    if len(name_for_path) > 30:
+        name_for_path = name_for_path[:30]
+    name_for_path = name_for_path.strip('-')
+    
+    # Ensure we have something and add ID for uniqueness
+    if not name_for_path:
+        name_for_path = "candidate"
+    
+    return f"{name_for_path}-{candidate_id}"
 
 
 @router.get("/", response_model=List[JobRead])
@@ -110,9 +141,12 @@ class BulkUploadResponse(BaseModel):
     candidates: List[int]
 
 
+_EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\.[A-Za-z]{2,})*(?![A-Za-z0-9._%+-])")
+
+
 def _extract_email(text: str) -> str | None:
-    m = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
-    return m.group(0) if m else None
+    m = _EMAIL_RE.search(text or "")
+    return (m.group(0).strip().lower() if m else None)
 
 
 @router.post("/{job_id}/candidates/bulk-upload", response_model=BulkUploadResponse)
@@ -130,61 +164,162 @@ async def bulk_upload_candidates(
         raise HTTPException(status_code=404, detail="Job not found")
 
     created_ids: List[int] = []
+    # Collect but don't fail whole request on single-file errors
+    errors: List[str] = []
 
     for f in files:
-        content = await f.read()
-        text = ""
         try:
-            if f.content_type and f.content_type.startswith("text"):
-                text = content.decode(errors="ignore")
-        except Exception:
-            text = ""
+            content = await f.read()
+            # Parse bytes into normalized text for ALL file types (pdf, docx, txt)
+            try:
+                text = parse_resume_bytes(content, f.content_type, f.filename)
+            except Exception:
+                text = ""
 
-        # Heuristics for name/email
-        email = _extract_email(text) or _extract_email(f.filename or "")
-        base = (f.filename or "candidate").rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
-        name = base.title()[:255]
+            # Extract fields with LLM for accuracy (fallback to heuristics on failure)
+            try:
+                fields_quick = await extract_candidate_fields_smart(text, f.filename)
+            except Exception:
+                try:
+                    fields_quick = extract_candidate_fields(text, f.filename)
+                except Exception:
+                    fields_quick = {}
+            # Get email from extraction results (already validated by LLM/heuristics)
+            email = None
+            if isinstance(fields_quick, dict):
+                extracted_email = fields_quick.get("email")
+                if isinstance(extracted_email, str) and extracted_email.strip() and "@" in extracted_email:
+                    email = extracted_email.strip().lower()
+            
+            # Fallback: search in text if no email extracted
+            if not email:
+                m = _EMAIL_RE.search(text or "")
+                if m:
+                    email = m.group(0).strip().lower()
+            base = (f.filename or "candidate").rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
+            # prefer name from text; reject generic filename-derived labels
+            generic = {"cv","özgeçmiş","ozgecmis","resume","kişisel","kisisel","bilgiler","devam","ik","adres","document","dokuman","doküman","güncel","guncel","basvuru","başvuru","kullanici","user","curriculum","vitae","eğitim","egitim","deneyim","portfolio","profil","profile","son","yeni","final","latest","updated","new","version","ver","v","copy","kopya"}
+            name_from_text = (fields_quick.get("name") if isinstance(fields_quick, dict) else None)
+            name = None
+            if isinstance(name_from_text, str) and 2 <= len(name_from_text.split()) <= 5:
+                name = name_from_text.strip()[:255]
+            else:
+                low = base.lower()
+                if (not any(k in low for k in generic)) and 2 <= len(base.split()) <= 5:
+                    name = base.title()[:255]
+                else:
+                    name = "Candidate"
 
-        # Upload resume under cvs/{job_id}/... fixed path
-        safe_name = (f.filename or "resume").split("/")[-1]
-        key = f"cvs/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
-        resume_url = put_object_bytes(key, content, f.content_type or "application/octet-stream")
+            # Clean S3 path structure: resumes/job-{job_id}/candidate-{candidate_id}.{ext}
+            safe_name = (f.filename or "resume").split("/")[-1]
+            # Extract file extension
+            file_ext = safe_name.split('.')[-1] if '.' in safe_name else 'bin'
+            # Temporary upload path - will be moved to proper location after candidate creation
+            temp_key = f"temp/job-{job.id}/{safe_name}"
+            resume_url = put_object_bytes(temp_key, content, f.content_type or "application/octet-stream")
 
-        # Create candidate
-        cand = Candidate(
-            user_id=owner_id,
-            name=name or "Candidate",
-            email=email or f"no-email-{int(datetime.utcnow().timestamp())}@example.com",
-            resume_url=resume_url,
-            status="pending",
-            token="",
-            expires_at=datetime.utcnow() + timedelta(days=expires_in_days),
-        )
-        session.add(cand)
-        await session.flush()
+            # Ensure a unique, valid email (fallback if missing or already exists)  
+            from uuid import uuid4 as _uuid4
+            use_email = email or "bulunamadi"
+            try:
+                exists = (
+                    await session.execute(select(Candidate.id).where(Candidate.email == use_email))
+                ).scalar_one_or_none()
+                if exists is not None:
+                    # If "bulunamadi" exists, add small suffix for uniqueness
+                    use_email = f"bulunamadi{_uuid4().hex[:4]}"
+            except Exception:
+                pass
 
-        # Ensure token after id exists
-        from uuid import uuid4
-        cand.token = uuid4().hex
+            # Create candidate (include phone/linkedin if available)
+            cand = Candidate(
+                user_id=owner_id,
+                name=(name or "Candidate").strip() or "Candidate",
+                email=use_email,
+                phone=(fields_quick.get("phone") if isinstance(fields_quick, dict) else None),
+                linkedin_url=((fields_quick.get("links") or {}).get("linkedin") if isinstance(fields_quick, dict) else None),
+                resume_url=resume_url,  # Temporary URL, will be updated below
+                status="pending",
+                token=uuid4().hex,
+                expires_at=datetime.utcnow() + timedelta(days=expires_in_days),
+            )
+            session.add(cand)
+            await session.flush()  # Get candidate.id
+            
+            # Move file to clean path: resumes/job-{job_id}/{name-slug}.{ext}
+            name_slug = create_name_slug(cand.name, cand.id)
+            final_key = f"resumes/job-{job.id}/{name_slug}.{file_ext}"
+            temp_s3_key = temp_key  # Extract S3 key from temp URL
+            
+            try:
+                from src.core.s3 import move_object
+                final_url = move_object(temp_s3_key, final_key)
+                cand.resume_url = final_url  # Update with final clean URL
+            except Exception as e:
+                print(f"Failed to move resume to clean path: {e}")
+                # Keep original URL if move fails
 
-        # Link to job via Interview
-        interview = Interview(job_id=job.id, candidate_id=cand.id, status="pending")
-        session.add(interview)
+            # Link to job via Interview
+            interview = Interview(job_id=job.id, candidate_id=cand.id, status="pending")
+            session.add(interview)
 
-        # Save profile metadata only (no raw file in DB when using S3)
-        profile = CandidateProfile(
-            candidate_id=cand.id,
-            resume_text=text or None,
-            resume_file=None,
-            file_name=f.filename,
-            content_type=f.content_type,
-            file_size=len(content),
-        )
-        session.add(profile)
+            # Save profile metadata only (no raw file in DB when using S3)
+            profile = CandidateProfile(
+                candidate_id=cand.id,
+                resume_text=text or None,
+                resume_file=None,
+                file_name=f.filename,
+                content_type=f.content_type,
+                file_size=len(content),
+                parsed_json=(json.dumps(fields_quick, ensure_ascii=False) if fields_quick else None),
+            )
+            session.add(profile)
 
-        await session.commit()
-        created_ids.append(cand.id)
+            await session.commit()
+            created_ids.append(cand.id)
 
+            # Background: improve parsed_json using a fresh DB session (avoid await_only issues)
+            async def _bg_improve(cid: int, resume_txt: str | None, file_name: str | None):
+                if not resume_txt:
+                    return
+                try:
+                    from sqlalchemy import select as _sel
+                    async with async_session_factory() as bg:
+                        try:
+                            fields_full = await extract_candidate_fields_smart(resume_txt, file_name)
+                        except Exception:
+                            return
+                        if not fields_full:
+                            return
+                        prof_obj = (
+                            await bg.execute(_sel(CandidateProfile).where(CandidateProfile.candidate_id == cid))
+                        ).scalar_one_or_none()
+                        if prof_obj:
+                            import json as _json
+                            prof_obj.parsed_json = _json.dumps(fields_full, ensure_ascii=False)
+                            await bg.commit()
+                except Exception:
+                    return
+            try:
+                import asyncio as _aio
+                _aio.create_task(_bg_improve(cand.id, text, f.filename))
+            except Exception:
+                pass
+
+        except Exception as e:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            errors.append(str(e))
+
+    # If nothing created, return error with captured reasons
+    if len(created_ids) == 0:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=400, detail={
+            "message": "No candidates created",
+            "errors": errors[:10],
+        })
     return BulkUploadResponse(created=len(created_ids), candidates=created_ids) 
 
 
@@ -258,7 +393,7 @@ async def create_candidate_for_job(
                     resp = await client.get(url)
                     resp.raise_for_status()
                     data = resp.content
-                    from src.services.nlp import parse_resume_bytes
+                    from src.services.nlp import parse_resume_bytes, extract_candidate_fields_smart
                     parsed = parse_resume_bytes(data, resp.headers.get("Content-Type"), candidate.resume_url)
                     if parsed:
                         prof = (
@@ -268,8 +403,19 @@ async def create_candidate_for_job(
                         ).scalar_one_or_none()
                         if prof:
                             prof.resume_text = parsed[:100000]
+                            try:
+                                import json as _json
+                                fields = await extract_candidate_fields_smart(parsed, candidate.resume_url)
+                                prof.parsed_json = _json.dumps(fields, ensure_ascii=False)
+                            except Exception:
+                                pass
                         else:
-                            session.add(CandidateProfile(candidate_id=candidate.id, resume_text=parsed[:100000]))
+                            try:
+                                import json as _json
+                                fields = await extract_candidate_fields_smart(parsed, candidate.resume_url)
+                                session.add(CandidateProfile(candidate_id=candidate.id, resume_text=parsed[:100000], parsed_json=_json.dumps(fields, ensure_ascii=False)))
+                            except Exception:
+                                session.add(CandidateProfile(candidate_id=candidate.id, resume_text=parsed[:100000]))
                         await session.flush()
     except Exception:
         pass
@@ -318,7 +464,8 @@ async def presign_single_candidate_cv(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     safe_name = (payload.file_name or "resume").split("/")[-1]
-    key = f"cvs/{job.id}/{int(datetime.utcnow().timestamp())}_{safe_name}"
+    # Use temp path for presign, will be moved to clean path after candidate creation
+    key = f"temp/job-{job.id}/{safe_name}"
     try:
         presigned = generate_presigned_put_url_at_key(key, payload.content_type)
         return {"url": presigned["url"], "key": presigned["key"]}

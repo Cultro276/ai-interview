@@ -8,15 +8,14 @@ import { Users, TimerReset, CheckCircle2, Briefcase, MessageSquare } from "lucid
 
 type Weekly = { interviews_created_7d:number; interviews_completed_7d:number };
 type Leader = { interview_id:number; candidate_id:number; candidate_name:string|null; overall_score:number|null };
-type CoverageItem = { label:string; must:boolean; weight:number; meets: "yes"|"partial"|"no"|null; evidence?:string|null };
-type CoverageResponse = { items: CoverageItem[]; summary?: string|null };
+// Removed requirements coverage types; endpoint deprecated
 
 export default function DashboardPage() {
   const { candidates, jobs, interviews, loading, refreshData } = useDashboard();
 
   const [weekly, setWeekly] = useState<Weekly | null>(null);
   const [leaders, setLeaders] = useState<Record<number, Leader[]>>({});
-  const [coverageByInterview, setCoverageByInterview] = useState<Record<number, CoverageResponse>>({});
+  // Removed requirements coverage state; endpoint deprecated
 
   useEffect(() => {
     (async ()=>{
@@ -29,14 +28,7 @@ export default function DashboardPage() {
         topJobs.forEach((j, idx) => { mapped[j.id] = entries[idx] || []; });
         setLeaders(mapped);
       } catch {}
-      // Preload coverage for latest 3 interviews (for heatmap)
-      try {
-        const recent = interviews.slice(0, 3);
-        const covEntries = await Promise.all(recent.map(iv => apiFetch<CoverageResponse>(`/api/v1/conversations/analysis/${iv.id}/requirements-coverage`)));
-        const m: Record<number, CoverageResponse> = {};
-        recent.forEach((iv, i) => { m[iv.id] = covEntries[i]; });
-        setCoverageByInterview(m);
-      } catch {}
+      // requirements-coverage removed
     })();
   }, [jobs.length, interviews.length]);
 
@@ -267,45 +259,7 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Requirements Coverage Heatmap (recent interviews) */}
-      <Card className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 mt-8">
-        <CardHeader>
-          <h3 className="text-lg font-medium text-gray-900 dark:text-neutral-100">Gereksinim Kapsama Isı Haritası (Son Görüşmeler)</h3>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-6">
-            {interviews.slice(0,3).map(iv => {
-              const cov = coverageByInterview[iv.id];
-              if (!cov || !cov.items || cov.items.length === 0) {
-                return (
-                  <div key={iv.id} className="text-sm text-gray-500 dark:text-gray-400">#{iv.id} için veri yok</div>
-                );
-              }
-              // sort by must desc, weight desc
-              const items = [...cov.items].sort((a,b)=> (Number(b.must)-Number(a.must)) || (b.weight - a.weight)).slice(0,12);
-              const color = (m: CoverageItem["meets"]) => m === "yes" ? "bg-green-500" : m === "partial" ? "bg-amber-500" : m === "no" ? "bg-red-500" : "bg-gray-300";
-              return (
-                <div key={iv.id}>
-                  <div className="mb-2 text-sm font-medium text-gray-800 dark:text-gray-200">Görüşme #{iv.id}</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
-                    {items.map(it => (
-                      <div key={it.label} className="p-2 rounded border border-gray-100 dark:border-neutral-800">
-                        <div className="flex items-center justify-between text-xs text-gray-700 dark:text-gray-300 mb-1">
-                          <span className="truncate max-w-[80%]">{it.label}</span>
-                          {it.must && <span className="ml-2 inline-block px-1 rounded text-[10px] bg-gray-200 dark:bg-neutral-800 text-gray-700 dark:text-gray-300">MUST</span>}
-                        </div>
-                        <div className="h-2 rounded w-full bg-gray-200 dark:bg-neutral-800">
-                          <div className={`h-2 rounded ${color(it.meets)}`} style={{ width: it.meets === "yes" ? "100%" : it.meets === "partial" ? "50%" : it.meets === "no" ? "10%" : "0%" }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+      {/* requirements-coverage heatmap removed */}
     </div>
   );
 } 

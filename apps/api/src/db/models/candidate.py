@@ -14,6 +14,8 @@ class Candidate(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    phone: Mapped[str | None] = mapped_column(String(50))
+    linkedin_url: Mapped[str | None] = mapped_column(String(255))
     resume_url: Mapped[str | None] = mapped_column(Text())
     status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False)
     token: Mapped[str] = mapped_column(String(64), unique=True, default=lambda: uuid4().hex)

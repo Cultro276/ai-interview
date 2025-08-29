@@ -102,6 +102,8 @@ class JobRead(JobBase):
 class CandidateBase(BaseModel):
     name: str = Field(..., max_length=255)
     email: EmailStr
+    phone: Optional[str] = None
+    linkedin_url: Optional[str] = None
     resume_url: Optional[str] = None
 
 
@@ -112,6 +114,8 @@ class CandidateCreate(CandidateBase):
 class CandidateUpdate(BaseModel):
     name: Optional[str]
     email: Optional[EmailStr]
+    phone: Optional[str]
+    linkedin_url: Optional[str]
     resume_url: Optional[str]
 
 

@@ -6,6 +6,8 @@ import { apiFetch } from "@/lib/api";
 export default function NewCandidatePage() {
   const [name,setName]=useState("");
   const [email,setEmail]=useState("");
+  const [phone,setPhone]=useState("");
+  const [linkedin,setLinkedin]=useState("");
   const [expiresInDays, setExpiresInDays] = useState(7); // Default 1 week
   const [error,setError]=useState<string|null>(null);
   const router=useRouter();
@@ -13,7 +15,7 @@ export default function NewCandidatePage() {
     try{
       await apiFetch("/api/v1/candidates/",{
         method:"POST",
-        body:JSON.stringify({name, email, expires_in_days: expiresInDays})
+        body:JSON.stringify({name, email, phone, linkedin_url: linkedin, expires_in_days: expiresInDays})
       });
       router.push("/candidates");
     }catch(e:any){ setError(e.message); }
@@ -29,6 +31,26 @@ export default function NewCandidatePage() {
           value={name} 
           onChange={e=>setName(e.target.value)} 
           placeholder="Aday adı"
+          style={{ width: "100%", padding: "0.5rem", marginTop: "0.25rem" }}
+        />
+      </div>
+      <div style={{ marginBottom: "1rem" }}>
+        <label htmlFor="phone">Telefon:</label>
+        <input 
+          id="phone"
+          value={phone} 
+          onChange={e=>setPhone(e.target.value)} 
+          placeholder="05xx xxx xx xx veya +90..."
+          style={{ width: "100%", padding: "0.5rem", marginTop: "0.25rem" }}
+        />
+      </div>
+      <div style={{ marginBottom: "1rem" }}>
+        <label htmlFor="linkedin">LinkedIn:</label>
+        <input 
+          id="linkedin"
+          value={linkedin} 
+          onChange={e=>setLinkedin(e.target.value)} 
+          placeholder="linkedin.com/in/kullanici veya in/kullanici"
           style={{ width: "100%", padding: "0.5rem", marginTop: "0.25rem" }}
         />
       </div>

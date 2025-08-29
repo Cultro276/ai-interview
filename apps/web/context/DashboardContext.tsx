@@ -14,6 +14,8 @@ interface Candidate {
   id: number;
   name: string;
   email: string;
+  phone?: string;
+  linkedin_url?: string;
   resume_url?: string;
   job_id?: number;
   token: string;

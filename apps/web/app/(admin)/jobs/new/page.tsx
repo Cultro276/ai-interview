@@ -44,22 +44,7 @@ export default function NewJobPage() {
         method: "POST",
         body: JSON.stringify({ title: title.trim(), description: description.trim(), expires_in_days: expiryDays }),
       });
-      // Optional: AI extraction right after create if description is present
-      if (description.trim().length >= 20) {
-        setExtracting(true);
-        try {
-          const data = await apiFetch<{ requirements_config: any; rubric_weights: any }>(`/api/v1/jobs/${job.id}/extract-requirements`, {
-            method: "POST",
-            body: JSON.stringify({ job_text: description.trim() }),
-          });
-          setAutoReqJson(JSON.stringify(data, null, 2));
-          success("AI gereksinimler çıkarıldı");
-        } catch (e: any) {
-          // non-blocking
-        } finally {
-          setExtracting(false);
-        }
-      }
+      // Extract-requirements endpoint kaldırıldı; istenirse analiz daha sonra yapılır
       await refreshData();
       success("İlan oluşturuldu");
       router.push("/jobs");
@@ -69,7 +54,10 @@ export default function NewJobPage() {
   };
   return (
     <div className="max-w-3xl mx-auto p-6">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Yeni İlan Oluştur</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-neutral-100">Yeni İlan</h1>
+        <a href="/jobs" aria-label="Kapat" className="text-gray-500 hover:text-gray-700">✕</a>
+      </div>
       <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-4">
         <div>
           <Label htmlFor="title" className="block text-sm font-medium text-gray-700 mb-1">Başlık</Label>

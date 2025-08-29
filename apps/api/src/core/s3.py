@@ -81,16 +81,64 @@ def put_object_bytes(key: str, body: bytes, content_type: str) -> str:
     return url
 
 
-def generate_presigned_get_url(key: str, expires: int = 600) -> str:
-    """Generate a presigned GET URL for downloading from S3."""
+def move_object(source_key: str, dest_key: str) -> str:
+    """Copy S3 object to clean path. Returns new s3:// URL."""
     if not settings.s3_bucket:
         raise RuntimeError("S3_BUCKET not configured")
+    
+    try:
+        # Copy object to new location
+        _client.copy_object(
+            Bucket=settings.s3_bucket,
+            CopySource={'Bucket': settings.s3_bucket, 'Key': source_key},
+            Key=dest_key
+        )
+        
+        new_url = f"s3://{settings.s3_bucket}/{dest_key}"
+        logger.info("[S3 COPY] %s -> %s", source_key, dest_key)
+        
+        # Try to delete original (optional - ignore if fails due to permissions)
+        try:
+            _client.delete_object(
+                Bucket=settings.s3_bucket,
+                Key=source_key
+            )
+            logger.info("[S3 DELETE] Cleaned up temp file: %s", source_key)
+        except Exception as del_error:
+            logger.warning("[S3 DELETE] Could not delete temp file %s: %s", source_key, del_error)
+            # Continue anyway - we have the file in the right place
+        
+        return new_url
+        
+    except Exception as e:
+        logger.error("[S3 COPY] Failed to copy %s -> %s: %s", source_key, dest_key, e)
+        # Return original URL if copy fails
+        return f"s3://{settings.s3_bucket}/{source_key}"
+
+
+def generate_presigned_get_url(
+    key: str,
+    expires: int = 600,
+    response_content_disposition: str | None = None,
+    response_content_type: str | None = None,
+) -> str:
+    """Generate a presigned GET URL for downloading from S3.
+
+    Optionally set response content headers to encourage inline rendering.
+    """
+    if not settings.s3_bucket:
+        raise RuntimeError("S3_BUCKET not configured")
+    params = {
+        "Bucket": settings.s3_bucket,
+        "Key": key,
+    }
+    if response_content_disposition:
+        params["ResponseContentDisposition"] = response_content_disposition
+    if response_content_type:
+        params["ResponseContentType"] = response_content_type
     return _client.generate_presigned_url(
         "get_object",
-        Params={
-            "Bucket": settings.s3_bucket,
-            "Key": key,
-        },
+        Params=params,
         ExpiresIn=expires,
         HttpMethod="GET",
     )

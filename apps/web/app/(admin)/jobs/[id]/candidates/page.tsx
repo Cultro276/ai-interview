@@ -26,6 +26,14 @@ export default function JobCandidatesPage() {
   const [creating, setCreating] = useState(false);
   const [singleExpiry, setSingleExpiry] = useState(7);
   const [presigning, setPresigning] = useState(false);
+  // Upload progress dialog state
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [progressTotal, setProgressTotal] = useState(0);
+  const [progressDone, setProgressDone] = useState(0);
+  const [progressCreated, setProgressCreated] = useState(0);
+  const [progressErrors, setProgressErrors] = useState<string[]>([]);
+  const [progressCancelled, setProgressCancelled] = useState(false);
+  const [progressStarted, setProgressStarted] = useState(false);
 
   const jobInterviews = interviews.filter((i) => i.job_id === jobId);
   const jobCandidateIds = jobInterviews.map((i) => i.candidate_id);
@@ -47,6 +55,7 @@ export default function JobCandidatesPage() {
     | "duration_asc"
   >("score");
   const [pageNum, setPageNum] = useState<number>(1);
+  const lastScrollKey = `candidates:lastScroll:${jobId}`;
 
   // URL params <-> state sync
   const sp = useSearchParams();
@@ -143,6 +152,13 @@ export default function JobCandidatesPage() {
   const [videoOpen, setVideoOpen] = useState(false);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  // Details modal state
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsCandidateId, setDetailsCandidateId] = useState<number | null>(null);
+  const [detailsProfile, setDetailsProfile] = useState<any | null>(null);
+  const [cvSummary, setCvSummary] = useState<string | null>(null);
+  const [cvSummaryLoading, setCvSummaryLoading] = useState(false);
   const openVideoForCandidate = async (candId: number) => {
     try {
       const intId = findLatestInterviewId(candId);
@@ -154,6 +170,35 @@ export default function JobCandidatesPage() {
       setVideoOpen(true);
     } catch (e: any) {
       toastError(e.message || "Medya açılamadı");
+    }
+  };
+
+  const openDetailsForCandidate = async (candId: number) => {
+    setDetailsCandidateId(candId);
+    setDetailsOpen(true);
+    setDetailsLoading(true);
+    setCvSummary(null);
+    try {
+      const prof = await apiFetch<any>(`/api/v1/candidates/${candId}/profile`);
+      setDetailsProfile(prof || null);
+    } catch (e: any) {
+      setDetailsProfile(null);
+      toastError(e.message || "Profil yüklenemedi");
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const loadCvSummary = async () => {
+    if (!detailsCandidateId) return;
+    setCvSummaryLoading(true);
+    try {
+      const res = await apiFetch<{ summary: string }>(`/api/v1/candidates/${detailsCandidateId}/cv-summary`);
+      setCvSummary((res?.summary || "").trim());
+    } catch (e: any) {
+      toastError(e.message || "Özet alınamadı");
+    } finally {
+      setCvSummaryLoading(false);
     }
   };
 
@@ -208,21 +253,51 @@ export default function JobCandidatesPage() {
 
   const onUpload = async () => {
     if (!files.length) return;
+    // Open modal first; start only when user clicks Başlat
+    setProgressOpen(true);
+    setProgressTotal(files.length);
+    setProgressDone(0);
+    setProgressCreated(0);
+    setProgressErrors([]);
+    setProgressCancelled(false);
+    setProgressStarted(false);
+  };
+
+  const startUploadBatches = async () => {
+    if (!files.length) return;
     setUploading(true);
+    setProgressStarted(true);
     try {
-      const form = new FormData();
-      files.forEach((f) => form.append("files", f));
-      form.append("expires_in_days", String(expiresDays));
-      await apiFetch(`/api/v1/jobs/${jobId}/candidates/bulk-upload`, {
-        method: "POST",
-        body: form,
-      });
+      const BATCH = 5;
+      let createdSum = 0;
+      for (let i = 0; i < files.length; i += BATCH) {
+        if (progressCancelled) break;
+        const chunk = files.slice(i, i + BATCH);
+        const form = new FormData();
+        chunk.forEach((f) => form.append("files", f));
+        form.append("expires_in_days", String(expiresDays));
+        try {
+          const res = await apiFetch(`/api/v1/jobs/${jobId}/candidates/bulk-upload`, { method: "POST", body: form });
+          const created = (res && (res as any).created) || 0;
+          createdSum += created;
+          setProgressCreated((c) => c + created);
+        } catch (e: any) {
+          setProgressErrors((arr) => [...arr, e?.detail?.message || e?.message || "Bilinmeyen hata"]);
+        }
+        setProgressDone((d) => d + chunk.length);
+      }
+      const res = { created: createdSum } as any;
       await refreshData();
-      success("Upload completed");
+      const created = (res && (res as any).created) || 0;
+      if (!progressCancelled) success(`Upload completed${created ? ` — ${created} aday eklendi` : ""}`);
     } catch (e: any) {
-      toastError(e.message || "Upload failed");
+      const msg = e?.detail?.message || e?.message || "Upload failed";
+      toastError(msg);
     } finally {
       setUploading(false);
+      // Başarıyla tamamlandıysa seçim temizlensin
+      if (!progressCancelled) setFiles([]);
+      if (!progressCancelled && progressErrors.length === 0) setProgressOpen(false);
     }
   };
 
@@ -298,7 +373,13 @@ export default function JobCandidatesPage() {
   const viewCv = async (candId: number) => {
     try {
       const { url } = await apiFetch<{ url: string }>(`/api/v1/candidates/${candId}/resume-download-url`);
-      window.open(url, "_blank", "noopener,noreferrer");
+      const low = (url || "").toLowerCase();
+      if (low.includes('.doc') || low.includes('.docx') || low.includes('officedocument')) {
+        const office = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(url)}`;
+        window.open(office, "_blank", "noopener,noreferrer");
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
     } catch (e: any) {
       toastError(e.message || "Open failed");
     }
@@ -396,6 +477,25 @@ export default function JobCandidatesPage() {
     else if (pageNum > totalPages) setPageNum(totalPages);
   }, [pageNum, totalPages]);
 
+  // Restore scroll after refreshData or deletes
+  useEffect(() => {
+    try {
+      const v = sessionStorage.getItem(lastScrollKey);
+      if (v) {
+        const top = parseInt(v, 10);
+        if (!isNaN(top)) {
+          window.scrollTo({ top, behavior: 'instant' as any });
+        }
+      }
+    } catch {}
+    // Save on scroll
+    const onScroll = () => {
+      try { sessionStorage.setItem(lastScrollKey, String(window.scrollY||0)); } catch {}
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [lastScrollKey]);
+
   if (loading) {
     return (
       <div>
@@ -476,7 +576,17 @@ export default function JobCandidatesPage() {
         <div className="grid gap-4 md:grid-cols-3">
           <div className="md:col-span-2">
             <input type="file" multiple accept=".pdf,.doc,.docx,.txt" onChange={(e) => setFiles(Array.from(e.target.files || []))} className="block w-full text-sm text-gray-600 dark:text-gray-300" />
-            {files.length > 0 && (<p className="text-sm text-gray-500 dark:text-gray-300 mt-2">{files.length} dosya seçildi</p>)}
+            {files.length > 0 && (
+              <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-300 mt-2">
+                <span>{files.length} dosya seçildi</span>
+                <button
+                  type="button"
+                  aria-label="Seçimi temizle"
+                  className="text-gray-400 hover:text-gray-600"
+                  onClick={() => setFiles([])}
+                >✕</button>
+              </div>
+            )}
           </div>
           <div className="flex items-end">
             <Button onClick={onUpload} disabled={uploading || files.length === 0}>
@@ -611,6 +721,7 @@ export default function JobCandidatesPage() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-posta</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">CV</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Link</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Detay</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Durum</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Süre</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Son Güncelleme</th>
@@ -644,6 +755,9 @@ export default function JobCandidatesPage() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   <Button variant="ghost" onClick={() => openInviteLinkForCandidate(c.id)} className="p-0 h-auto">Link</Button>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                  <Button variant="ghost" onClick={() => openDetailsForCandidate(c.id)} className="p-0 h-auto">Detay</Button>
                 </td>
                 {(() => {
                   const it: any = findLatestInterview(c.id);
@@ -683,6 +797,8 @@ export default function JobCandidatesPage() {
                           className="bg-rose-600 text-white hover:bg-rose-700 border-rose-600"
                           onClick={async () => {
                             try {
+                              const currentTop = window.scrollY || 0;
+                              try { sessionStorage.setItem(lastScrollKey, String(currentTop)); } catch {}
                               await apiFetch(`/api/v1/candidates/${c.id}`, { method: 'DELETE' });
                               await refreshData();
                             } catch (err) {
@@ -953,6 +1069,92 @@ export default function JobCandidatesPage() {
             </div>
           ) : (
             <div className="py-6 text-sm text-gray-500">Link alınamadı</div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Upload Progress Modal */}
+      <Dialog open={progressOpen} onOpenChange={setProgressOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Toplu Yükleme</DialogTitle>
+            <DialogDescription>CV’ler analiz ediliyor, lütfen bekleyin.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-sm text-gray-700">Durum: {progressDone}/{progressTotal}</div>
+            <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden" aria-label="İlerleme Çubuğu">
+              <div className="bg-brand-600 h-2" style={{ width: `${progressTotal ? Math.round((progressDone / progressTotal) * 100) : 0}%` }} />
+            </div>
+            <div className="text-sm text-gray-700">Eklenen aday: {progressCreated}</div>
+            {progressErrors.length > 0 && (
+              <div className="text-xs text-rose-600">
+                {progressErrors.slice(-3).map((e, i) => (<div key={i}>• {e}</div>))}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              {!progressStarted ? (
+                <>
+                  <Button variant="outline" onClick={() => { setProgressOpen(false); }}>Kapat</Button>
+                  <Button onClick={startUploadBatches}>Başlat</Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="outline" onClick={() => { setProgressCancelled(true); setProgressOpen(false); }}>İptal Et</Button>
+                  <Button variant="outline" onClick={() => setProgressOpen(false)}>Arka Planda Devam Et</Button>
+                </>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Details Modal */}
+      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Aday Detayı</DialogTitle>
+            <DialogDescription>Adayın iletişim bilgileri ve CV analiz özeti.</DialogDescription>
+          </DialogHeader>
+          {detailsLoading ? (
+            <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
+          ) : detailsProfile ? (
+            <div className="space-y-4">
+              <div className="text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-600">Telefon:</span>
+                  {detailsProfile.phone ? (
+                    <>
+                      <span className="font-medium">{detailsProfile.phone}</span>
+                      <Button
+                        variant="outline"
+                        className="ml-2"
+                        onClick={async () => { try { await navigator.clipboard.writeText(detailsProfile.phone); success("Kopyalandı"); } catch {} }}
+                      >Kopyala</Button>
+                    </>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-gray-600">LinkedIn:</span>
+                  {detailsProfile.linkedin ? (
+                    <a href={detailsProfile.linkedin} target="_blank" rel="noreferrer" className="text-brand-700">Profili Aç</a>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </div>
+              </div>
+              <div className="pt-2 border-t border-gray-200 dark:border-neutral-800">
+                <Button onClick={loadCvSummary} disabled={cvSummaryLoading}>
+                  {cvSummaryLoading ? "Özet çıkarılıyor…" : "CV Analiz Özeti"}
+                </Button>
+                {cvSummary && (
+                  <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{cvSummary}</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="py-6 text-sm text-gray-500">Veri bulunamadı</div>
           )}
         </DialogContent>
       </Dialog>
