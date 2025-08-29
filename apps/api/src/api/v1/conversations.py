@@ -3,6 +3,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
@@ -154,9 +155,26 @@ async def create_message_public(
         pass
     message = ConversationMessage(**payload)
     session.add(message)
-    await session.commit()
-    await session.refresh(message)
-    return message
+    try:
+        await session.commit()
+        await session.refresh(message)
+        return message
+    except IntegrityError:
+        # Another concurrent request inserted the same (interview_id, sequence_number)
+        await session.rollback()
+        existing_after = (
+            await session.execute(
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.interview_id == message_in.interview_id,
+                    ConversationMessage.sequence_number == message_in.sequence_number,
+                )
+            )
+        ).scalars().first()
+        if existing_after:
+            return existing_after
+        # If still nothing found, surface a conflict instead of 500
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate sequence number")
 
 
 @router.get("/messages/{interview_id}", response_model=List[ConversationMessageRead])

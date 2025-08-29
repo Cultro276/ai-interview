@@ -28,10 +28,12 @@ RECRUITER_PERSONA = (
     "Always address the candidate in a gender-neutral and respectful way; do NOT infer gender from name, voice, or CV. "
     "Mirror common Turkish HR phrasing so it feels like a human interviewer: prefer cues like 'kısaca', 'somut örnek', 'ölçülebilir sonuç', 'hangi rolü üstlendiniz', 'ne yaptınız ve sonuç ne oldu?'. "
     "Avoid starting with filler like 'Anladım'/'Görünüyor'; ask direct, polite, natural questions; keep follow-ups short and STAR-oriented. "
+    "Proactively personalize questions using the candidate's resume and the job description. "
+    "When helpful, explicitly reference resume items in Turkish (e.g., 'Özgeçmişinizde ... gördüm') without exposing sensitive personal data or links. "
 )
 
 
-def _sync_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 7):
+def _sync_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 50):
     """Blocking Gemini request executed in a thread."""
 
     if not _GENAI_AVAILABLE:
@@ -42,7 +44,7 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
 
     system_prompt = (
         RECRUITER_PERSONA +
-        f"\nYou are conducting a structured interview with a hard limit of {max_questions} questions. "
+        "\nYou are conducting a structured interview. "
         "Given the conversation and context, ask the next concise, natural question in Turkish. "
         "Constraints: \n"
         "- Do NOT echo or paraphrase the candidate's words. \n"
@@ -50,8 +52,8 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
         "- Prefer 1–2 sentences; ask a primary question and at most one short follow-up when necessary. \n"
         "- Vary intonation implicitly via word choice: sometimes energetic, sometimes calm; keep it professional. \n"
         "- Use micro-empathy where appropriate (kısa ve doğal), but keep it brief. \n"
-        "- You MAY use job description and CV internally to select a topic, but do NOT reveal, summarize, or reference them explicitly. Never quote names, emails, phone numbers, links, or specific lines from the CV. Keep questions neutral from the candidate's perspective. \n"
-        f"- If the candidate has answered sufficiently AND you have already asked {max_questions} questions, respond with exactly FINISHED.\n"
+        "- Prefer resume- and job-specific questions; it is OK to explicitly reference a resume item (e.g., 'Özgeçmişinizde ... gördüm'). Avoid sharing personal data or links. \n"
+        "When you judge that you have collected sufficient evidence and the interview has reached a natural conclusion, respond with exactly FINISHED (single word). Do not mention counts. \n"
         "Adaptive behavior: If the last candidate message is extremely short (e.g., '...' or under ~10 characters) or likely STT failure, RE-ASK the SAME question more slowly and in simpler words; keep it 1 sentence. Offer a gentle STAR hint (Durum, Görev, Eylem, Sonuç) only once early in the interview."
     )
     if job_context:
@@ -72,37 +74,42 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
     )
 
     text = (response.text or "").strip()
-    if text.upper() == "FINISHED":
+    if text.upper().strip() == "FINISHED":
         return {"question": "", "done": True}
     return {"question": text, "done": False}
 
 
-def _fallback_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 7) -> dict[str, str | bool]:
+def _fallback_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 50) -> dict[str, str | bool]:
     """Deterministic local fallback when Gemini is not configured.
 
     Asks up to 5 generic Turkish interview questions based on history length.
     """
-    # Optionally bias a couple of context-aware questions if job_context exists
-    context_biased = []
-    if job_context:
-        context_biased = [
-            "İlanın gereksinimlerine göre en güçlü olduğunuz alanlar nelerdir?",
-            "İş tanımındaki sorumluluklara benzer bir projede deneyiminizden bahseder misiniz?",
-        ]
-    canned = context_biased + [
-        "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?",
-        "Bu pozisyonda başarılı olmak için hangi teknik becerilerin kritik olduğunu düşünüyorsunuz?",
-        "Zorlayıcı bir problemi nasıl çözdüğünüze dair somut bir örnek verebilir misiniz?",
-        "Takım çalışmasında rolünüz ve iletişim tarzınız nasıldır?",
-        "Önümüzdeki 1 yıl için kariyer hedefleriniz nelerdir?",
+    # Prefer resume-keyword targeted canned questions if available in job_context
+    def _extract_keywords_from_ctx(ctx: str) -> list[str]:
+        import re as _re
+        # Expect a line like: Internal Resume Keywords: kw1, kw2, kw3
+        m = _re.search(r"Internal Resume Keywords:\s*(.+)", ctx or "", flags=_re.IGNORECASE)
+        if not m:
+            return []
+        part = m.group(1)
+        kws = [t.strip() for t in part.split(",") if t.strip()]
+        return kws[:6]
+
+    targeted: list[str] = []
+    kws = _extract_keywords_from_ctx(job_context or "") if job_context else []
+    for k in kws:
+        targeted.append(f"Özgeçmişinizde '{k}' geçmiş. Bu konuda hangi problemi nasıl çözdünüz ve ölçülebilir sonuç neydi?")
+    # Fallback generics only if no targeted left
+    canned = targeted + [
+        "Özgeçmişinizde öne çıkan bir proje/başarıyı STAR çerçevesinde kısaca anlatır mısınız?",
+        "Son rolünüzde somut bir katkınızı ve sonucunu paylaşır mısınız?",
     ]
     asked = sum(1 for t in history if t.get("role") == "assistant")
     # Respect hard question limit first
-    if asked >= max_questions:
-        return {"question": "", "done": True}
-    if asked >= len(canned):
-        return {"question": "", "done": True}
-    return {"question": canned[asked], "done": False}
+    if asked < len(canned):
+        return {"question": canned[asked], "done": False}
+    # Keep going without finishing: vary phrasing slightly
+    return {"question": "Özgeçmişinizden başka bir proje veya başarıyı kısaca STAR çerçevesinde paylaşır mısınız?", "done": False}
 
 
 async def generate_question(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 7) -> dict[str, str | bool]:
@@ -142,7 +149,7 @@ async def polish_question(text: str) -> str:
 
 # --- OpenAI fallback (HTTP) ---
 
-def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 7) -> dict[str, str | bool]:
+def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 50) -> dict[str, str | bool]:
     """Blocking OpenAI request executed in a thread (chat.completions)."""
     api_key = settings.openai_api_key
     if not api_key:
@@ -151,13 +158,12 @@ def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None
 
     system_prompt = (
         RECRUITER_PERSONA +
-        f"\nYou are conducting a structured interview with a hard limit of {max_questions} questions. "
+        "\nYou are conducting a structured interview. "
         "Given the conversation so far and the provided context, ask the next concise, natural, and human-sounding question in Turkish. "
         "Do NOT echo or paraphrase the candidate's words back to them. Avoid filler like 'Anladım', 'Görünüyor', 'Teşekkürler' at the start. "
         "Prefer 1–2 sentences; ask a primary question and at most one short follow-up when necessary. "
-        "If both a Job Description and a Candidate Resume section are present in the context, prefer asking about their intersection first; "
-        "if Resume is present and this is the first question, it's acceptable to say 'Özgeçmişinizi inceledim' (but never say 'ilanı okudum'). "
-        f"If the candidate has answered sufficiently AND you have already asked {max_questions} questions, respond with the single word FINISHED."
+        "Prefer asking about the intersection of the Job Description and the Candidate Resume; explicitly reference resume items in Turkish (e.g., 'Özgeçmişinizde ... gördüm'). Avoid exposing personal data or links. "
+        "When you judge that you have collected sufficient evidence and the interview has reached a natural conclusion, respond with exactly FINISHED (single word). Do not mention counts."
     )
     if job_context:
         system_prompt += ("\n\nJob description (context for tailoring questions):\n" + job_context[:1500])
@@ -179,7 +185,7 @@ def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None
         resp.raise_for_status()
         data = resp.json()
     text = (data.get("choices", [{}])[0].get("message", {}).get("content", "").strip())
-    if text.upper() == "FINISHED":
+    if text.upper().strip() == "FINISHED":
         return {"question": "", "done": True}
     return {"question": text, "done": False}
 

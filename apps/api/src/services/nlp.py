@@ -312,3 +312,61 @@ def make_targeted_question_from_spotlight(line: str) -> str:
         "Bu çalışmada hangi sorunu çözdünüz, hangi teknolojileri nasıl kullandınız ve ölçülebilir sonuç ne oldu?"
     )
 
+
+# --- Project title and technology extraction for safer explicit references ---
+
+def extract_resume_project_titles(resume_text: str, max_items: int = 6) -> list[str]:
+    titles: list[str] = []
+    seen: set[str] = set()
+    if not resume_text:
+        return titles
+    lines = [ln.strip() for ln in resume_text.splitlines() if ln.strip()]
+    import re as _re
+    in_projects = False
+    for ln in lines:
+        low = ln.lower()
+        if low.startswith("projects") or "projects" in low or low.startswith("projects"):
+            in_projects = True
+            continue
+        cand = _re.sub(r"\s*\([^)]+\)\s*$", "", ln).strip()
+        if cand.startswith(("•", "-", "*")):
+            continue
+        if 6 <= len(cand) <= 120:
+            if in_projects or _re.search(r"[A-Za-z][A-Za-z0-9\- ]+", cand):
+                key = cand.lower()
+                if key not in seen:
+                    seen.add(key)
+                    titles.append(cand)
+                    if len(titles) >= max_items:
+                        break
+        if in_projects and len(cand) == 0:
+            in_projects = False
+    if len(titles) < 1:
+        for ln in lines:
+            if ":" in ln and len(ln.split(":", 1)[0]) <= 80:
+                t = ln.split(":", 1)[0].strip()
+                if 3 <= len(t) <= 80 and t.lower() not in seen:
+                    seen.add(t.lower())
+                    titles.append(t)
+                    if len(titles) >= max_items:
+                        break
+    return titles
+
+
+def extract_known_technologies_from_resume(resume_text: str, max_items: int = 24) -> list[str]:
+    out: list[str] = []
+    if not resume_text:
+        return out
+    low = resume_text.lower()
+    for tok in sorted(_TECH_TOKENS):
+        if tok in low:
+            label = tok
+            if tok == "next.js":
+                label = "Next.js"
+            elif tok == "spring boot":
+                label = "Spring Boot"
+            out.append(label)
+            if len(out) >= max_items:
+                break
+    return out
+

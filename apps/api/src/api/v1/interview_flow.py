@@ -44,6 +44,7 @@ class NextQuestionResponse(BaseModel):
 async def next_question(req: NextQuestionRequest, session: AsyncSession = Depends(get_session)):
     # Generate next question (rule-based first; LLM fallback and polish)
     try:
+        import re as _re
         job_desc = ""
         req_cfg = None
         resume_text = ""
@@ -86,25 +87,35 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 # Build a private context only for LLM guidance
                 private_ctx = (job_desc or "")
                 if resume_text:
-                    private_ctx += ("\n\nCV Keywords: " + ", ".join(extract_keywords(resume_text)))
-                # Ask LLM for a concise opening question; we will sanitize phrasing
+                    private_ctx += ("\n\nInternal Resume Keywords: " + ", ".join(extract_keywords(resume_text)))
+                # Ask LLM for a concise opening question (allowed to reference resume items)
                 result0 = await asyncio.wait_for(
                     generate_question_robust([], private_ctx, max_questions=7), timeout=8.0
                 )
                 q0_raw = result0.get("question")
                 q0 = (q0_raw if isinstance(q0_raw, str) else "").strip()
-                # Sanitize: remove any disclosure patterns
-                leak_phrases = [
-                    "özgeçmişinizi inceledim", "cv’nizi inceledim", "cvnizi inceledim",
-                    "cv’nize göre", "cv'ye göre", "özgeçmişe göre", "ilanı okudum", "iş tanımına göre",
-                ]
-                low = q0.lower()
-                if any(p in low for p in leak_phrases) or not q0:
-                    q0 = "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?"
-                return NextQuestionResponse(question=q0, done=False, live=None)
+                if not q0:
+                    q0 = "Özgeçmişinizde öne çıkan bir proje/başarıyı STAR çerçevesinde kısaca anlatır mısınız?"
+                # Friendly intro with candidate name and job title
+                intro = None
+                try:
+                    _first = None
+                    if cand and getattr(cand, "name", None):
+                        _first = str(cand.name).strip().split()[0]
+                    jt = (job.title if job and getattr(job, "title", None) else None)
+                    if _first and jt:
+                        intro = f"Merhaba {_first}, ben şirketimizin yapay zekâ insan kaynakları asistanıyım. {jt} pozisyonu için görüşmemize hoş geldiniz."
+                    elif _first:
+                        intro = f"Merhaba {_first}, ben şirketimizin yapay zekâ insan kaynakları asistanıyım. Görüşmemize hoş geldiniz."
+                    elif jt:
+                        intro = f"Merhaba, ben şirketimizin yapay zekâ insan kaynakları asistanıyım. {jt} pozisyonu için görüşmemize hoş geldiniz."
+                except Exception:
+                    intro = None
+                final_q0 = (f"{intro} {q0}".strip() if intro else q0)
+                return NextQuestionResponse(question=final_q0, done=False, live=None)
             except Exception:
                 return NextQuestionResponse(
-                    question="Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?",
+                    question="Özgeçmişinizde öne çıkan bir proje/başarıyı STAR çerçevesinde kısaca anlatır mısınız?",
                     done=False,
                     live=None,
                 )
@@ -160,10 +171,17 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 pass
             if resume_text:
                 try:
-                    # Use only internal keywords to guide LLM; avoid exposing raw CV text
-                    kws = extract_keywords(resume_text)
+                    # Use internal keywords + derived project titles/technologies to guide LLM
+                    kws = extract_keywords(resume_text)[:20]
+                    from src.services.nlp import extract_resume_project_titles, extract_known_technologies_from_resume
+                    titles = extract_resume_project_titles(resume_text)[:6]
+                    techs = extract_known_technologies_from_resume(resume_text)[:12]
                     if kws:
-                        combined_ctx += ("\n\nInternal Resume Keywords: " + ", ".join(kws[:30]))
+                        combined_ctx += ("\n\nInternal Resume Keywords: " + ", ".join(kws))
+                    if titles:
+                        combined_ctx += ("\n\nInternal Resume Project Titles: " + ", ".join(titles))
+                    if techs:
+                        combined_ctx += ("\n\nInternal Resume Technologies: " + ", ".join(techs))
                 except Exception:
                     pass
             # Behavior signals to steer tone/speed/adaptation
@@ -175,7 +193,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 pass
             # Tunable max questions
             from src.core.config import settings as _settings
-            max_q = _settings.interview_max_questions_default
+            max_q = 50
             # Steer model when the last user message is empty/too short (likely STT artifact)
             try:
                 last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
@@ -187,7 +205,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
             # Enforce gender-neutral addressing in instruction context
             combined_ctx += "\n\nImportant: Address the candidate in a gender-neutral manner in Turkish (use 'siz' and avoid gendered titles)."
             result = await asyncio.wait_for(
-                generate_question_robust(history, combined_ctx, max_questions=max_q), timeout=12.0
+                generate_question_robust(history, combined_ctx, max_questions=50), timeout=12.0
             )
         except Exception:
             # Heuristic HR-style follow-up using last user text
@@ -217,42 +235,83 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
 
         # Optional LLM-based polish layer for more human-like tone + sanitize leaks
         GENERIC_OPENING = "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?"
+        def _strip_finished(s: str) -> str:
+            try:
+                return _re.sub(r"\bFINISHED\b", "", s, flags=_re.IGNORECASE).strip()
+            except Exception:
+                return (s or "").strip()
+        def _is_generic(s: str) -> bool:
+            low = (s or "").lower()
+            generic_bits = [
+                "ne yaparsınız", "ne yapardınız", "nasıl yaklaşırsınız", "senaryo", "varsayalım",
+                "rol üstlendiniz", "takım çalışmalarında", "takım projelerinde", "zorlayıcı bir durum",
+            ]
+            return any(bit in low for bit in generic_bits)
         def _sanitize(q: str) -> str:
             import re
             s = (q or "").strip()
             low = s.lower()
-            leak_words = ["cv", "özgeçmiş", "ilan", "iş tanımı", "linkedin", "github", "http://", "https://", "www.", "@"]
-            if any(w in low for w in leak_words):
+            # Allow referencing resume/job; only filter links and obvious PII
+            banned = ["http://", "https://", "www.", "@", "linkedin.com", "github.com"]
+            if any(w in low for w in banned):
                 return ""
             # crude phone detection or long digit runs
             if re.search(r"[+]?\d[\d\s().-]{7,}", s):
                 return ""
-            # avoid addressing by candidate name if accidentally produced
-            for nm in ["kayra", "yıldız", "yildiz"]:
-                if nm in low:
-                    return ""
             return s
 
+        q_candidate = result.get("question")
+        # Sanitize FINISHED from any question text and mark done if nothing remains
+        if isinstance(q_candidate, str):
+            cleaned = _strip_finished(q_candidate)
+            if (not cleaned) and ("finished" in q_candidate.lower()):
+                result["question"] = None
+                result["done"] = True
+            else:
+                result["question"] = cleaned
+        # If we still have a question string, optionally polish and de-genericize
         q_candidate = result.get("question")
         if isinstance(q_candidate, str) and q_candidate:
             try:
                 polished = await asyncio.wait_for(polish_question(q_candidate) , timeout=1.0)
                 s = _sanitize(polished or q_candidate)
+                # If polished was filtered out, fallback to neutral follow-up
                 if not s:
-                    # Fallback neutral follow-up rather than reopening
                     last_assistant = next((t.get("text", "") for t in reversed(history) if t.get("role") == "assistant"), "")
                     if last_assistant:
-                        result["question"] = "Biraz daha somutlaştırabilir misiniz? Kısa bir örnek ve elde ettiğiniz sonucu paylaşır mısınız?"
+                        s = "Biraz daha somutlaştırabilir misiniz? Kısa bir örnek ve elde ettiğiniz sonucu paylaşır mısınız?"
                     else:
-                        result["question"] = GENERIC_OPENING
-                else:
-                    # Prevent regression to generic opening after first turn
-                    if asked >= 1 and s.strip() == GENERIC_OPENING:
-                        result["question"] = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucu kısaca paylaşır mısınız?"
-                    else:
-                        result["question"] = s
+                        s = GENERIC_OPENING
+                # Avoid regression to opening after first turn
+                if asked >= 1 and s.strip() == GENERIC_OPENING:
+                    s = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucu kısaca paylaşır mısınız?"
+                # Avoid overly generic hypotheticals; prefer resume- or answer-anchored
+                if _is_generic(s) or "[proje adı]" in s.lower():
+                    try:
+                        # Prefer resume spotlight if available
+                        if resume_text:
+                            from src.services.nlp import extract_resume_spotlights, make_targeted_question_from_spotlight, extract_resume_project_titles
+                            spots = extract_resume_spotlights(resume_text)
+                            if spots:
+                                s = make_targeted_question_from_spotlight(spots[0])
+                            else:
+                                # Try to reference a concrete project title if available (safe to mention)
+                                titles = extract_resume_project_titles(resume_text)
+                                if titles:
+                                    title = titles[0]
+                                    s = f"Özgeçmişinizde '{title}' projesinden bahsetmişsiniz. Bu projede hangi sorunu çözdünüz, nasıl bir rol üstlendiniz ve ölçülebilir sonuç ne oldu?"
+                        if _is_generic(s):
+                            # Fall back to last user keywords
+                            from src.services.dialog import extract_keywords as _ek2
+                            last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
+                            kws = _ek2(last_user_text) if last_user_text else []
+                            if kws:
+                                key = kws[0]
+                                s = f"Cevabınızda '{key}' dediniz; bunu hangi teknolojilerle nasıl yaptınız ve ölçülebilir sonucu kısaca paylaşır mısınız?"
+                    except Exception:
+                        pass
+                result["question"] = s
             except Exception:
-                # As a last resort, ensure we don't regress to opening after first turn
                 if asked >= 1 and isinstance(q_candidate, str) and q_candidate.strip() == GENERIC_OPENING:
                     result["question"] = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucu kısaca paylaşır mısınız?"
     except Exception as e:
@@ -386,7 +445,7 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
 
     # 5.2) Dynamic max question bound and evidence-based early-stop
     from src.core.config import settings as _settings2
-    dynamic_max_q = _settings2.interview_max_questions_default
+    dynamic_max_q = 10**6
     try:
         if live and isinstance(live.get("overall"), (int, float)):
             ov = float(live["overall"])
@@ -400,8 +459,7 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
 
     # If we've already asked enough, stop here
     asked_count = sum(1 for t in history if t.get("role") == "assistant")
-    if asked_count >= dynamic_max_q:
-        return NextQuestionResponse(question=None, done=True, live=live)
+    # No hard cap; the interviewer will not auto-finish based on count
 
     # Evidence-based early finish: if requirements coverage is clearly sufficient (positive or negative), end
     try:

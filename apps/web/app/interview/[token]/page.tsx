@@ -47,6 +47,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const [interviewId, setInterviewId] = useState<number | null>(null);
   const [interviewJobId, setInterviewJobId] = useState<number | null>(null);
   const preparedFirstQuestionRef = useRef<string | null>(null);
+  const firstQuestionIssuedRef = useRef<boolean>(false);
   const sequenceNumberRef = useRef<number>(0);
   const audioStartIndexRef = useRef<number>(0);
   // Dedicated per-answer audio recorder to produce a single valid container
@@ -194,17 +195,27 @@ export default function InterviewPage({ params }: { params: { token: string } })
     navigator.permissions.query({ name: "microphone" as PermissionName }).then((p) => setMicPerm(p.state));
   }, [status]);
 
+  const sanitizeQuestion = (q: string) => (q || "").replace(/\bFINISHED\b/gi, "").trim();
+
   // Schedule first question: use prepared question if available; otherwise fetch
   useEffect(() => {
-    if (status !== "interview" || question !== null) return;
+    if (status !== "interview" || question !== null || firstQuestionIssuedRef.current) return;
     const id = setTimeout(async () => {
+      if (firstQuestionIssuedRef.current) return;
       const prepared = preparedFirstQuestionRef.current;
       if (prepared && prepared.trim()) {
-        const q = prepared.trim();
+        const q = sanitizeQuestion(prepared.trim());
+        if (!q) {
+          // If prepared is effectively FINISHED/empty, end early
+          setStatus("finished");
+          setPhase("idle");
+          return;
+        }
         setQuestion(q);
         setHistory((h) => [...h, { role: "assistant", text: q }]);
         setPhase("speaking");
         saveConversationMessage("assistant", q);
+        firstQuestionIssuedRef.current = true;
         return;
       }
       // Fallback to API-generated first question
@@ -214,11 +225,21 @@ export default function InterviewPage({ params }: { params: { token: string } })
         body: JSON.stringify({ history: initialHistory, interview_id: interviewId }),
       })
         .then((res) => {
-          const firstQuestion = (res.question || "").trim() || "Merhaba, kendinizi tanıtır mısınız?";
+          let firstQuestion = sanitizeQuestion(res.question || "");
+          if (!firstQuestion) {
+            if (res.done) {
+              setStatus("finished");
+              setPhase("idle");
+              firstQuestionIssuedRef.current = true;
+              return;
+            }
+            firstQuestion = "Merhaba, kendinizi tanıtır mısınız?";
+          }
           setQuestion(firstQuestion);
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
           setPhase("speaking");
           saveConversationMessage("assistant", firstQuestion);
+          firstQuestionIssuedRef.current = true;
         })
         .catch(() => {
           const firstQuestion = "Merhaba, kendinizi tanıtır mısınız?";
@@ -226,6 +247,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
           setPhase("speaking");
           saveConversationMessage("assistant", firstQuestion);
+          firstQuestionIssuedRef.current = true;
         });
     }, 1500);
     return () => clearTimeout(id);
@@ -366,7 +388,14 @@ export default function InterviewPage({ params }: { params: { token: string } })
               // Save completion message
               saveConversationMessage("system", "Interview completed");
             } else {
-              const nextQ = (res.question || "").trim() || "Devam edelim: Son projende üstlendiğin rolü biraz açabilir misin?";
+              let nextQ = sanitizeQuestion(res.question || "");
+              if (!nextQ) {
+                // Treat empty/FINISHED-only responses as completion
+                setPhase("idle");
+                setStatus("finished");
+                saveConversationMessage("system", "Interview completed");
+                return;
+              }
               // Avoid duplicate consecutive questions
               setHistory((h) => {
                 const last = h[h.length - 1];
