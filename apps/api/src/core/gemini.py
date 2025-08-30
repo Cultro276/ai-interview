@@ -57,9 +57,9 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
         "Adaptive behavior: If the last candidate message is extremely short (e.g., '...' or under ~10 characters) or likely STT failure, RE-ASK the SAME question more slowly and in simpler words; keep it 1 sentence. Offer a gentle STAR hint (Durum, Görev, Eylem, Sonuç) only once early in the interview."
     )
     if job_context:
-        # Accept larger context to include full resume text
+        # Accept larger context to include full resume and extras (no truncation here; upstream controls size)
         system_prompt += (
-            "\n\nContext (job description and full resume text may be included):\n" + job_context[:8000]
+            "\n\nContext (job description, full resume, and extra questions):\n" + job_context
         )
 
     convo_text = system_prompt + "\n\n"

@@ -101,6 +101,12 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 if resume_text:
                     # Provide full resume text to the LLM as hidden context
                     private_ctx += ("\n\nResume (full text):\n" + resume_text)
+                # Include recruiter-provided extra questions without truncation
+                try:
+                    if extra_list:
+                        private_ctx += "\n\nRecruiter Extra Questions (verbatim):\n- " + "\n- ".join(extra_list)
+                except Exception:
+                    pass
                 # Ask LLM for a concise opening question (allowed to reference resume items)
                 result0 = await asyncio.wait_for(
                     generate_question_robust([], private_ctx, max_questions=7), timeout=8.0
