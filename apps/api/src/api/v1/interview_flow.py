@@ -58,6 +58,15 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
             if job:
                 if job.description:
                     job_desc = job.description
+                # Parse extra recruiter-provided questions (one per line)
+                try:
+                    extra_raw = getattr(job, "extra_questions", None)
+                    if isinstance(extra_raw, str) and extra_raw.strip():
+                        extra_list = [q.strip() for q in extra_raw.splitlines() if q.strip()]
+                    else:
+                        extra_list = []
+                except Exception:
+                    extra_list = []
                 try:
                     req_cfg = job.requirements_config  # type: ignore[attr-defined]
                 except Exception:
@@ -94,6 +103,12 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 )
                 q0_raw = result0.get("question")
                 q0 = (q0_raw if isinstance(q0_raw, str) else "").strip()
+                # If recruiter provided extra questions, prefer the first one as opener
+                try:
+                    if (not q0) and extra_list:
+                        q0 = extra_list[0]
+                except Exception:
+                    pass
                 if not q0:
                     q0 = "Özgeçmişinizde öne çıkan bir proje/başarıyı STAR çerçevesinde kısaca anlatır mısınız?"
                 # Friendly intro with candidate name and job title
@@ -125,6 +140,12 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
         # Prefer LLM chain (Gemini -> OpenAI); if they fail, craft a human-like heuristic follow-up
         try:
             combined_ctx = ("Job Description:\n" + (job_desc or "")).strip()
+            # Include recruiter-provided extra questions in hidden context to bias LLM
+            try:
+                if extra_list:
+                    combined_ctx += "\n\nRecruiter Extra Questions (ask these if not covered):\n- " + "\n- ".join(extra_list[:6])
+            except Exception:
+                pass
             # Include precomputed dialog plan if exists
             # Load dialog_plan from analysis blob if present
             try:
@@ -204,9 +225,26 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
             # Give LLM a bit more time to avoid falling back to canned rules
             # Enforce gender-neutral addressing in instruction context
             combined_ctx += "\n\nImportant: Address the candidate in a gender-neutral manner in Turkish (use 'siz' and avoid gendered titles)."
-            result = await asyncio.wait_for(
-                generate_question_robust(history, combined_ctx, max_questions=50), timeout=12.0
-            )
+            # If there are pending extra questions not yet asked, surface them before LLM
+            def _pending_extra() -> str | None:
+                try:
+                    if not extra_list:
+                        return None
+                    asked_texts = [t.get("text", "").strip() for t in history if t.get("role") == "assistant"]
+                    for q in extra_list:
+                        if q and all(q not in (a or "") for a in asked_texts):
+                            return q
+                except Exception:
+                    return None
+                return None
+
+            pend = _pending_extra()
+            if pend:
+                result = {"question": pend, "done": False}
+            else:
+                result = await asyncio.wait_for(
+                    generate_question_robust(history, combined_ctx, max_questions=50), timeout=12.0
+                )
         except Exception:
             # Heuristic HR-style follow-up using last user text
             try:
@@ -310,6 +348,14 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                                 s = f"Cevabınızda '{key}' dediniz; bunu hangi teknolojilerle nasıl yaptınız ve ölçülebilir sonucu kısaca paylaşır mısınız?"
                     except Exception:
                         pass
+                # If there are still recruiter-provided extra questions pending, prefer them
+                try:
+                    asked_texts2 = [t.get("text", "").strip() for t in history if t.get("role") == "assistant"]
+                    remaining = [q for q in (extra_list or []) if q and all(q not in (a or "") for a in asked_texts2)]
+                    if remaining:
+                        s = remaining[0]
+                except Exception:
+                    pass
                 result["question"] = s
             except Exception:
                 if asked >= 1 and isinstance(q_candidate, str) and q_candidate.strip() == GENERIC_OPENING:

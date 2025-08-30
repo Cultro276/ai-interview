@@ -71,6 +71,7 @@ class InterviewAnalysisRead(BaseModel):
 class JobBase(BaseModel):
     title: str = Field(..., max_length=255)
     description: Optional[str] = None
+    extra_questions: Optional[str] = None
     expires_in_days: Optional[int] = Field(default=None, ge=1, le=365, description="Default invite link expiry for this job")
     # Removed manual requirements/rubric configuration
 
@@ -82,6 +83,7 @@ class JobCreate(JobBase):
 class JobUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
+    extra_questions: Optional[str] = None
     # Removed manual requirements/rubric configuration
 
 

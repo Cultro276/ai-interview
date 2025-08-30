@@ -13,6 +13,8 @@ class Job(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text())
+    # Optional extra questions entered by the recruiter (newline-separated)
+    extra_questions: Mapped[str | None] = mapped_column(Text(), nullable=True)
     default_invite_expiry_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     # Removed manual requirements/rubric configuration (now derived dynamically)
     created_at: Mapped[dt.datetime] = mapped_column(

@@ -85,6 +85,7 @@ async def create_job(
     job = Job(
         title=job_in.title,
         description=job_in.description,
+        extra_questions=(job_in.extra_questions or None),
         user_id=get_effective_owner_id(current_user),
         default_invite_expiry_days=expiry,
     )
@@ -110,7 +111,7 @@ async def update_job(
     for field, value in job_in.dict(exclude_unset=True).items():
         if field == "expires_in_days" and value is not None:
             job.default_invite_expiry_days = value
-        elif field in {"title", "description"}:
+        elif field in {"title", "description", "extra_questions"}:
             setattr(job, field, value)
     await session.commit()
     await session.refresh(job)

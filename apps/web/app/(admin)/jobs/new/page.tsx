@@ -11,6 +11,7 @@ import { useToast } from "@/context/ToastContext";
 export default function NewJobPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [extraQuestions, setExtraQuestions] = useState("");
   const [expiryDays, setExpiryDays] = useState<number>(30);
   const [errors, setErrors] = useState<{ title?: string; description?: string }>({});
   const [extracting, setExtracting] = useState(false);
@@ -42,7 +43,7 @@ export default function NewJobPage() {
     try {
       const job = await apiFetch<{ id: number }>("/api/v1/jobs/", {
         method: "POST",
-        body: JSON.stringify({ title: title.trim(), description: description.trim(), expires_in_days: expiryDays }),
+        body: JSON.stringify({ title: title.trim(), description: description.trim(), extra_questions: extraQuestions.trim() || null, expires_in_days: expiryDays }),
       });
       // Extract-requirements endpoint kaldırıldı; istenirse analiz daha sonra yapılır
       await refreshData();
@@ -74,6 +75,19 @@ export default function NewJobPage() {
           {errors.title && (
             <p id="title-error" className="mt-1 text-sm text-red-600">{errors.title}</p>
           )}
+        </div>
+        <div>
+          <Label htmlFor="extra_questions" className="block text-sm font-medium text-gray-700 mb-1">Ekstra Sorular (opsiyonel)</Label>
+          <textarea
+            id="extra_questions"
+            aria-label="Extra questions"
+            value={extraQuestions}
+            onChange={(e) => setExtraQuestions(e.target.value)}
+            placeholder={"Her satıra bir soru yazın.\nÖrn: ERP geçişinde rolünüz neydi?\nÖrn: Docker üretim sorununu nasıl çözdünüz?"}
+            rows={6}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+          />
+          <p className="text-xs text-gray-500 mt-1">Bu sorular mülakat sırasında öncelikli olarak sorulacaktır.</p>
         </div>
         <div>
           <Label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">İş Tanımı</Label>
