@@ -1,6 +1,6 @@
 import { MarketingNav } from "@/components/marketing/Nav";
 import { MarketingFooter } from "@/components/marketing/Footer";
-import { Button } from "@/components/ui/Button";
+import { Button } from "@/components/ui";
 
 export default function ContactPage() {
   return (

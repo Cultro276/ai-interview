@@ -1,5 +1,5 @@
 import React from "react";
-import { cn } from "@/components/ui/cn";
+import { cn } from "@/components/ui/utils/cn";
 
 export function Steps({
   steps,
@@ -34,5 +34,4 @@ export function Steps({
     </ol>
   );
 }
-
 

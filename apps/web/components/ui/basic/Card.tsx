@@ -1,5 +1,5 @@
 import React from "react";
-import { cn } from "@/components/ui/cn";
+import { cn } from "@/components/ui/utils/cn";
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
@@ -25,5 +25,4 @@ export function CardFooter({ className, ...props }: React.HTMLAttributes<HTMLDiv
     <div className={cn("px-6 py-4 border-t border-gray-200", className)} {...props} />
   );
 }
-
 

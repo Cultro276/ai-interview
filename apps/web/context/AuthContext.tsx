@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Load profile (includes permissions)
     (async () => {
       try {
-        const me = await apiFetch<UserProfile>("/api/v1/auth/me");
+        const me = await apiFetch<UserProfile>("/api/v1/auth/me", { skipRedirectOn401: true });
         setUser(me);
       } catch (e) {
         // token invalid; clear it
@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(t);
     // Load profile then route
     (async () => {
-      try { const me = await apiFetch<UserProfile>("/api/v1/auth/me"); setUser(me); } catch {}
+      try { const me = await apiFetch<UserProfile>("/api/v1/auth/me", { skipRedirectOn401: true }); setUser(me); } catch {}
       router.push("/dashboard");
     })();
   };

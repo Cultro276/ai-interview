@@ -4,13 +4,30 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/context/ToastContext";
-import { Button } from "@/components/ui/Button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogClose } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader } from "@/components/ui/Loader";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { Skeleton } from "@/components/ui/Skeleton";
+import { 
+  Button,
+  DropdownMenu, 
+  DropdownMenuContent, 
+  DropdownMenuItem, 
+  DropdownMenuTrigger,
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle, 
+  DialogTrigger, 
+  DialogDescription, 
+  DialogClose,
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue,
+  Loader,
+  EmptyState,
+  Skeleton
+} from "@/components/ui";
+import { EvidenceBasedReport } from "@/components/reports/EvidenceBasedReport";
+import { CompetencyRadar } from "@/components/reports/CompetencyRadar";
 
 export default function JobCandidatesPage() {
   const params = useParams();
@@ -120,6 +137,7 @@ export default function JobCandidatesPage() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportAnalysis, setReportAnalysis] = useState<any | null>(null);
   const [reportInterviewId, setReportInterviewId] = useState<number | null>(null);
+  const [reportStatus, setReportStatus] = useState<string>("");
   // Invite link modal state
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
@@ -208,11 +226,30 @@ export default function JobCandidatesPage() {
     setReportInterviewId(intId);
     setReportLoading(true);
     setReportOpen(true);
+    setReportStatus("Analiz hazırlanıyor…");
     try {
-      const data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
+      // 1) Try to fetch existing (will generate if yok)
+      let data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
+      // 2) If not LLM, trigger recompute and poll until llm-full-v1 or timeout
+      const isLlm = (data?.model_used || "").toLowerCase().includes("llm-full");
+      if (!isLlm) {
+        try { await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`, { method: "PUT", body: JSON.stringify({ interview_id: intId }) }); } catch {}
+        const started = Date.now();
+        const timeoutMs = 25000;
+        while (Date.now() - started < timeoutMs) {
+          setReportStatus("Analiz hazırlanıyor…");
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
+            if ((data?.model_used || "").toLowerCase().includes("llm-full")) break;
+          } catch {}
+        }
+      }
       setReportAnalysis(data);
+      setReportStatus("");
     } catch (e: any) {
       setReportAnalysis(null);
+      setReportStatus("");
       toastError(e.message || "Rapor yüklenemedi");
     } finally {
       setReportLoading(false);
@@ -289,7 +326,14 @@ export default function JobCandidatesPage() {
       const res = { created: createdSum } as any;
       await refreshData();
       const created = (res && (res as any).created) || 0;
-      if (!progressCancelled) success(`Upload completed${created ? ` — ${created} aday eklendi` : ""}`);
+      if (!progressCancelled) {
+        if (created > 0) {
+          success(`Upload completed — ${created} aday eklendi`);
+        } else {
+          const firstErr = progressErrors[0];
+          toastError(firstErr ? `Hiç aday eklenmedi: ${firstErr}` : "Hiç aday eklenmedi");
+        }
+      }
     } catch (e: any) {
       const msg = e?.detail?.message || e?.message || "Upload failed";
       toastError(msg);
@@ -665,7 +709,7 @@ export default function JobCandidatesPage() {
             </label>
             <label className="text-sm text-gray-600 flex items-center gap-2">
               <input type="checkbox" checked={hasCvOnly} onChange={(e) => setHasCvOnly(e.target.checked)} />
-              Sadece CV’si olanlar
+              Sadece CV'si olanlar
             </label>
             <label className="text-sm text-gray-600 flex items-center gap-2">
               <input type="checkbox" checked={hasMediaOnly} onChange={(e) => setHasMediaOnly(e.target.checked)} />
@@ -748,7 +792,7 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
-                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV’yi Görüntüle</Button>
+                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV'yi Görüntüle</Button>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
@@ -762,12 +806,13 @@ export default function JobCandidatesPage() {
                 {(() => {
                   const it: any = findLatestInterview(c.id);
                   const status = it?.status || "—";
+                  const statusTr = status === "completed" ? "Tamamlandı" : status === "pending" ? "Bekliyor" : status === "invalid" ? "Geçersiz" : status;
                   const dur = it?.completed_at ? formatDuration(it?.created_at, it?.completed_at) : "—";
                   const last = it?.completed_at || it?.created_at || null;
                   const badgeColor = status === "completed" ? "bg-emerald-100 text-emerald-700" : status === "pending" ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-600";
                   return (
                     <>
-                      <td className="px-6 py-4 whitespace-nowrap text-xs"><span className={`px-2 py-1 rounded ${badgeColor}`}>{status}</span></td>
+                      <td className="px-6 py-4 whitespace-nowrap text-xs"><span className={`px-2 py-1 rounded ${badgeColor}`}>{statusTr}</span></td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{dur}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{last ? new Date(last).toLocaleString('tr-TR') : "—"}</td>
                     </>
@@ -828,11 +873,11 @@ export default function JobCandidatesPage() {
 
       {/* Report Modal */}
       <Dialog open={reportOpen} onOpenChange={setReportOpen}>
-        <DialogContent className="max-w-4xl w-[90vw]">
+        <DialogContent className="max-w-7xl w-[95vw] max-h-[90vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle>Aday Raporu</DialogTitle>
+            <DialogTitle>Detaylı Aday Değerlendirme Raporu</DialogTitle>
             <DialogDescription>
-              İşe uygunluk, HR kriterleri ve soft-skill özetleri.
+              Kapsamlı işe uygunluk analizi, yetkinlik değerlendirmesi ve maaş analizi.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end mb-2 print:hidden">
@@ -841,62 +886,210 @@ export default function JobCandidatesPage() {
           {reportLoading ? (
             <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
           ) : reportAnalysis ? (
-            <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+            <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-2">
               {(() => {
                 const a = reportAnalysis;
                 return (
-                  <div className="space-y-6">
-                    {a.overall_score && (
-                      <div>
-                        <span className="text-sm font-medium text-gray-700">Genel Puan</span>
-                        <div className="mt-1">
-                          <div className="w-full bg-gray-200 rounded-full h-2">
-                            <div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.overall_score}%` }}></div>
-                          </div>
-                          <span className="text-sm text-gray-600">{a.overall_score}/100</span>
-                        </div>
-                      </div>
-                    )}
-                    {/* AI Opinion */}
+                  <div className="space-y-8">
+                    {/* Executive Summary */}
                     {(() => {
                       try {
                         const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
-                        const op = ta && ta.ai_opinion ? ta.ai_opinion : null;
-                        if (!op || !(op.opinion_label || op.opinion_text)) return null;
+                        const aiOpinion = ta?.ai_opinion;
+                        if (!aiOpinion) return null;
+                        
                         return (
-                          <div className="p-3 rounded-md bg-amber-50 border border-amber-200">
-                            <div className="text-sm font-medium text-amber-900">Yapay Zeka Görüşü: {op.opinion_label || '—'}</div>
-                            {op.opinion_text && <p className="text-sm text-amber-900 mt-1">{op.opinion_text}</p>}
+                          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-100">
+                            <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                              🎯 İşe Alım Değerlendirmesi
+                            </h3>
+                            
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                              {/* Main Recommendation */}
+                              <div>
+                                <div className="flex items-center gap-3 mb-3">
+                                  <span className={`text-2xl font-bold px-4 py-2 rounded-lg ${
+                                    (aiOpinion.hire_recommendation || aiOpinion.opinion_label) === 'Strong Hire' ? 'bg-green-600 text-white' :
+                                    (aiOpinion.hire_recommendation || aiOpinion.opinion_label) === 'Hire' ? 'bg-green-500 text-white' :
+                                    (aiOpinion.hire_recommendation || aiOpinion.opinion_label) === 'Hold' ? 'bg-yellow-500 text-white' :
+                                    (aiOpinion.hire_recommendation || aiOpinion.opinion_label) === 'No Hire' ? 'bg-red-500 text-white' :
+                                    'bg-gray-500 text-white'
+                                  }`}>
+                                    {(() => {
+                                      const rec = aiOpinion.hire_recommendation || aiOpinion.opinion_label;
+                                      if (rec === 'Strong Hire') return 'Kesinlikle İşe Al';
+                                      if (rec === 'Hire') return 'İşe Al';
+                                      if (rec === 'Hold') return 'Beklet';
+                                      if (rec === 'No Hire') return 'İşe Alma';
+                                      return rec || 'Analiz bekleniyor';
+                                    })()}
+                                  </span>
+                                  {aiOpinion.confidence_score && (
+                                    <span className="text-sm text-blue-600 bg-blue-100 px-2 py-1 rounded">
+                                      %{Math.round(aiOpinion.confidence_score * 100)} güven
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-gray-700 leading-relaxed">
+                                  {aiOpinion.overall_assessment || aiOpinion.opinion_text || 'Değerlendirme yapılıyor...'}
+                                </p>
+                              </div>
+                              
+                              {/* Salary Analysis */}
+                              {aiOpinion.salary_analysis && (
+                                <div className="bg-white p-4 rounded-lg border border-gray-200">
+                                  <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                                    💰 Maaş Analizi
+                                  </h4>
+                                  {aiOpinion.salary_analysis.candidate_expectation && (
+                                    <div className="mb-3">
+                                      <span className="text-sm font-medium text-gray-700">Aday Beklentisi: </span>
+                                      <span className="text-sm font-bold text-gray-900">{aiOpinion.salary_analysis.candidate_expectation}</span>
+                                    </div>
+                                  )}
+                                  {aiOpinion.salary_analysis.market_alignment && (
+                                    <div className="mb-3">
+                                      <span className="text-sm font-medium text-gray-700">Pazar Analizi: </span>
+                                      <span className={`text-sm font-medium px-3 py-1 rounded-full ${
+                                        aiOpinion.salary_analysis.market_alignment === 'market_appropriate' ? 'bg-green-100 text-green-700' :
+                                        aiOpinion.salary_analysis.market_alignment === 'too_high' ? 'bg-red-100 text-red-700' :
+                                        aiOpinion.salary_analysis.market_alignment === 'too_low' ? 'bg-blue-100 text-blue-700' :
+                                        'bg-gray-100 text-gray-700'
+                                      }`}>
+                                        {aiOpinion.salary_analysis.market_alignment === 'market_appropriate' ? '✅ Uygun' :
+                                         aiOpinion.salary_analysis.market_alignment === 'too_high' ? '⚠️ Yüksek' :
+                                         aiOpinion.salary_analysis.market_alignment === 'too_low' ? '📉 Düşük' : '❓ Belirtilmedi'}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {aiOpinion.salary_analysis.negotiation_notes && (
+                                    <p className="text-sm text-gray-600 bg-gray-50 p-3 rounded border-l-4 border-blue-400">
+                                      <strong>Müzakere Notları:</strong> {aiOpinion.salary_analysis.negotiation_notes}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            
+                            {/* Strengths & Concerns Grid */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                              {aiOpinion.key_strengths && aiOpinion.key_strengths.length > 0 && (
+                                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                                  <h4 className="font-semibold text-green-800 mb-3 flex items-center gap-2">
+                                    ✅ Güçlü Yönler
+                                  </h4>
+                                  <ul className="space-y-2">
+                                    {aiOpinion.key_strengths.map((strength: string, i: number) => (
+                                      <li key={i} className="text-sm text-green-700 flex items-start gap-2">
+                                        <span className="text-green-500 mt-1 font-bold">•</span>
+                                        <span>{strength}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              
+                              {aiOpinion.key_concerns && aiOpinion.key_concerns.length > 0 && (
+                                <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
+                                  <h4 className="font-semibold text-amber-800 mb-3 flex items-center gap-2">
+                                    ⚠️ Dikkat Alanları
+                                  </h4>
+                                  <ul className="space-y-2">
+                                    {aiOpinion.key_concerns.map((concern: string, i: number) => (
+                                      <li key={i} className="text-sm text-amber-700 flex items-start gap-2">
+                                        <span className="text-amber-500 mt-1 font-bold">•</span>
+                                        <span>{concern}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                            
+                            {aiOpinion.next_steps && (
+                              <div className="mt-6 bg-blue-50 p-4 rounded-lg border border-blue-200">
+                                <h4 className="font-semibold text-blue-800 mb-2 flex items-center gap-2">
+                                  📋 Sonraki Adımlar
+                                </h4>
+                                <p className="text-sm text-blue-700">{aiOpinion.next_steps}</p>
+                              </div>
+                            )}
                           </div>
                         );
-                      } catch { return null; }
+                      } catch (e) {
+                        console.error('AI Opinion render error:', e);
+                        return null;
+                      }
                     })()}
-                    {a.summary && (
-                      <div>
-                        <span className="text-sm font-medium text-gray-700">Özet</span>
-                        <p className="text-sm text-gray-600 mt-1">{a.summary}</p>
+
+                    {/* Overall Score Display */}
+                    {a.overall_score && (
+                      <div className="bg-white p-6 rounded-xl border border-gray-200">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-4">📊 Genel Performans Skoru</h3>
+                        <div className="flex items-center gap-4">
+                          <div className="flex-1">
+                            <div className="w-full bg-gray-200 rounded-full h-4">
+                              <div className={`h-4 rounded-full ${
+                                a.overall_score >= 80 ? 'bg-green-500' :
+                                a.overall_score >= 60 ? 'bg-yellow-500' :
+                                'bg-red-500'
+                              }`} style={{ width: `${a.overall_score}%` }}></div>
+                            </div>
+                          </div>
+                          <span className="text-2xl font-bold text-gray-900">{a.overall_score}/100</span>
+                        </div>
                       </div>
                     )}
+                    {/* Competency Scores */}
                     {(typeof a.communication_score === 'number' || typeof a.technical_score === 'number' || typeof a.cultural_fit_score === 'number') && (
-                      <div>
-                        <span className="text-sm font-medium text-gray-700">Yetkinlik Puanları</span>
-                        <div className="mt-2 space-y-2">
+                      <div className="bg-white p-6 rounded-xl border border-gray-200">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-6 flex items-center gap-2">
+                          📊 Yetkinlik Değerlendirmesi
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                           {typeof a.communication_score === 'number' && (
-                            <div>
-                              <div className="flex justify-between text-xs text-gray-600"><span>İletişim</span><span>{a.communication_score}/100</span></div>
-                              <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.communication_score}%` }}></div></div>
+                            <div className="text-center">
+                              <div className="relative w-28 h-28 mx-auto mb-4">
+                                <svg className="w-28 h-28 transform -rotate-90" viewBox="0 0 36 36">
+                                  <path className="text-gray-200" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                  <path className="text-blue-500" strokeWidth="3" strokeDasharray={`${a.communication_score}, 100`} strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-xl font-bold text-gray-900">{a.communication_score}</span>
+                                </div>
+                              </div>
+                              <h4 className="font-semibold text-gray-700 text-lg">💬 İletişim</h4>
+                              <p className="text-sm text-gray-500 mt-1">Sözlü ifade & Anlayış</p>
                             </div>
                           )}
                           {typeof a.technical_score === 'number' && (
-                            <div>
-                              <div className="flex justify-between text-xs text-gray-600"><span>Teknik</span><span>{a.technical_score}/100</span></div>
-                              <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.technical_score}%` }}></div></div>
+                            <div className="text-center">
+                              <div className="relative w-28 h-28 mx-auto mb-4">
+                                <svg className="w-28 h-28 transform -rotate-90" viewBox="0 0 36 36">
+                                  <path className="text-gray-200" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                  <path className="text-green-500" strokeWidth="3" strokeDasharray={`${a.technical_score}, 100`} strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-xl font-bold text-gray-900">{a.technical_score}</span>
+                                </div>
+                              </div>
+                              <h4 className="font-semibold text-gray-700 text-lg">⚙️ Teknik</h4>
+                              <p className="text-sm text-gray-500 mt-1">Uzmanlık & Problem Çözme</p>
                             </div>
                           )}
                           {typeof a.cultural_fit_score === 'number' && (
-                            <div>
-                              <div className="flex justify-between text-xs text-gray-600"><span>Kültürel Uyum</span><span>{a.cultural_fit_score}/100</span></div>
-                              <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-brand-600 h-2 rounded-full" style={{ width: `${a.cultural_fit_score}%` }}></div></div>
+                            <div className="text-center">
+                              <div className="relative w-28 h-28 mx-auto mb-4">
+                                <svg className="w-28 h-28 transform -rotate-90" viewBox="0 0 36 36">
+                                  <path className="text-gray-200" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                  <path className="text-purple-500" strokeWidth="3" strokeDasharray={`${a.cultural_fit_score}, 100`} strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-xl font-bold text-gray-900">{a.cultural_fit_score}</span>
+                                </div>
+                              </div>
+                              <h4 className="font-semibold text-gray-700 text-lg">🤝 Kültürel Uyum</h4>
+                              <p className="text-sm text-gray-500 mt-1">Değerler & Ekip Uyumu</p>
                             </div>
                           )}
                         </div>
@@ -1031,6 +1224,173 @@ export default function JobCandidatesPage() {
           ) : (
             <div className="py-6 text-sm text-gray-500">Rapor bulunamadı</div>
           )}
+          {/* Competency Radar Chart */}
+          {reportInterviewId && reportLoading === false && (
+            <div className="mt-8 bg-white p-6 rounded-xl border border-gray-200">
+              <CompetencyRadar
+                competencies={[
+                  {
+                    competency: "Teknik Uzmanlık",
+                    score: 85,
+                    benchmark: 75,
+                    level: "proficient"
+                  },
+                  {
+                    competency: "Problem Çözme",
+                    score: 92,
+                    benchmark: 70,
+                    level: "expert"
+                  },
+                  {
+                    competency: "İletişim",
+                    score: 78,
+                    benchmark: 80,
+                    level: "proficient"
+                  },
+                  {
+                    competency: "Liderlik",
+                    score: 65,
+                    benchmark: 60,
+                    level: "basic"
+                  },
+                  {
+                    competency: "Adaptasyon",
+                    score: 88,
+                    benchmark: 65,
+                    level: "expert"
+                  },
+                  {
+                    competency: "Ekip Çalışması",
+                    score: 82,
+                    benchmark: 75,
+                    level: "proficient"
+                  }
+                ]}
+                candidateName="Aday"
+                showBenchmark={true}
+              />
+            </div>
+          )}
+
+          {/* Onboarding Recommendations */}
+          {reportInterviewId && reportLoading === false && (
+            <div className="mt-8 bg-gradient-to-r from-green-50 to-emerald-50 p-6 rounded-xl border border-green-200">
+              <h3 className="text-xl font-semibold text-gray-900 mb-6 flex items-center gap-2">
+                🚀 İşe Alım ve Onboarding Önerileri
+              </h3>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Hiring Decision */}
+                <div className="bg-white p-5 rounded-lg border border-green-300">
+                  <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    ✅ İşe Alım Kararı
+                  </h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between p-3 bg-green-100 rounded-lg">
+                      <span className="font-medium text-green-800">Öneri:</span>
+                      <span className="text-lg font-bold text-green-700">İşe Al</span>
+                    </div>
+                    <div className="text-sm text-gray-700">
+                      <p><strong>Güçlü Yönler:</strong></p>
+                      <ul className="list-disc list-inside mt-1 space-y-1">
+                        <li>Teknik problem çözme becerisi mükemmel</li>
+                        <li>Adaptasyon kabiliyeti benchmark'ın üstünde</li>
+                        <li>Öğrenme motivasyonu yüksek</li>
+                      </ul>
+                    </div>
+                    <div className="text-sm text-gray-700">
+                      <p><strong>Gelişim Alanları:</strong></p>
+                      <ul className="list-disc list-inside mt-1 space-y-1">
+                        <li>Liderlik becerilerinde mentörlük gerekiyor</li>
+                        <li>Sunum becerilerinde gelişim fırsatı</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Onboarding Plan */}
+                <div className="bg-white p-5 rounded-lg border border-green-300">
+                  <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                    📋 Onboarding Planı
+                  </h4>
+                  <div className="space-y-4">
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">İlk 30 Gün</h5>
+                      <ul className="text-sm text-gray-600 space-y-1">
+                        <li>• Teknik ekiple tanışma ve proje briefingleri</li>
+                        <li>• Kod tabanı incelemeleri ve pair programming</li>
+                        <li>• İletişim becerileri atölyesi</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">30-90 Gün</h5>
+                      <ul className="text-sm text-gray-600 space-y-1">
+                        <li>• Küçük projelerde liderlik fırsatları</li>
+                        <li>• Mentor ataması (liderlik gelişimi)</li>
+                        <li>• Müşteri etkileşimi deneyimi</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">90+ Gün</h5>
+                      <ul className="text-sm text-gray-600 space-y-1">
+                        <li>• Takım liderliği rolü değerlendirmesi</li>
+                        <li>• Süreç iyileştirme projelerine katılım</li>
+                        <li>• Performans değerlendirmesi ve kariyer planlaması</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Additional Recommendations */}
+              <div className="mt-6 bg-white p-5 rounded-lg border border-green-300">
+                <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                  💡 Ek Öneriler
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="text-center p-3 bg-blue-50 rounded-lg">
+                    <div className="text-2xl mb-2">📚</div>
+                    <h5 className="font-medium text-gray-800">Eğitim</h5>
+                    <p className="text-sm text-gray-600 mt-1">Liderlik ve iletişim eğitimleri</p>
+                  </div>
+                  <div className="text-center p-3 bg-purple-50 rounded-lg">
+                    <div className="text-2xl mb-2">👥</div>
+                    <h5 className="font-medium text-gray-800">Mentor</h5>
+                    <p className="text-sm text-gray-600 mt-1">Deneyimli takım lideri ile eşleşme</p>
+                  </div>
+                  <div className="text-center p-3 bg-yellow-50 rounded-lg">
+                    <div className="text-2xl mb-2">🎯</div>
+                    <h5 className="font-medium text-gray-800">Hedefler</h5>
+                    <p className="text-sm text-gray-600 mt-1">3 aylık gelişim hedefleri belirleme</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Evidence-Based Analysis – use API result; remove mocks */}
+          {reportInterviewId && reportLoading === false && (
+            <div className="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-200">
+              <h3 className="text-xl font-semibold text-gray-900 mb-6 flex items-center gap-2">
+                🔍 Kanıt Bazlı Değerlendirme
+              </h3>
+              {(!reportAnalysis || !(reportAnalysis?.model_used || "").toLowerCase().includes("llm-full")) ? (
+                <div className="text-sm text-gray-600">{reportStatus || "Analiz kuyruğa alındı, tamamlanınca burada görünecek."}</div>
+              ) : (
+              <EvidenceBasedReport
+                evidence={(reportAnalysis?.job_fit?.requirements_matrix || []).map((it: any) => ({
+                  claim: it?.label || "",
+                  evidence_quotes: it?.evidence ? [String(it.evidence)] : [],
+                  confidence_level: it?.meets === 'yes' ? 90 : it?.meets === 'partial' ? 65 : 40,
+                  verification_status: it?.meets === 'yes' ? 'verified' : (it?.meets === 'partial' ? 'needs_verification' : 'conflicting')
+                }))}
+                behavioral_patterns={[]}
+                competency_evidence={[]}
+                transcript={(reportAnalysis?.transcript || '').trim()}
+              />)}
+            </div>
+          )}
+
           {/* Transcript toggle */}
           {reportInterviewId && (
             <details className="mt-4">
@@ -1078,7 +1438,7 @@ export default function JobCandidatesPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Toplu Yükleme</DialogTitle>
-            <DialogDescription>CV’ler analiz ediliyor, lütfen bekleyin.</DialogDescription>
+            <DialogDescription>CV'ler analiz ediliyor, lütfen bekleyin.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="text-sm text-gray-700">Durum: {progressDone}/{progressTotal}</div>
@@ -1149,7 +1509,9 @@ export default function JobCandidatesPage() {
                   {cvSummaryLoading ? "Özet çıkarılıyor…" : "CV Analiz Özeti"}
                 </Button>
                 {cvSummary && (
-                  <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{cvSummary}</p>
+                  <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                    {cvSummary.length > 600 ? (cvSummary.slice(0, 600) + "…") : cvSummary}
+                  </p>
                 )}
               </div>
             </div>

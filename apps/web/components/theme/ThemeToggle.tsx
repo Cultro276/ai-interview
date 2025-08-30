@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui";
 import { Moon, Sun, Laptop } from "lucide-react";
 import { useTheme } from "next-themes";
 

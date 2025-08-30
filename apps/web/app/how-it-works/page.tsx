@@ -1,6 +1,6 @@
 import { MarketingNav } from "@/components/marketing/Nav";
 import { MarketingFooter } from "@/components/marketing/Footer";
-import { Steps } from "@/components/ui/Steps";
+import { Steps } from "@/components/ui";
 
 export default function HowItWorksPage() {
   return (

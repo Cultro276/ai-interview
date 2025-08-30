@@ -2,7 +2,7 @@
 
 export async function apiFetch<T>(
   url: string,
-  options: RequestInit = {},
+  options: RequestInit & { skipRedirectOn401?: boolean } = {},
 ): Promise<T> {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const foundersSecret = typeof window !== "undefined" ? localStorage.getItem("founders_secret") : null;
@@ -15,7 +15,7 @@ export async function apiFetch<T>(
     headers.Authorization = `Bearer ${token}`;
   }
   if (foundersSecret) {
-    headers["X-Internal-Secret"] = foundersSecret;
+    headers["x-internal-secret"] = foundersSecret;
   }
 
   // Resolve API base URL with solid fallback for all environments
@@ -33,7 +33,9 @@ export async function apiFetch<T>(
     headers,
   });
   if (res.status === 401) {
-    if (typeof window !== "undefined") window.location.href = "/login";
+    if (!options.skipRedirectOn401) {
+      if (typeof window !== "undefined") window.location.href = "/login";
+    }
     throw new Error("Unauthorized");
   }
   if (!res.ok) {

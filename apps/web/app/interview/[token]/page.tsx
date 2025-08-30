@@ -2,8 +2,8 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { apiFetch } from "@/lib/api";
 import { listen } from "@/lib/voice";
-import { Steps } from "@/components/ui/Steps";
-import { Button } from "@/components/ui/Button";
+import { Steps, Button } from "@/components/ui";
+import { LiveInsights } from "@/components/interview/LiveInsights";
 
 export default function InterviewPage({ params }: { params: { token: string } }) {
   const { token } = params;
@@ -40,6 +40,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const [history, setHistory] = useState<{ role: "assistant" | "user"; text: string }[]>([]);
   const askedCount = useMemo(() => history.filter(t => t.role === "assistant").length, [history]);
   const [elapsedSec, setElapsedSec] = useState(0);
+  const elapsedMinutes = useMemo(() => Math.floor(elapsedSec / 60), [elapsedSec]);
   // Accessibility toggles
   const [showCaptions, setShowCaptions] = useState(true);
   
@@ -785,6 +786,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
             <div className="text-base">{question}</div>
           </div>
         )}
+
+        {/* Live Insights is for internal testing only; hide from candidate UI */}
         {/* Geçici Bitir butonu */}
         <Button
           className="mt-3"

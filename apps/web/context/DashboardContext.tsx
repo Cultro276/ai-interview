@@ -29,6 +29,7 @@ interface Interview {
   candidate_id: number;
   status: string;
   created_at: string;
+  completed_at?: string;
   audio_url?: string;
   video_url?: string;
   candidate?: Candidate;
@@ -61,19 +62,34 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       // Skip API calls if there is no auth token (e.g., on /login)
       const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
       if (!token) {
+        console.warn("No authentication token found - skipping API calls");
         setDataLoaded(true);
         setLoading(false);
         return;
       }
+      
+      console.log("Loading dashboard data with token:", token.substring(0, 10) + "...");
+      
       const [candidatesRes, jobsRes, interviewsRes] = await Promise.allSettled([
         apiFetch<Candidate[]>("/api/v1/candidates/"),
         apiFetch<Job[]>("/api/v1/jobs/"),
         apiFetch<Interview[]>("/api/v1/interviews/"),
       ]);
 
-      const nextCandidates = candidatesRes.status === "fulfilled" ? (candidatesRes.value || []) : candidates;
-      const nextJobs = jobsRes.status === "fulfilled" ? (jobsRes.value || []) : jobs;
-      const nextInterviews = interviewsRes.status === "fulfilled" ? (interviewsRes.value || []) : interviews;
+      // Enhanced error handling for debugging
+      if (candidatesRes.status === "rejected") {
+        console.error("Failed to load candidates:", candidatesRes.reason);
+      }
+      if (jobsRes.status === "rejected") {
+        console.error("Failed to load jobs:", jobsRes.reason);
+      }
+      if (interviewsRes.status === "rejected") {
+        console.error("Failed to load interviews:", interviewsRes.reason);
+      }
+
+      const nextCandidates = candidatesRes.status === "fulfilled" ? (candidatesRes.value || []) : [];
+      const nextJobs = jobsRes.status === "fulfilled" ? (jobsRes.value || []) : [];
+      const nextInterviews = interviewsRes.status === "fulfilled" ? (interviewsRes.value || []) : [];
 
       setCandidates(nextCandidates);
       setJobs(nextJobs);

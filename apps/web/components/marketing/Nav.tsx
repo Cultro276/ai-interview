@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { Button } from "@/components/ui/Button";
+import { Button } from "@/components/ui";
 import { ThemeToggle } from "../theme/ThemeToggle";
 import { productName } from "@/lib/brand";
 import Image from "next/image";

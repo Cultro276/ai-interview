@@ -3,9 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { useDashboard } from "@/context/DashboardContext";
-import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Label } from "@/components/ui/label";
+import { Button, Input, Label } from "@/components/ui";
 import { useToast } from "@/context/ToastContext";
 
 export default function NewJobPage() {

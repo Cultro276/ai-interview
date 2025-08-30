@@ -34,9 +34,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }
   return (
     <AuthProvider>
-      <DashboardProvider>
+      {isLogin ? (
         <div className="min-h-screen bg-gray-50 dark:bg-neutral-950">
-          {!isLogin && (
+          {/* No DashboardProvider on login page to avoid data fetching */}
+          <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+            <div>{children}</div>
+          </main>
+        </div>
+      ) : (
+        <DashboardProvider>
+          <div className="min-h-screen bg-gray-50 dark:bg-neutral-950">
             <nav className="bg-white dark:bg-neutral-900 shadow-sm border-b border-neutral-200 dark:border-neutral-800">
               <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="flex justify-between h-16">
@@ -47,32 +54,25 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     <Link href="/dashboard" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                       Panel
                     </Link>
-                    {/* Removed top-level Candidates page; candidate management lives under each Job */}
                     <Link href="/jobs" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                       İlanlar
                     </Link>
                     <TeamLink />
-                    {/* Founders link is fully hidden to all users; remove from navigation. */}
-                    {/* Interviews page removed; all actions under each Job's candidates */}
                     <ThemeToggle />
                   </div>
                 </div>
               </div>
             </nav>
-          )}
-          <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-            {isLogin ? (
-              <div>{children}</div>
-            ) : (
+            <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
               <div className="bg-white dark:bg-neutral-900 rounded-lg shadow border border-neutral-200 dark:border-neutral-800">
                 <div className="p-6">
                   {children}
                 </div>
               </div>
-            )}
-          </main>
-        </div>
-      </DashboardProvider>
+            </main>
+          </div>
+        </DashboardProvider>
+      )}
     </AuthProvider>
   );
 } 

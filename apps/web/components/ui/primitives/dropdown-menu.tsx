@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu";
-import { cn } from "@/components/ui/cn";
+import { cn } from "@/components/ui/utils/cn";
 
 const DropdownMenu = DropdownPrimitive.Root;
 const DropdownMenuTrigger = DropdownPrimitive.Trigger;
@@ -45,5 +45,4 @@ const DropdownMenuSeparator = React.forwardRef<
 DropdownMenuSeparator.displayName = DropdownPrimitive.Separator.displayName;
 
 export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator };
-
 

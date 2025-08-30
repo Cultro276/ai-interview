@@ -1,5 +1,5 @@
 import React from "react";
-import { Button } from "@/components/ui/Button";
+import { Button } from "./Button";
 
 export function EmptyState({
   title,
@@ -26,5 +26,4 @@ export function EmptyState({
     </div>
   );
 }
-
 

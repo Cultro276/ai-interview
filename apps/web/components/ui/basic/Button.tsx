@@ -1,6 +1,6 @@
 "use client";
 import React from "react";
-import { cn } from "@/components/ui/cn";
+import { cn } from "@/components/ui/utils/cn";
 
 type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "destructive";
 type ButtonSize = "sm" | "md" | "lg";
@@ -46,5 +46,4 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   },
 );
 Button.displayName = "Button";
-
 

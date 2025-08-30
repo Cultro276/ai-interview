@@ -1,7 +1,6 @@
 import { MarketingNav } from "@/components/marketing/Nav";
 import { MarketingFooter } from "@/components/marketing/Footer";
-import { Button } from "@/components/ui/Button";
-import { Steps } from "@/components/ui/Steps";
+import { Button, Steps } from "@/components/ui";
 
 export default function HomePage() {
   return (

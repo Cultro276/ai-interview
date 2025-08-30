@@ -1,12 +1,9 @@
 "use client";
 import { useDashboard } from "@/context/DashboardContext";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { apiFetch } from "@/lib/api";
-import { Button } from "@/components/ui/Button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogClose } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { Skeleton } from "@/components/ui/Skeleton";
+import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogClose, EmptyState, Skeleton } from "@/components/ui";
 import { useToast } from "@/context/ToastContext";
 
 export default function JobsPage() {
@@ -103,7 +100,10 @@ export default function JobsPage() {
             <div key={job.id} className="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg p-6">
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-neutral-100">{job.title}</h3>
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-neutral-100 flex items-center gap-2">
+                    <span>{job.title}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-neutral-700">ID #{job.id}</span>
+                  </h3>
                   <p className="text-gray-600 dark:text-gray-300 mt-1">{job.description}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
                     Created: {new Date(job.created_at).toLocaleDateString()}

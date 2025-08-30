@@ -1,9 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
-import { Button } from "@/components/ui/Button";
-import { Card, CardContent, CardHeader } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
+import { Button, Card, CardContent, CardHeader, Input } from "@/components/ui";
 import { useRouter } from "next/navigation";
 
 type Member = {
