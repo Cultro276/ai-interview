@@ -11,7 +11,10 @@ async def main() -> None:
         result = await session.execute(select(User).filter_by(email="admin@example.com"))
         user = result.scalar_one_or_none()
         if user:
-            print("exists")
+            print("exists - updating to superuser")
+            user.is_superuser = True
+            await session.commit()
+            print("updated to superuser")
             return
         user = User(
             email="admin@example.com",

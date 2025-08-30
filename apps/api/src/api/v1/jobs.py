@@ -2,7 +2,7 @@
 from typing import List
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,9 @@ from uuid import uuid4
 import re
 from src.services.nlp import parse_resume_bytes, extract_candidate_fields, extract_candidate_fields_smart
 import json
+from src.core.config import settings
+from typing import Optional
+from src.core.audit import AuditLogger, AuditEventType, AuditContext
 
 # Hint pyright that 3rd-party imports are available at runtime
 if TYPE_CHECKING:
@@ -61,6 +64,39 @@ def create_name_slug(name: str, candidate_id: int) -> str:
     return f"{name_for_path}-{candidate_id}"
 
 
+def _sanitize_phone(raw: Optional[str]) -> Optional[str]:
+    """Return phone in E.164 (+xxxxxxxxxxxx) if possible; otherwise None.
+
+    Avoids DB validation errors from EncryptedPhone when LLM extracts free-form phones.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    import re as _re
+    # Allow already valid E.164
+    if _re.match(r"^\+[1-9]\d{1,14}$", s):
+        return s
+    # Strip all non-digits
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return None
+    # Drop leading zeros
+    digits = digits.lstrip("0")
+    # Heuristic: common TR mobile numbers (10 digits starting with 5) -> +90
+    if len(digits) == 10 and digits.startswith("5"):
+        cand = "+90" + digits
+        if _re.match(r"^\+[1-9]\d{1,14}$", cand):
+            return cand
+    # If looks like an international number (11-15 digits), prefix '+'
+    if 11 <= len(digits) <= 15:
+        cand = "+" + digits
+        if _re.match(r"^\+[1-9]\d{1,14}$", cand):
+            return cand
+    return None
+
+
 @router.get("/", response_model=List[JobRead])
 async def list_jobs(
     session: AsyncSession = Depends(get_session),
@@ -92,6 +128,17 @@ async def create_job(
     session.add(job)
     await session.commit()
     await session.refresh(job)
+    # Audit
+    try:
+        audit = AuditLogger()
+        await audit.log(
+            AuditEventType.DATA_CREATE,
+            message="Job created",
+            context=AuditContext(user_id=get_effective_owner_id(current_user), tenant_id=get_effective_owner_id(current_user), resource_type="job", resource_id=job.id),
+            details={"title": job.title}
+        )
+    except Exception:
+        pass
     return job
 
 
@@ -115,6 +162,17 @@ async def update_job(
             setattr(job, field, value)
     await session.commit()
     await session.refresh(job)
+    # Audit
+    try:
+        audit = AuditLogger()
+        await audit.log(
+            AuditEventType.DATA_UPDATE,
+            message="Job updated",
+            context=AuditContext(user_id=get_effective_owner_id(current_user), tenant_id=get_effective_owner_id(current_user), resource_type="job", resource_id=job.id),
+            details={"fields": list(job_in.dict(exclude_unset=True).keys())}
+        )
+    except Exception:
+        pass
     # Precompute dialog plan for all interviews under this job? Not at job create.
     return job
 
@@ -133,6 +191,16 @@ async def delete_job(
         raise HTTPException(status_code=404, detail="Job not found")
     await session.delete(job)
     await session.commit()
+    # Audit
+    try:
+        audit = AuditLogger()
+        await audit.log(
+            AuditEventType.DATA_DELETE,
+            message="Job deleted",
+            context=AuditContext(user_id=get_effective_owner_id(current_user), tenant_id=get_effective_owner_id(current_user), resource_type="job", resource_id=job_id)
+        )
+    except Exception:
+        pass
 
 
 # --- Bulk CV upload --
@@ -154,7 +222,7 @@ def _extract_email(text: str) -> str | None:
 async def bulk_upload_candidates(
     job_id: int,
     files: List[UploadFile] = File(...),
-    expires_in_days: int = 7,
+    expires_in_days: int = Form(7),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(current_active_user),
 ):
@@ -215,50 +283,74 @@ async def bulk_upload_candidates(
             safe_name = (f.filename or "resume").split("/")[-1]
             # Extract file extension
             file_ext = safe_name.split('.')[-1] if '.' in safe_name else 'bin'
-            # Temporary upload path - will be moved to proper location after candidate creation
+            # In production use S3. In dev (no S3), skip and store raw bytes in DB profile.
             temp_key = f"temp/job-{job.id}/{safe_name}"
-            resume_url = put_object_bytes(temp_key, content, f.content_type or "application/octet-stream")
+            resume_url = None
+            s3_available = bool(settings.s3_bucket)
+            if s3_available:
+                try:
+                    resume_url = put_object_bytes(temp_key, content, f.content_type or "application/octet-stream")
+                except Exception:
+                    # Treat as dev fallback if S3 write fails
+                    resume_url = None
+                    s3_available = False
 
-            # Ensure a unique, valid email (fallback if missing or already exists)  
+            # Ensure a unique, valid email (fallback if missing or already exists)
             from uuid import uuid4 as _uuid4
-            use_email = email or "bulunamadi"
+            use_email = email or f"candidate-{_uuid4().hex[:8]}@placeholder.local"
             try:
                 exists = (
                     await session.execute(select(Candidate.id).where(Candidate.email == use_email))
                 ).scalar_one_or_none()
                 if exists is not None:
-                    # If "bulunamadi" exists, add small suffix for uniqueness
-                    use_email = f"bulunamadi{_uuid4().hex[:4]}"
+                    # Tweak alias slightly to ensure uniqueness
+                    use_email = f"candidate-{_uuid4().hex[:8]}@placeholder.local"
             except Exception:
                 pass
 
-            # Create candidate (include phone/linkedin if available)
-            cand = Candidate(
-                user_id=owner_id,
-                name=(name or "Candidate").strip() or "Candidate",
-                email=use_email,
-                phone=(fields_quick.get("phone") if isinstance(fields_quick, dict) else None),
-                linkedin_url=((fields_quick.get("links") or {}).get("linkedin") if isinstance(fields_quick, dict) else None),
-                resume_url=resume_url,  # Temporary URL, will be updated below
-                status="pending",
-                token=uuid4().hex,
-                expires_at=datetime.utcnow() + timedelta(days=expires_in_days),
-            )
-            session.add(cand)
-            await session.flush()  # Get candidate.id
-            
-            # Move file to clean path: resumes/job-{job_id}/{name-slug}.{ext}
-            name_slug = create_name_slug(cand.name, cand.id)
-            final_key = f"resumes/job-{job.id}/{name_slug}.{file_ext}"
-            temp_s3_key = temp_key  # Extract S3 key from temp URL
-            
+            # Create candidate or reuse existing (email unique) by catching IntegrityError
+            create_new = True
+            cand: Candidate
             try:
-                from src.core.s3 import move_object
-                final_url = move_object(temp_s3_key, final_key)
-                cand.resume_url = final_url  # Update with final clean URL
-            except Exception as e:
-                print(f"Failed to move resume to clean path: {e}")
-                # Keep original URL if move fails
+                cand = Candidate(
+                    user_id=owner_id,
+                    name=(name or "Candidate").strip() or "Candidate",
+                    email=use_email,
+                    phone=None,
+                    linkedin_url=((fields_quick.get("links") or {}).get("linkedin") if isinstance(fields_quick, dict) else None),
+                    resume_url=resume_url,  # Temporary URL, will be updated below
+                    status="pending",
+                    token=uuid4().hex,
+                    expires_at=datetime.utcnow() + timedelta(days=expires_in_days),
+                )
+                session.add(cand)
+                await session.flush()  # Get candidate.id
+            except Exception as _e:
+                # Likely duplicate email; find existing candidate under same tenant
+                await session.rollback()
+                create_new = False
+                try:
+                    all_cands = (
+                        await session.execute(select(Candidate).where(Candidate.user_id == owner_id))
+                    ).scalars().all()
+                    cand = next((c for c in all_cands if (c.email or "").strip().lower() == (use_email or "").strip().lower()), None)  # type: ignore[attr-defined]
+                except Exception:
+                    cand = None  # type: ignore[assignment]
+                if not cand:
+                    raise
+            
+            # Move file to clean path if S3 is available: resumes/job-{job_id}/{name-slug}.{ext}
+            if s3_available and resume_url:
+                name_slug = create_name_slug(cand.name, cand.id)
+                final_key = f"resumes/job-{job.id}/{name_slug}.{file_ext}"
+                temp_s3_key = temp_key
+                try:
+                    from src.core.s3 import move_object
+                    final_url = move_object(temp_s3_key, final_key)
+                    cand.resume_url = final_url  # Update with final clean URL
+                except Exception as e:
+                    print(f"Failed to move resume to clean path: {e}")
+                    # Keep original URL if move fails
 
             # Link to job via Interview
             interview = Interview(job_id=job.id, candidate_id=cand.id, status="pending")
@@ -268,7 +360,7 @@ async def bulk_upload_candidates(
             profile = CandidateProfile(
                 candidate_id=cand.id,
                 resume_text=text or None,
-                resume_file=None,
+                resume_file=(None if s3_available else content),
                 file_name=f.filename,
                 content_type=f.content_type,
                 file_size=len(content),
@@ -278,6 +370,24 @@ async def bulk_upload_candidates(
 
             await session.commit()
             created_ids.append(cand.id)
+            # Audit
+            try:
+                audit = AuditLogger()
+                if create_new:
+                    await audit.log(
+                        AuditEventType.DATA_CREATE,
+                        message="Candidate created via bulk upload",
+                        context=AuditContext(user_id=owner_id, tenant_id=owner_id, resource_type="candidate", resource_id=cand.id),
+                        details={"job_id": job.id}
+                    )
+                await audit.log(
+                    AuditEventType.INTERVIEW_CREATE,
+                    message="Interview linked (bulk upload)",
+                    context=AuditContext(user_id=owner_id, tenant_id=owner_id, resource_type="interview", resource_id=interview.id),
+                    details={"job_id": job.id, "candidate_id": cand.id}
+                )
+            except Exception:
+                pass
 
             # Background: improve parsed_json using a fresh DB session (avoid await_only issues)
             async def _bg_improve(cid: int, resume_txt: str | None, file_name: str | None):
@@ -347,17 +457,33 @@ async def create_candidate_for_job(
     from uuid import uuid4
     from src.core.mail import send_email_resend
     expires_days = cand_in.expires_in_days or job.default_invite_expiry_days or 7
-    candidate = Candidate(
-        user_id=owner_id,
-        name=cand_in.name,
-        email=cand_in.email,
-        resume_url=cand_in.resume_url,
-        status="pending",
-        token=uuid4().hex,
-        expires_at=datetime.utcnow() + timedelta(days=expires_days),
-    )
-    session.add(candidate)
-    await session.flush()
+    # Create or reuse candidate by email (catch duplicate)
+    from sqlalchemy.exc import IntegrityError
+    candidate: Candidate
+    created_new = True
+    try:
+        candidate = Candidate(
+            user_id=owner_id,
+            name=cand_in.name,
+            email=cand_in.email,
+            resume_url=cand_in.resume_url,
+            status="pending",
+            token=uuid4().hex,
+            expires_at=datetime.utcnow() + timedelta(days=expires_days),
+        )
+        session.add(candidate)
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        created_new = False
+        # Scan this tenant's candidates to find by decrypted email
+        existing = (
+            await session.execute(select(Candidate).where(Candidate.user_id == owner_id))
+        ).scalars().all()
+        found = next((c for c in existing if (c.email or "").strip().lower() == cand_in.email.strip().lower()), None)  # type: ignore[attr-defined]
+        if not found:
+            raise
+        candidate = found
 
     # Link to job via Interview
     interview = Interview(job_id=job.id, candidate_id=candidate.id, status="pending")
@@ -423,6 +549,24 @@ async def create_candidate_for_job(
 
     await session.commit()
     await session.refresh(candidate)
+    # Audit
+    try:
+        audit = AuditLogger()
+        if created_new:
+            await audit.log(
+                AuditEventType.DATA_CREATE,
+                message="Candidate created",
+                context=AuditContext(user_id=owner_id, tenant_id=owner_id, resource_type="candidate", resource_id=candidate.id),
+                details={"job_id": job.id}
+            )
+        await audit.log(
+            AuditEventType.INTERVIEW_CREATE,
+            message="Interview created for job",
+            context=AuditContext(user_id=owner_id, tenant_id=owner_id, resource_type="interview", resource_id=interview.id),
+            details={"job_id": job.id, "candidate_id": candidate.id}
+        )
+    except Exception:
+        pass
 
     # Best-effort invite email
     try:

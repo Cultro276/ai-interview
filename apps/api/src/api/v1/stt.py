@@ -26,10 +26,10 @@ async def stt_transcribe_file(interview_id: int, file: UploadFile = File(...), s
         text, provider = await transcribe_audio_batch(data, file.content_type or "audio/webm")
         if not text:
             raise HTTPException(status_code=502, detail="STT provider returned empty transcript")
-        # Save transcript via existing endpoint logic (in-memory stub for now)
-        from .interviews import upload_transcript, TranscriptPayload  # reuse
+        # Save transcript via existing logic
+        from .interviews import save_transcript, TranscriptPayload  # reuse
         payload = TranscriptPayload(text=text, provider=provider or "unknown")
-        await upload_transcript(interview_id, payload, session)
+        await save_transcript(interview_id, payload, session)
         return {"interview_id": interview_id, "length": len(text), "text": text}
     except HTTPException:
         # Always return 200 with empty transcript for short/silent clips

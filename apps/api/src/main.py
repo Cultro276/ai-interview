@@ -6,6 +6,12 @@ from src.api.v1.routes import router as api_v1_router
 from src.core.metrics import collector
 from src.core.config import settings
 from src.core.s3 import upsert_lifecycle_rule
+from src.core.security import SecurityHeaders, EnterpriseRateLimiter
+from src.core.error_handling import (
+    ApplicationError, application_error_handler, http_exception_handler,
+    validation_exception_handler, generic_exception_handler
+)
+from src.core.logging_config import setup_production_logging, RequestLoggingMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -18,6 +24,16 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     docs_url="/api/docs",
 )
+
+# Setup enterprise error handlers
+from fastapi import HTTPException
+from pydantic import ValidationError
+
+# Exception handlers will be added after FastAPI is fully configured
+# app.add_exception_handler(ApplicationError, application_error_handler)
+# app.add_exception_handler(HTTPException, http_exception_handler)
+# app.add_exception_handler(ValidationError, validation_exception_handler)
+# app.add_exception_handler(Exception, generic_exception_handler)
 
 # CORS – local dev origins
 origins = [
@@ -38,6 +54,16 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=86400,
 )
+
+# Setup production logging
+setup_production_logging()
+
+# Add enterprise security middleware
+app.add_middleware(SecurityHeaders)
+app.add_middleware(EnterpriseRateLimiter, default_limit=1000, default_window=3600)
+
+# Add request logging middleware
+app.add_middleware(RequestLoggingMiddleware)
 
 # Add explicit CORS preflight handler for all paths
 @app.options("/{full_path:path}")
@@ -78,7 +104,7 @@ async def options_handler(request: Request, full_path: str):
 
 # Basic rate limiter (IP-based). For production, prefer Redis storage.
 storage_uri = os.getenv("REDIS_URL") or "memory://"
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"], storage_uri=storage_uri)  # default safety net
+limiter = Limiter(key_func=get_remote_address, default_limits=["1000/minute"], storage_uri=storage_uri)  # increased for development
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)

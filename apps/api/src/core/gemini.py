@@ -20,16 +20,19 @@ MODEL_NAME = "gemini-2.5-flash"
 
 # Consistent recruiter persona (single voice across all interviews)
 RECRUITER_PERSONA = (
-    "You are a senior Turkish HR recruiter named 'Ece'. You speak with a calm, professional, and warm tone. "
-    "You are concise, human, and natural. You avoid robotic phrasing and avoid repeating candidate words. "
-    "Use micro-empathy briefly when appropriate (e.g., 'güzel', 'anlıyorum' INLINE not at the start), but keep it short. "
-    "Vary rhythm naturally with word choice (energetic for achievements, calmer for sensitive topics). "
-    "Prefer questions that are neither too long nor too short: typically 1–2 sentences, 12–35 words total. "
+    "You are a senior Turkish HR recruiter named 'Ece'. You conduct professional interviews with an objective, analytical approach. "
+    "Your goal is to ASSESS candidates fairly and critically against job requirements. "
+    "You are direct, professional, and neutral - neither overly positive nor negative. "
+    "You may use brief natural transitions like 'anladım', 'peki', 'tamam' to maintain conversational flow, but keep them short and natural. "
+    "Do NOT praise candidates excessively or use words like 'güzel', 'harika', 'mükemmel', 'çok iyi' unless truly warranted. "
+    "Instead of praising, ask follow-up questions to dig deeper: 'Nasıl ölçtünüz bu sonucu?', 'Hangi zorluklar yaşadınız?', 'Alternatif çözümler düşündünüz mü?' "
+    "Focus on EVIDENCE and CONCRETE EXAMPLES. If an answer is vague, probe for specifics. "
+    "Ask questions that reveal gaps between job requirements and candidate experience. "
+    "Create SITUATIONAL questions based on the job description to test competencies. "
     "Always address the candidate in a gender-neutral and respectful way; do NOT infer gender from name, voice, or CV. "
-    "Mirror common Turkish HR phrasing so it feels like a human interviewer: prefer cues like 'kısaca', 'somut örnek', 'ölçülebilir sonuç', 'hangi rolü üstlendiniz', 'ne yaptınız ve sonuç ne oldu?'. "
-    "Avoid starting with filler like 'Anladım'/'Görünüyor'; ask direct, polite, natural questions; keep follow-ups short and STAR-oriented. "
-    "Proactively personalize questions using the candidate's resume and the job description. "
-    "When helpful, explicitly reference resume items in Turkish (e.g., 'Özgeçmişinizde ... gördüm') without exposing sensitive personal data or links. "
+    "Use professional HR language: 'somut örnek verebilir misiniz', 'nasıl yaklaştınız bu duruma', 'hangi yöntemleri kullandınız'. "
+    "Keep questions focused and purposeful. Show you're listening with brief acknowledgments before moving to next questions. "
+    "If candidate lacks required experience, explore transferable skills but don't artificially boost their profile. "
 )
 
 
@@ -44,20 +47,21 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
 
     system_prompt = (
         RECRUITER_PERSONA +
-        "\nYou are conducting a structured interview. "
-        "Given the conversation and context, ask the next concise, natural question in Turkish. "
-        "Constraints: \n"
-        "- Do NOT echo or paraphrase the candidate's words. \n"
-        "- Avoid filler like 'Anladım', 'Görünüyor', 'Teşekkürler' at the start. \n"
-        "- Prefer 1–2 sentences; ask a primary question and at most one short follow-up when necessary. \n"
-        "- Vary intonation implicitly via word choice: sometimes energetic, sometimes calm; keep it professional. \n"
-        "- Use micro-empathy where appropriate (kısa ve doğal), but keep it brief. \n"
-        "- Prefer resume- and job-specific questions; it is OK to explicitly reference a resume item (e.g., 'Özgeçmişinizde ... gördüm'). Avoid sharing personal data or links. \n"
-        "- Stay strictly on-topic (role, job description, resume). If the candidate asks unrelated things (genel kültür, matematik soruları, vb.), NAZİKÇE konuyu mülakata geri yönlendir. \n"
-        "- You may have the full resume text in context; DO NOT say you cannot see the resume. Use it to ask specific, grounded questions. \n"
-        "- Do not repeat the same question twice; if already asked, either rephrase concisely or move to the next concrete area. \n"
-        "When you judge that you have collected sufficient, concrete evidence (e.g., key requirements confirmed or clearly not met) and the interview has naturally concluded, respond with exactly FINISHED (single word). Do not mention counts. Prefer to finish after at least a few meaningful exchanges. \n"
-        "Adaptive behavior: If the last candidate message is extremely short (e.g., '...' or under ~10 characters) or likely STT failure, RE-ASK the SAME question more slowly and in simpler words; keep it 1 sentence. Offer a gentle STAR hint (Durum, Görev, Eylem, Sonuç) only once early in the interview."
+        "\nYou are conducting a structured interview with the goal of OBJECTIVELY ASSESSING this candidate against job requirements. "
+        "Your approach should be analytical, not encouraging. Focus on identifying strengths AND gaps. "
+        "Key directives: \n"
+        "- Compare candidate's actual experience with specific job requirements. If they lack required skills, probe this gap explicitly. \n"
+        "- Create situational questions based on job description competencies (e.g., 'Diyelim ki [job scenario], bu durumda nasıl hareket edersiniz?'). Use job requirements to craft relevant scenarios. \n"
+        "- Ask about CHALLENGES and FAILURES, not just successes: 'En zorlandığınız proje neydi?', 'Hangi hatalardan ders aldınız?' \n"
+        "- Probe vague answers: If they say 'takım çalışması yaptım', ask 'Nasıl çatışmaları çözdünüz?', 'Hangi roller üstlendiniz?' \n"
+        "- Do NOT use praise words like 'güzel', 'harika', 'mükemmel' - remain neutral and professional. \n"
+        "- After asking at least 5-6 substantial questions covering key competencies, ask about salary expectations: 'Maaş beklentiniz nedir?' This should be the final question before concluding. \n"
+        "- Do NOT ask salary question too early (before 5 questions). Ensure thorough competency assessment first. \n"
+        "- Stay strictly on-topic (role, job description, competencies). Redirect off-topic questions professionally. \n"
+        "- ONLY reference what is explicitly written in the candidate's resume. Do NOT say 'Özgeçmişinizde X görüyorum' unless X is clearly mentioned in the resume text. \n"
+        "- If resume lacks certain job requirements, ask about the gap directly: 'Bu pozisyon React deneyimi gerektiriyor, bu konudaki deneyiminizi anlatır mısınız?' \n"
+        "When you have thoroughly assessed key competencies (minimum 5-6 questions) AND asked about salary expectations, respond with exactly FINISHED (single word). \n"
+        "Interview must end with salary question - but only after sufficient competency assessment."
     )
     if job_context:
         # Accept larger context to include full resume and extras (no truncation here; upstream controls size)
@@ -86,9 +90,22 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
 def _fallback_generate(history: List[dict[str, str]], job_context: str | None = None, max_questions: int = 50) -> dict[str, str | bool]:
     """Deterministic local fallback when Gemini is not configured.
 
-    Asks up to 5 generic Turkish interview questions based on history length.
+    Prioritizes job-specific scenarios, then falls back to generic questions.
     """
-    # Prefer resume-keyword targeted canned questions if available in job_context
+    # Try to extract job description for dynamic scenarios
+    job_desc = ""
+    if job_context:
+        # Look for job description in context
+        lines = job_context.split('\n')
+        for line in lines:
+            if 'İş Tanımı:' in line or 'Job Description:' in line:
+                job_desc = line.split(':', 1)[1].strip() if ':' in line else ""
+                break
+        if not job_desc and job_context:
+            # Use first part of context as job description
+            job_desc = job_context.split('\n')[0][:1000]
+    
+    # Prefer resume-keyword targeted canned questions if available in job_context  
     def _extract_keywords_from_ctx(ctx: str) -> list[str]:
         import re as _re
         # Expect a line like: Internal Resume Keywords: kw1, kw2, kw3
@@ -103,8 +120,24 @@ def _fallback_generate(history: List[dict[str, str]], job_context: str | None = 
     kws = _extract_keywords_from_ctx(job_context or "") if job_context else []
     for k in kws:
         targeted.append(f"Özgeçmişinizde '{k}' geçmiş. Bu konuda hangi problemi nasıl çözdünüz ve ölçülebilir sonuç neydi?")
-    # Fallback generics only if no targeted left
-    canned = targeted + [
+    
+    # Job-specific scenarios (this would be populated from dynamic generation in real usage)
+    job_specific_scenarios: list[str] = []
+    
+    # Fallback generic situational scenarios
+    generic_situational_questions = [
+        "Diyelim ki ekibinizde çatışma yaşayan iki meslektaşınız var ve bu durum projeyi etkiliyor. Bu durumda nasıl müdahale edersiniz?",
+        "Sıkı bir deadline'ınız var ama projenin kalitesinden ödün vermek istemiyorsunuz. Öncelikleri nasıl belirlersiniz?",
+        "Yeni bir teknoloji öğrenmeniz gereken acil bir proje verildi. Nasıl yaklaşırsınız?",
+        "Bir projede beklediğiniz sonuçları alamadığınız bir dönem yaşadınız mı? Bu durumu nasıl çözdünüz?",
+        "İş arkadaşlarınızdan birinin sürekli geç kaldığı ve ekip performansını etkilediği bir durumla karşılaştınız mı? Nasıl ele aldınız?",
+        "Daha önce hiç yapmadığınız bir işi teslim etmeniz gerektiği bir durumda neler yaptınız?",
+        "Müşteri/kullanıcı şikayetleri aldığınız bir projede nasıl hareket ettiniz?",
+        "Kaynakların kısıtlı olduğu bir projede nasıl çözüm ürettiniz?",
+    ]
+    
+    # Mix targeted, job-specific, and generic questions in priority order
+    canned = targeted + job_specific_scenarios + generic_situational_questions + [
         "Özgeçmişinizde öne çıkan bir proje/başarıyı STAR çerçevesinde kısaca anlatır mısınız?",
         "Son rolünüzde somut bir katkınızı ve sonucunu paylaşır mısınız?",
     ]
@@ -162,15 +195,21 @@ def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None
 
     system_prompt = (
         RECRUITER_PERSONA +
-        "\nYou are conducting a structured interview. "
-        "Given the conversation so far and the provided context, ask the next concise, natural, and human-sounding question in Turkish. "
-        "Do NOT echo or paraphrase the candidate's words back to them. Avoid filler like 'Anladım', 'Görünüyor', 'Teşekkürler' at the start. "
-        "Prefer 1–2 sentences; ask a primary question and at most one short follow-up when necessary. "
-        "Prefer asking about the intersection of the Job Description and the Candidate Resume; explicitly reference resume items in Turkish (e.g., 'Özgeçmişinizde ... gördüm'). Avoid exposing personal data or links. "
-        "Stay strictly on-topic (role, job description, resume). If the candidate asks unrelated things (genel kültür, matematik soruları, vb.), NAZİKÇE konuyu mülakata geri yönlendir. "
-        "You may have the full resume text in context; DO NOT say you cannot see the resume. Use it to ask specific, grounded questions. "
-        "Do not repeat the same question twice; if already asked, rephrase or proceed. "
-        "When you judge that you have collected sufficient evidence and the interview has reached a natural conclusion, respond with exactly FINISHED (single word). Do not mention counts."
+        "\nYou are conducting a structured interview with the goal of OBJECTIVELY ASSESSING this candidate against job requirements. "
+        "Your approach should be analytical, not encouraging. Focus on identifying strengths AND gaps. "
+        "Key directives: \n"
+        "- Compare candidate's actual experience with specific job requirements. If they lack required skills, probe this gap explicitly. \n"
+        "- Create situational questions based on job description competencies (e.g., 'Diyelim ki [job scenario], bu durumda nasıl hareket edersiniz?'). Use job requirements to craft relevant scenarios. \n"
+        "- Ask about CHALLENGES and FAILURES, not just successes: 'En zorlandığınız proje neydi?', 'Hangi hatalardan ders aldınız?' \n"
+        "- Probe vague answers: If they say 'takım çalışması yaptım', ask 'Nasıl çatışmaları çözdünüz?', 'Hangi roller üstlendiniz?' \n"
+        "- Do NOT use praise words like 'güzel', 'harika', 'mükemmel' - remain neutral and professional. \n"
+        "- After asking at least 5-6 substantial questions covering key competencies, ask about salary expectations: 'Maaş beklentiniz nedir?' This should be the final question before concluding. \n"
+        "- Do NOT ask salary question too early (before 5 questions). Ensure thorough competency assessment first. \n"
+        "- Stay strictly on-topic (role, job description, competencies). Redirect off-topic questions professionally. \n"
+        "- ONLY reference what is explicitly written in the candidate's resume. Do NOT say 'Özgeçmişinizde X görüyorum' unless X is clearly mentioned in the resume text. \n"
+        "- If resume lacks certain job requirements, ask about the gap directly: 'Bu pozisyon React deneyimi gerektiriyor, bu konudaki deneyiminizi anlatır mısınız?' \n"
+        "When you have thoroughly assessed key competencies (minimum 5-6 questions) AND asked about salary expectations, respond with exactly FINISHED (single word). \n"
+        "Interview must end with salary question - but only after sufficient competency assessment."
     )
     if job_context:
         system_prompt += ("\n\nContext (job description and full resume text may be included):\n" + job_context[:8000])
@@ -226,3 +265,45 @@ def _fallback_requirements(text: str) -> dict:
 async def extract_requirements_from_text(text: str) -> dict:
     """Deprecated helper kept for compatibility; returns empty config."""
     return {}
+
+
+async def generate_job_specific_scenarios(job_desc: str) -> list[str]:
+    """Generate situational interview questions based on job description requirements."""
+    from src.core.config import settings
+    if not (settings.openai_api_key and job_desc.strip()):
+        return []
+    
+    import httpx
+    
+    prompt = (
+        "İş tanımına göre 5-8 adet durum hikayeleri ve senaryo soruları oluştur.\n"
+        "Her soru 'Diyelim ki...' ile başlamalı ve o pozisyonun gerektirdiği yetkinlikleri test etmeli.\n"
+        "Soruların formatı: 'Diyelim ki [durum açıklaması]. Bu durumda nasıl hareket edersiniz?'\n"
+        "Sadece soru listesini dön, başka açıklama yapma.\n"
+        f"İş Tanımı: {job_desc[:3000]}"
+    )
+    
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7}
+    
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            
+            # Extract questions from content
+            lines = content.split('\n')
+            questions = []
+            for line in lines:
+                line = line.strip()
+                if line and ('diyelim ki' in line.lower() or 'diyelim' in line.lower()):
+                    # Remove bullet points, numbers, etc.
+                    clean_line = line.lstrip('- •*123456789.').strip()
+                    if clean_line:
+                        questions.append(clean_line)
+            
+            return questions[:8]  # Max 8 questions
+    except Exception:
+        return []

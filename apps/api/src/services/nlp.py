@@ -62,23 +62,46 @@ async def extract_soft_skills(text: str, job_desc: str | None = None) -> Dict[st
 
 
 async def summarize_candidate_profile(resume_text: str, job_desc: str | None = None) -> str:
-    """Return 1-2 sentence summary tailored to the job. Empty string if unavailable."""
+    """Return a concise CV summary (max ~600 chars) tailored to the job.
+
+    Keeps it short for modal display. Returns empty string if unavailable.
+    """
     if not (settings.openai_api_key and resume_text.strip()):
         return ""
+    
     prompt = (
-        "Aşağıdaki özgeçmiş metnini iş ilanına göre 1-2 cümlede özetle. Basit, doğal Türkçe kullan.\n"
-        f"İlan: {job_desc or '-'}\n"
-        f"Özgeçmiş: {resume_text[:3500]}"
+        "Aşağıdaki özgeçmişi detaylı analiz et ve iş ilanına göre değerlendir. "
+        "3-4 paragraf halinde şu bilgileri ver:\n"
+        "1. Genel profil özeti (deneyim, eğitim, ana yetkinlikler)\n"
+        "2. İş ilanına uygunluk analizi (eşleşen beceriler, eksik alanlar)\n"
+        "3. Öne çıkan projeler ve başarılar\n"
+        "4. Genel değerlendirme ve öneriler\n\n"
+        f"İş İlanı: {job_desc or 'Belirtilmemiş'}\n\n"
+        f"Özgeçmiş:\n{resume_text[:4000]}"
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+    body = {
+        "model": "gpt-4o-mini", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "temperature": 0.3,
+        "max_tokens": 800
+    }
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=25) as client:
             resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            return str(data["choices"][0]["message"]["content"]).strip()
-    except Exception:
+            text = str(data["choices"][0]["message"]["content"]).strip()
+            # Compress to a concise summary suitable for modal display
+            text = re.sub(r"\n{3,}", "\n\n", text)  # collapse excessive blank lines
+            text = text.strip()
+            if len(text) > 600:
+                text = text[:600].rstrip() + "…"
+            return text
+    except Exception as e:
+        # Better error handling for debugging
+        import logging
+        logging.error(f"CV summary generation failed: {e}")
         return ""
 
 
@@ -113,12 +136,28 @@ async def assess_job_fit(job_desc: str, transcript_text: str, resume_text: str |
     if not (settings.openai_api_key and (job_desc.strip() and transcript_text.strip())):
         return {}
     prompt = (
-        "İş tanımı ile adayın cevabını (ve varsa özgeçmişini) karşılaştır.\n"
-        "Özet + güçlü/zayıf eşleşmeler + eksik alanlar + öneriler ver. JSON dön.\n"
-        "{\"job_fit_summary\": str, \"key_matches\": [str], \"gaps\": [str], \"recommendations\": [str], \"requirements_matrix\": [{\"label\": str, \"meets\": \"yes\"|\"partial\"|\"no\", \"evidence\": str}]}\n"
+        "İş tanımı, adayın özgeçmişi ve mülakat cevaplarını karşılaştır.\n"
+        "ÖNEMLI: Özgeçmişte ZATEN bulunan yetenekleri 'cv_exists' olarak işaretle, mülakat sırasında test edilenleri 'interview_tested' olarak değerlendir.\n"
+        "Adayın özgeçmişinde yok ama iş ilanında istenen yetenikleri açıkça 'missing' olarak belirt.\n"
+        "JSON formatında döndür:\n"
+        "{\n"
+        "  \"job_fit_summary\": \"Genel değerlendirme özeti\",\n"
+        "  \"cv_existing_skills\": [\"Özgeçmişte zaten bulunan yetenekler\"],\n"
+        "  \"interview_demonstrated\": [\"Mülakatta kanıtlanan yetenekler\"],\n"
+        "  \"clear_gaps\": [\"Hem özgeçmişte hem mülakattta eksik yetenekler\"],\n"
+        "  \"recommendations\": [\"İşe alım önerileri\"],\n"
+        "  \"requirements_matrix\": [\n"
+        "    {\n"
+        "      \"label\": \"Yetenek adı\",\n"
+        "      \"meets\": \"yes|partial|no\",\n"
+        "      \"source\": \"cv|interview|both|neither\",\n"
+        "      \"evidence\": \"Kanıt açıklaması\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
         f"İş Tanımı: {job_desc[:4000]}\n"
-        f"Cevap/Transkript: {transcript_text[:4000]}\n"
-        f"Özgeçmiş: { (resume_text or '')[:2000] }"
+        f"Özgeçmiş: {(resume_text or '')[:3000]}\n"
+        f"Mülakat Cevapları: {transcript_text[:4000]}"
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
@@ -134,19 +173,33 @@ async def assess_job_fit(job_desc: str, transcript_text: str, resume_text: str |
 
 
 async def opinion_on_candidate(job_desc: str, transcript_text: str, resume_text: str | None = None) -> Dict[str, Any]:
-    """Return a concise AI opinion for the candidate: label + 2-3 sentence rationale.
+    """Return a detailed AI opinion for the candidate including salary analysis.
 
-    Returns JSON: {"opinion_label": str, "opinion_text": str, "confidence_0_1": number}
+    Returns JSON with detailed breakdown including salary expectations.
     """
     if not (settings.openai_api_key and (job_desc.strip() and transcript_text.strip())):
         return {}
     prompt = (
-        "Aşağıdaki iş tanımı ve aday transkriptine göre kısa bir işe alım görüşü ver.\n"
-        "Türkçe ve doğal ol. 2-3 cümlelik gerekçe yaz.\n"
-        "JSON dön: {\"opinion_label\": \"Strong Hire|Hire|Hold|No Hire\", \"opinion_text\": str, \"confidence_0_1\": number}.\n"
+        "İş tanımı, özgeçmiş ve mülakat transkriptine göre detaylı işe alım değerlendirmesi yap.\n"
+        "Maaş beklentisi sorusu ve cevabını özellikle analiz et.\n"
+        "Objektif ve profesyonel ol. Hem güçlü hem zayıf yönleri belirt.\n"
+        "JSON formatında döndür:\n"
+        "{\n"
+        "  \"hire_recommendation\": \"Strong Hire|Hire|Hold|No Hire\",\n"
+        "  \"overall_assessment\": \"3-4 cümlelik genel değerlendirme\",\n"
+        "  \"key_strengths\": [\"Güçlü yönler listesi\"],\n"
+        "  \"key_concerns\": [\"Endişe alanları listesi\"],\n"
+        "  \"salary_analysis\": {\n"
+        "    \"candidate_expectation\": \"Adayın belirttiği maaş beklentisi\",\n"
+        "    \"market_alignment\": \"market_appropriate|too_high|too_low|not_specified\",\n"
+        "    \"negotiation_notes\": \"Maaş müzakeresi notları\"\n"
+        "  },\n"
+        "  \"confidence_score\": 0.8,\n"
+        "  \"next_steps\": \"Önerilen sonraki adımlar\"\n"
+        "}\n\n"
         f"İş Tanımı: {job_desc[:3500]}\n"
-        f"Transkript: {transcript_text[:3500]}\n"
-        f"Özgeçmiş: {(resume_text or '')[:1500]}"
+        f"Özgeçmiş: {(resume_text or '')[:2000]}\n"
+        f"Mülakat Transkripti: {transcript_text[:4000]}"
     )
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
     body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}

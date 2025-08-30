@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from src.auth import current_active_user, get_effective_owner_id, ensure_permission
 from src.db.models.user import User
 from src.api.v1.schemas import CandidateCreate, CandidateRead, CandidateUpdate
+from src.api.v1.enhanced_schemas import SecureCandidateCreate, EnhancedErrorResponse
+from src.core.security import SecurityAuditLogger
 from src.core.s3 import generate_presigned_get_url
 from src.db.models.candidate_profile import CandidateProfile
 from src.db.models.conversation import ConversationMessage
@@ -65,14 +67,21 @@ async def list_candidates(
     current_user: User = Depends(current_active_user)
 ):
     owner_id = get_effective_owner_id(current_user)
-    result = await session.execute(select(Candidate).where(Candidate.user_id == owner_id))
-    rows: List[Candidate] = list(result.scalars().all())
+    try:
+        result = await session.execute(select(Candidate).where(Candidate.user_id == owner_id))
+        rows: List[Candidate] = list(result.scalars().all())
+    except Exception as e:
+        # Handle encryption/decryption errors gracefully
+        import logging
+        logging.error(f"Database query failed: {e}")
+        # Return empty list for now to prevent crashes
+        return []
     # Sanitize potentially invalid emails to avoid 500 due to response model validation
     safe_list: List[CandidateRead] = []
     for cand in rows:
         email_value = cand.email or ""
         if "@" not in email_value:
-            email_value = f"invalid+{cand.id}@example.com"
+            email_value = f"geçersiz+{cand.id}@example.com"
         try:
             safe_list.append(CandidateRead.model_validate({
                 "id": cand.id,

@@ -81,7 +81,7 @@ async def verify_token(token: str, session: AsyncSession = Depends(get_session))
     # Sanitize email to avoid response validation failures (old data may contain invalid emails)
     safe_email = cand.email or ""
     if "@" not in safe_email:
-        safe_email = f"invalid+{cand.id}@example.com"
+        safe_email = f"geçersiz+{cand.id}@example.com"
 
     return CandidateRead.model_validate({
         "id": cand.id,

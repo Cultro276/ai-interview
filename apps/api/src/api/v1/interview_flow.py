@@ -48,6 +48,9 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
         job_desc = ""
         req_cfg = None
         resume_text = ""
+        extra_list = []
+        job = None
+        cand = None
         interview = (
             await session.execute(select(Interview).where(Interview.id == req.interview_id))
         ).scalar_one_or_none()
@@ -59,14 +62,13 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 if job.description:
                     job_desc = job.description
                 # Parse extra recruiter-provided questions (one per line)
+                extra_list = []
                 try:
                     extra_raw = getattr(job, "extra_questions", None)
                     if isinstance(extra_raw, str) and extra_raw.strip():
                         extra_list = [q.strip() for q in extra_raw.splitlines() if q.strip()]
-                    else:
-                        extra_list = []
                 except Exception:
-                    extra_list = []
+                    pass
                 try:
                     req_cfg = job.requirements_config  # type: ignore[attr-defined]
                 except Exception:
@@ -105,6 +107,14 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 try:
                     if extra_list:
                         private_ctx += "\n\nRecruiter Extra Questions (verbatim):\n- " + "\n- ".join(extra_list)
+                except Exception:
+                    pass
+                # Generate job-specific situational questions
+                try:
+                    from src.core.gemini import generate_job_specific_scenarios
+                    job_scenarios = await generate_job_specific_scenarios(job_desc)
+                    if job_scenarios:
+                        private_ctx += "\n\nJob-Specific Scenarios:\n- " + "\n- ".join(job_scenarios)
                 except Exception:
                     pass
                 # Debug: log initial context sizes
@@ -308,7 +318,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
         if isinstance(q_candidate, str):
             cleaned = _strip_finished(q_candidate)
             if (not cleaned) and ("finished" in q_candidate.lower()):
-                result["question"] = None
+                result["question"] = ""
                 result["done"] = True
             else:
                 result["question"] = cleaned
@@ -401,11 +411,11 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
             await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))
         ).scalar_one_or_none()
         if not cand or cand.token != body.token:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Geçersiz token")
         try:
             from datetime import datetime, timezone
             if cand.expires_at and cand.expires_at <= datetime.now(timezone.utc):
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expired token")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token süresi dolmuş")
         except Exception:
             pass
 
@@ -458,7 +468,29 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
     if text and (not any(t for t in history if t.get("role") == "user" and t.get("text") == text)):
         history.append({"role": "user", "text": text})
 
-    # 5) Delegate to next_question logic
+    # 5) Check if salary question has been asked and answered (but only after sufficient questions)
+    salary_asked = False
+    salary_answered = False
+    asked_count = sum(1 for t in history if t.get("role") == "assistant")
+    try:
+        # Look for salary-related questions in conversation history
+        for i, turn in enumerate(history):
+            if turn.get("role") == "assistant" and turn.get("text"):
+                question_text = turn["text"].lower()
+                if any(keyword in question_text for keyword in ["maaş", "ücret", "salary", "beklenti"]):
+                    salary_asked = True
+                    # Check if there's a user response after this question
+                    if i + 1 < len(history) and history[i + 1].get("role") == "user" and history[i + 1].get("text", "").strip():
+                        salary_answered = True
+                    break
+        
+        # If salary question was asked and answered AND we've asked enough questions, finish the interview
+        if salary_asked and salary_answered and asked_count >= 5:
+            return NextQuestionResponse(question=None, done=True, live=None)
+    except Exception:
+        pass
+
+    # 5.1) Delegate to next_question logic
     req = NextQuestionRequest(
         history=[Turn(role=t["role"], text=t["text"]) for t in history],
         interview_id=body.interview_id,
@@ -547,6 +579,51 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 if asked_count >= _settings2.interview_min_questions_mixed and must_partial_count >= 2 and (ov is not None and ov <= _settings2.interview_low_score_threshold):
                     return NextQuestionResponse(question=None, done=True, live=live)
     except Exception:
+        pass
+
+    # 5.2) Check if adaptive questioning should be used
+    should_adapt = False
+    try:
+        from src.services.adaptive_questions import should_adapt_interview, analyze_response_weaknesses, generate_targeted_question
+        should_adapt = await should_adapt_interview(history, asked_count)
+        
+        if should_adapt and asked_count >= 3:
+            # Get job context for adaptive analysis
+            interview = (
+                await session.execute(select(Interview).where(Interview.id == body.interview_id))
+            ).scalar_one_or_none()
+            
+            job_context = ""
+            if interview:
+                from src.db.models.job import Job
+                job = (await session.execute(select(Job).where(Job.id == interview.job_id))).scalar_one_or_none()
+                if job and job.description:
+                    job_context = job.description[:2000]
+            
+            # Analyze weaknesses and generate targeted question
+            weakness_analysis = await analyze_response_weaknesses(history, job_context)
+            
+            if weakness_analysis.get("weak_areas"):
+                priority_area = weakness_analysis["weak_areas"][0]  # Get highest priority weakness
+                targeted_question = await generate_targeted_question(priority_area, job_context)
+                
+                if targeted_question:
+                    # Return adaptive question directly
+                    next_seq2 = (last.sequence_number if last else 0) + 1
+                    session.add(
+                        ConversationMessage(
+                            interview_id=body.interview_id,
+                            role=DBMessageRole.ASSISTANT,
+                            content=targeted_question,
+                            sequence_number=next_seq2,
+                        )
+                    )
+                    await session.commit()
+                    return NextQuestionResponse(question=targeted_question, done=False, live=live)
+    except Exception as e:
+        # Fall back to standard question generation
+        import logging
+        logging.warning(f"Adaptive questioning failed: {e}")
         pass
 
     # 5.3) Delegate to next_question logic to craft next prompt

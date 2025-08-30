@@ -16,26 +16,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Deduplicate assistant messages by content per interview
-    # Partial unique index ensures the same assistant content isn't inserted twice for an interview
-    # Use the enum literal exactly as stored; some DBs store without schema-qualified casts
-    try:
-        op.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_assistant_msg_content
-            ON conversation_messages (interview_id, content)
-            WHERE role = 'assistant';
-            """
-        )
-    except Exception:
-        # Fallback to explicit cast
-        op.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_assistant_msg_content
-            ON conversation_messages (interview_id, content)
-            WHERE role = 'assistant'::messagerole;
-            """
-        )
+    # Deduplicate assistant messages by content per interview.
+    # Predicate must avoid functions on the column to satisfy Postgres IMMUTABLE requirement.
+    op.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_assistant_msg_content
+        ON conversation_messages (interview_id, content)
+        WHERE role = 'ASSISTANT'::messagerole;
+        """
+    )
 
 
 def downgrade() -> None:

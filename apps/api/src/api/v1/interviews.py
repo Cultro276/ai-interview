@@ -24,6 +24,7 @@ import asyncio
 from src.services.stt import transcribe_with_whisper
 from src.services.nlp import extract_soft_skills
 from src.services.queue import enqueue_process_interview
+from src.core.audit import AuditLogger, AuditEventType, AuditContext
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -124,13 +125,13 @@ async def _maybe_complete_interview(
         await session.refresh(interview)
 
 
-@router.post("/{int_id}/transcript")
-async def upload_transcript(
+async def save_transcript(
     int_id: int,
     payload: TranscriptPayload,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-):
+    session: AsyncSession,
+    request: Request | None = None,
+) -> dict:
+    """Core logic for saving transcript to interview. Can be called directly or from HTTP endpoint."""
     interview = (
         await session.execute(select(Interview).where(Interview.id == int_id))
     ).scalar_one_or_none()
@@ -145,6 +146,16 @@ async def upload_transcript(
     _in_memory_transcripts[int_id] = interview.transcript_text or ""
     await _maybe_complete_interview(session, interview, request)
     return {"interview_id": int_id, "length": len(interview.transcript_text or "")}
+
+
+@router.post("/{int_id}/transcript")
+async def upload_transcript(
+    int_id: int,
+    payload: TranscriptPayload,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    return await save_transcript(int_id, payload, session, request)
 
 
 @router.get("/{int_id}/transcript")
@@ -209,7 +220,7 @@ async def get_interview_by_token(token: str, session: AsyncSession = Depends(get
     from src.db.models.candidate import Candidate
     cand = (await session.execute(select(Candidate).where(Candidate.token == token))).scalar_one_or_none()
     if not cand:
-        raise HTTPException(status_code=404, detail="Invalid token")
+        raise HTTPException(status_code=404, detail="Geçersiz token")
     interview = (
         await session.execute(
             select(Interview).where(Interview.candidate_id == cand.id).order_by(Interview.created_at.desc())
@@ -309,7 +320,7 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Reques
     from src.db.models.candidate import Candidate
     cand = (await session.execute(select(Candidate).where(Candidate.token==token))).scalar_one_or_none()
     if not cand:
-        raise HTTPException(status_code=404, detail="Invalid token")
+        raise HTTPException(status_code=404, detail="Geçersiz token")
     interview = (
         await session.execute(select(Interview).where(Interview.candidate_id==cand.id).order_by(Interview.created_at.desc()))
     ).scalar_one_or_none()
@@ -334,6 +345,24 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Reques
     await session.refresh(interview)
     # Complete only when transcript also exists
     await _maybe_complete_interview(session, interview, request)
+    # Audit upload
+    try:
+        audit = AuditLogger()
+        await audit.log(
+            AuditEventType.FILE_UPLOAD,
+            message="Candidate media uploaded",
+            context=AuditContext(resource_type="interview", resource_id=interview.id),
+            details={"has_audio": bool(media_in.audio_url), "has_video": bool(media_in.video_url)}
+        )
+        if interview.status == "completed":
+            await audit.log(
+                AuditEventType.INTERVIEW_COMPLETE,
+                message="Interview completed",
+                context=AuditContext(resource_type="interview", resource_id=interview.id),
+                details={}
+            )
+    except Exception:
+        pass
 
     # Background STT: if transcript missing and audio exists, fetch and transcribe
     try:
@@ -369,6 +398,16 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Reques
             with Timer() as t:
                 await generate_llm_full_analysis(session, interview.id)
             collector.record_analysis_ms(t.ms)
+            # Audit LLM kickoff
+            try:
+                audit = AuditLogger()
+                await audit.log(
+                    AuditEventType.DATA_UPDATE,
+                    message="Analysis generation started",
+                    context=AuditContext(resource_type="interview", resource_id=interview.id)
+                )
+            except Exception:
+                pass
     except Exception:
         # Non-blocking; log only
         import logging

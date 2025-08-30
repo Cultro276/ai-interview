@@ -5,7 +5,7 @@ from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTable
 
 from src.db.base import Base
 from sqlalchemy import String, Integer, Boolean, func, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
 class User(SQLAlchemyBaseUserTable[int], Base):
@@ -28,3 +28,6 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     can_manage_candidates: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
     can_view_interviews: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
     can_manage_members: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
+    
+    # Relationships for RBAC (late import to avoid circular imports)
+    # The relationship will be added by RBAC module during initialization

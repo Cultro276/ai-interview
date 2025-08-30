@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth import platform_admin_required
@@ -17,6 +17,7 @@ from src.db.models.user import User
 from src.db.models.job import Job
 from src.db.models.candidate import Candidate
 from src.db.models.interview import Interview
+from src.core.audit import AuditLog
 
 
 router = APIRouter(prefix="/internal", tags=["internal-admin"])
@@ -56,6 +57,64 @@ async def tenant_overview(owner_id: int, session: AsyncSession = Depends(get_ses
         "candidates": len(cands.scalars().all()),
         "interviews": len(interviews.scalars().all()),
     }
+@router.get("/tenant/{owner_id}/activity")
+async def tenant_activity(
+    owner_id: int,
+    limit: int = 50,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    q: Optional[str] = None,
+    etype: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(platform_admin_required),
+    __: None = Depends(_check_internal_secret),
+):
+    # Return last N audit logs for this tenant
+    try:
+        filters = [AuditLog.tenant_id == owner_id]
+        # Parse date range
+        from datetime import datetime, timezone
+        if start:
+            try:
+                s = datetime.fromisoformat(start)
+                if s.tzinfo is None:
+                    s = s.replace(tzinfo=timezone.utc)
+                filters.append(AuditLog.timestamp >= s)
+            except Exception:
+                pass
+        if end:
+            try:
+                e = datetime.fromisoformat(end)
+                if e.tzinfo is None:
+                    e = e.replace(tzinfo=timezone.utc)
+                filters.append(AuditLog.timestamp <= e)
+            except Exception:
+                pass
+        if etype:
+            like = f"%{etype.lower()}%"
+            filters.append(func.lower(AuditLog.event_type).like(like))
+        if q:
+            like = f"%{q.lower()}%"
+            filters.append(
+                or_(
+                    func.lower(AuditLog.message).like(like),
+                    func.lower(func.coalesce(AuditLog.resource_name, "")).like(like),
+                    func.lower(AuditLog.event_type).like(like),
+                )
+            )
+        query = select(AuditLog).where(and_(*filters)).order_by(AuditLog.timestamp.desc()).limit(limit)
+        result = await session.execute(query)
+        rows = result.scalars().all()
+        return [
+            {
+                "timestamp": getattr(r, "timestamp", None),
+                "event_type": getattr(r, "event_type", None),
+                "message": getattr(r, "message", None),
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
 
 
 @router.delete("/tenant/{owner_id}")
@@ -130,7 +189,7 @@ async def impersonate_owner(owner_id: int, session: AsyncSession = Depends(get_s
     owner = (await session.execute(select(User).where(User.id == owner_id))).scalars().first()
     if not owner or not owner.is_active:
         raise HTTPException(status_code=404, detail="Owner not found or inactive")
-    token = get_jwt_strategy().write_token(owner)
+    token = await get_jwt_strategy().write_token(owner)
     return {"access_token": token, "token_type": "bearer"}
 
 
