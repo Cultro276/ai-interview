@@ -86,6 +86,9 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 resume_text = ""
 
         history = [t.dict() for t in req.history]
+        # Sliding window: keep last 20 turns to control token usage
+        if len(history) > 20:
+            history = history[-20:]
         # No requirements-config extraction; rely on LLM with job description and resume only
 
         # If this is the very first assistant turn, craft a CV+job tailored opening question
@@ -191,12 +194,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         pass
             except Exception:
                 pass
-            if resume_text:
-                try:
-                    # Provide full resume text directly to the LLM as hidden context
-                    combined_ctx += ("\n\nResume (full text):\n" + resume_text)
-                except Exception:
-                    pass
+            # After the first assistant turn, avoid re-sending the full resume to reduce cost
             # Behavior signals to steer tone/speed/adaptation
             try:
                 sigs = (req.signals or [])
