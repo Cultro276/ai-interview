@@ -160,7 +160,7 @@ async def create_message_public(
         await session.refresh(message)
         return message
     except IntegrityError:
-        # Another concurrent request inserted the same (interview_id, sequence_number)
+        # Dedup both by (interview_id, sequence_number) and (interview_id, content, assistant-role)
         await session.rollback()
         existing_after = (
             await session.execute(
@@ -173,8 +173,23 @@ async def create_message_public(
         ).scalars().first()
         if existing_after:
             return existing_after
-        # If still nothing found, surface a conflict instead of 500
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate sequence number")
+        # Assistant content unique check (partial index path)
+        try:
+            if payload["role"] == ConversationMessage.role.type.python_type.ASSISTANT:  # type: ignore[attr-defined]
+                dup = (
+                    await session.execute(
+                        select(ConversationMessage)
+                        .where(
+                            ConversationMessage.interview_id == message_in.interview_id,
+                            ConversationMessage.content == payload["content"],
+                        )
+                    )
+                ).scalars().first()
+                if dup:
+                    return dup
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate message")
 
 
 @router.get("/messages/{interview_id}", response_model=List[ConversationMessageRead])

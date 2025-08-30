@@ -53,6 +53,9 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
         "- Vary intonation implicitly via word choice: sometimes energetic, sometimes calm; keep it professional. \n"
         "- Use micro-empathy where appropriate (kısa ve doğal), but keep it brief. \n"
         "- Prefer resume- and job-specific questions; it is OK to explicitly reference a resume item (e.g., 'Özgeçmişinizde ... gördüm'). Avoid sharing personal data or links. \n"
+        "- Stay strictly on-topic (role, job description, resume). If the candidate asks unrelated things (genel kültür, matematik soruları, vb.), NAZİKÇE konuyu mülakata geri yönlendir. \n"
+        "- You may have the full resume text in context; DO NOT say you cannot see the resume. Use it to ask specific, grounded questions. \n"
+        "- Do not repeat the same question twice; if already asked, either rephrase concisely or move to the next concrete area. \n"
         "When you judge that you have collected sufficient, concrete evidence (e.g., key requirements confirmed or clearly not met) and the interview has naturally concluded, respond with exactly FINISHED (single word). Do not mention counts. Prefer to finish after at least a few meaningful exchanges. \n"
         "Adaptive behavior: If the last candidate message is extremely short (e.g., '...' or under ~10 characters) or likely STT failure, RE-ASK the SAME question more slowly and in simpler words; keep it 1 sentence. Offer a gentle STAR hint (Durum, Görev, Eylem, Sonuç) only once early in the interview."
     )
@@ -164,6 +167,9 @@ def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None
         "Do NOT echo or paraphrase the candidate's words back to them. Avoid filler like 'Anladım', 'Görünüyor', 'Teşekkürler' at the start. "
         "Prefer 1–2 sentences; ask a primary question and at most one short follow-up when necessary. "
         "Prefer asking about the intersection of the Job Description and the Candidate Resume; explicitly reference resume items in Turkish (e.g., 'Özgeçmişinizde ... gördüm'). Avoid exposing personal data or links. "
+        "Stay strictly on-topic (role, job description, resume). If the candidate asks unrelated things (genel kültür, matematik soruları, vb.), NAZİKÇE konuyu mülakata geri yönlendir. "
+        "You may have the full resume text in context; DO NOT say you cannot see the resume. Use it to ask specific, grounded questions. "
+        "Do not repeat the same question twice; if already asked, rephrase or proceed. "
         "When you judge that you have collected sufficient evidence and the interview has reached a natural conclusion, respond with exactly FINISHED (single word). Do not mention counts."
     )
     if job_context:

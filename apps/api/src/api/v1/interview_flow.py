@@ -107,6 +107,15 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         private_ctx += "\n\nRecruiter Extra Questions (verbatim):\n- " + "\n- ".join(extra_list)
                 except Exception:
                     pass
+                # Debug: log initial context sizes
+                try:
+                    import logging as _log
+                    _log.getLogger(__name__).info(
+                        "[CTX FIRST] interview=%s job_len=%s resume_len=%s extra_count=%s",
+                        getattr(interview, "id", None), len(job_desc or ""), len(resume_text or ""), len(extra_list or [])
+                    )
+                except Exception:
+                    pass
                 # Ask LLM for a concise opening question (allowed to reference resume items)
                 result0 = await asyncio.wait_for(
                     generate_question_robust([], private_ctx, max_questions=7), timeout=8.0
@@ -557,16 +566,27 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 .order_by(ConversationMessage.sequence_number.desc())
             )
         ).scalars().first()
-        next_seq2 = (last2.sequence_number if last2 else 0) + 1
-        session.add(
-            ConversationMessage(
-                interview_id=body.interview_id,
-                role=DBMessageRole.ASSISTANT,
-                content=result.question,
-                sequence_number=next_seq2,
-            )
-        )
-        await session.commit()
+        # Skip insert if identical assistant question was just saved
+        try:
+            if last2 and getattr(last2.role, "value", str(last2.role)) == "assistant" and (last2.content or "").strip() == (result.question or "").strip():
+                pass
+            else:
+                next_seq2 = (last2.sequence_number if last2 else 0) + 1
+                session.add(
+                    ConversationMessage(
+                        interview_id=body.interview_id,
+                        role=DBMessageRole.ASSISTANT,
+                        content=result.question,
+                        sequence_number=next_seq2,
+                    )
+                )
+                await session.commit()
+        except Exception:
+            # Best-effort: do not fail the turn if persistence has a conflict
+            try:
+                await session.rollback()
+            except Exception:
+                pass
 
     return result
 

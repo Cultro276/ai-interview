@@ -214,7 +214,6 @@ export default function InterviewPage({ params }: { params: { token: string } })
         setQuestion(q);
         setHistory((h) => [...h, { role: "assistant", text: q }]);
         setPhase("speaking");
-        saveConversationMessage("assistant", q);
         firstQuestionIssuedRef.current = true;
         return;
       }
@@ -238,7 +237,6 @@ export default function InterviewPage({ params }: { params: { token: string } })
           setQuestion(firstQuestion);
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
           setPhase("speaking");
-          saveConversationMessage("assistant", firstQuestion);
           firstQuestionIssuedRef.current = true;
         })
         .catch(() => {
@@ -246,7 +244,6 @@ export default function InterviewPage({ params }: { params: { token: string } })
           setQuestion(firstQuestion);
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
           setPhase("speaking");
-          saveConversationMessage("assistant", firstQuestion);
           firstQuestionIssuedRef.current = true;
         });
     }, 1500);
@@ -404,8 +401,6 @@ export default function InterviewPage({ params }: { params: { token: string } })
                 }
                 setQuestion(nextQ);
                 setPhase("speaking");
-                // Save AI's next question
-                saveConversationMessage("assistant", nextQ);
                 return [...h, { role: "assistant", text: nextQ }];
               });
             }
