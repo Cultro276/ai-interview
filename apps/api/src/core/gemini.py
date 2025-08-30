@@ -57,8 +57,9 @@ def _sync_generate(history: List[dict[str, str]], job_context: str | None = None
         "Adaptive behavior: If the last candidate message is extremely short (e.g., '...' or under ~10 characters) or likely STT failure, RE-ASK the SAME question more slowly and in simpler words; keep it 1 sentence. Offer a gentle STAR hint (Durum, Görev, Eylem, Sonuç) only once early in the interview."
     )
     if job_context:
+        # Accept larger context to include full resume text
         system_prompt += (
-            "\n\nJob description (context for tailoring questions):\n" + job_context[:1500]
+            "\n\nContext (job description and full resume text may be included):\n" + job_context[:8000]
         )
 
     convo_text = system_prompt + "\n\n"
@@ -166,7 +167,7 @@ def _openai_sync_generate(history: List[dict[str, str]], job_context: str | None
         "When you judge that you have collected sufficient evidence and the interview has reached a natural conclusion, respond with exactly FINISHED (single word). Do not mention counts."
     )
     if job_context:
-        system_prompt += ("\n\nJob description (context for tailoring questions):\n" + job_context[:1500])
+        system_prompt += ("\n\nContext (job description and full resume text may be included):\n" + job_context[:8000])
 
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:

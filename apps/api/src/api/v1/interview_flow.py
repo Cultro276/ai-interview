@@ -96,7 +96,8 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 # Build a private context only for LLM guidance
                 private_ctx = (job_desc or "")
                 if resume_text:
-                    private_ctx += ("\n\nInternal Resume Keywords: " + ", ".join(extract_keywords(resume_text)))
+                    # Provide full resume text to the LLM as hidden context
+                    private_ctx += ("\n\nResume (full text):\n" + resume_text)
                 # Ask LLM for a concise opening question (allowed to reference resume items)
                 result0 = await asyncio.wait_for(
                     generate_question_robust([], private_ctx, max_questions=7), timeout=8.0
@@ -192,17 +193,8 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 pass
             if resume_text:
                 try:
-                    # Use internal keywords + derived project titles/technologies to guide LLM
-                    kws = extract_keywords(resume_text)[:20]
-                    from src.services.nlp import extract_resume_project_titles, extract_known_technologies_from_resume
-                    titles = extract_resume_project_titles(resume_text)[:6]
-                    techs = extract_known_technologies_from_resume(resume_text)[:12]
-                    if kws:
-                        combined_ctx += ("\n\nInternal Resume Keywords: " + ", ".join(kws))
-                    if titles:
-                        combined_ctx += ("\n\nInternal Resume Project Titles: " + ", ".join(titles))
-                    if techs:
-                        combined_ctx += ("\n\nInternal Resume Technologies: " + ", ".join(techs))
+                    # Provide full resume text directly to the LLM as hidden context
+                    combined_ctx += ("\n\nResume (full text):\n" + resume_text)
                 except Exception:
                     pass
             # Behavior signals to steer tone/speed/adaptation
