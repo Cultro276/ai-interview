@@ -103,6 +103,16 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 if resume_text:
                     # Provide full resume text to the LLM as hidden context
                     private_ctx += ("\n\nResume (full text):\n" + resume_text)
+                
+                # Add company context if available
+                try:
+                    from src.db.models.user import User
+                    if job:
+                        user = (await session.execute(select(User).where(User.id == job.user_id))).scalar_one_or_none()
+                        if user and user.company_name:
+                            private_ctx += f"\n\nCompany: {user.company_name}"
+                except Exception:
+                    pass
                 # Include recruiter-provided extra questions without truncation
                 try:
                     if extra_list:
@@ -155,7 +165,27 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         intro = f"Merhaba, ben şirketimizin yapay zekâ insan kaynakları asistanıyım. {jt} pozisyonu için görüşmemize hoş geldiniz."
                 except Exception:
                     intro = None
-                final_q0 = (f"{intro} {q0}".strip() if intro else q0)
+                # Avoid duplicate greetings by removing common Turkish greetings from AI question
+                if intro and q0:
+                    # Remove common greeting patterns from the start of AI question
+                    q0_clean = q0
+                    greeting_patterns = [
+                        "merhaba", "merhaba,", "hoş geldiniz", "hoş geldiniz.",
+                        "hoşgeldiniz", "hoşgeldiniz.", "selamlar", "selamlar,",
+                        "iyi günler", "iyi günler,"
+                    ]
+                    q0_lower = q0.lower().strip()
+                    for pattern in greeting_patterns:
+                        if q0_lower.startswith(pattern):
+                            # Remove the greeting and clean up whitespace/punctuation
+                            q0_clean = q0[len(pattern):].lstrip(" ,.").strip()
+                            # Capitalize first letter if needed
+                            if q0_clean and q0_clean[0].islower():
+                                q0_clean = q0_clean[0].upper() + q0_clean[1:]
+                            break
+                    final_q0 = f"{intro} {q0_clean}".strip()
+                else:
+                    final_q0 = intro or q0
                 return NextQuestionResponse(question=final_q0, done=False, live=None)
             except Exception:
                 return NextQuestionResponse(
@@ -378,6 +408,30 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
     except Exception as e:
         collector.record_error()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    # Check if salary question has been asked and answered (auto-complete logic)
+    try:
+        asked_count = sum(1 for t in req.history if t.role == "assistant")
+        if asked_count >= 5:  # Only check after sufficient questions
+            salary_asked = False
+            salary_answered = False
+            
+            # Look for salary-related questions in conversation history
+            for i, turn in enumerate(req.history):
+                if turn.role == "assistant" and turn.text:
+                    question_text = turn.text.lower()
+                    if any(keyword in question_text for keyword in ["maaş", "ücret", "salary", "beklenti"]):
+                        salary_asked = True
+                        # Check if there's a user response after this question
+                        if i + 1 < len(req.history) and req.history[i + 1].role == "user" and req.history[i + 1].text.strip():
+                            salary_answered = True
+                        break
+            
+            # If salary question was asked and answered, finish the interview
+            if salary_asked and salary_answered:
+                return NextQuestionResponse(question=None, done=True, live=None)
+    except Exception:
+        pass
 
     q_any = result.get("question")
     question_out: str | None = q_any if isinstance(q_any, str) else None

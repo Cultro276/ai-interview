@@ -40,6 +40,7 @@ async def list_tenants(session: AsyncSession = Depends(get_session), _: User = D
             "is_admin": u.is_admin,
             "is_active": u.is_active,
             "created_at": u.created_at,
+            "company_name": u.company_name,
         }
         for u in rows
     ]
@@ -134,6 +135,11 @@ class OwnerCreate(BaseModel):
     password: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
+    company_name: Optional[str] = None
+
+
+class TenantUpdate(BaseModel):
+    company_name: Optional[str] = None
 
 
 @router.post("/tenant", status_code=201)
@@ -153,6 +159,9 @@ async def create_owner(
         is_admin=True,
     )
     user = await user_manager.create(user_in)
+    # Set company name if provided
+    if payload.company_name:
+        user.company_name = payload.company_name
     # Explicitly guarantee this owner is NOT a platform admin
     user.is_superuser = False
     await session.commit()
@@ -168,6 +177,31 @@ async def reactivate_tenant(owner_id: int, session: AsyncSession = Depends(get_s
         u.is_active = True
     await session.commit()
     return {"ok": True, "reactivated": len(users)}
+
+
+@router.patch("/tenant/{owner_id}")
+async def update_tenant(
+    owner_id: int,
+    payload: TenantUpdate,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(platform_admin_required),
+    __: None = Depends(_check_internal_secret),
+):
+    """Update tenant information (currently only company_name)"""
+    user = (await session.execute(select(User).where(User.id == owner_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if payload.company_name is not None:
+        user.company_name = payload.company_name
+    
+    await session.commit()
+    return {
+        "id": user.id,
+        "email": user.email,
+        "company_name": user.company_name,
+        "updated": True
+    }
 
 
 class ResetPassword(BaseModel):

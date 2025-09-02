@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { EnhancedButton, EnhancedCard } from '@/components/ui';
 import { cn } from '@/components/ui/cn';
+import { apiFetch } from '@/lib/api';
 
 export type ExportFormat = 'pdf' | 'excel' | 'csv' | 'json';
 export type ExportDataType = 'dashboard' | 'interviews' | 'candidates' | 'reports' | 'custom';
@@ -24,13 +25,22 @@ interface ExportSystemProps {
   onExport?: (options: ExportOptions) => Promise<void>;
   availableDataTypes?: ExportDataType[];
   className?: string;
+  interviewId?: number; // For interview-specific exports
+  jobId?: number; // For bulk job exports
 }
 
 export function ExportSystem({
   onExport,
   availableDataTypes = ['dashboard', 'interviews', 'candidates', 'reports'],
   className,
+  interviewId,
+  jobId,
 }: ExportSystemProps) {
+  // const toastContext = useToast();
+  // const addToast = toastContext?.addToast || (() => {});
+  const addToast = (message: string, type: 'success' | 'error') => {
+    console.log(`Toast ${type}: ${message}`);
+  };
   const [isOpen, setIsOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('pdf');
@@ -124,18 +134,78 @@ export function ExportSystem({
     return date.toISOString().split('T')[0];
   };
 
-  // Mock export functionality for demo
-  const handleMockExport = async (options: ExportOptions) => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Create mock download
-    const content = `Export: ${options.dataType}\nFormat: ${options.format}\nDate Range: ${formatDate(options.dateRange?.start || new Date())} - ${formatDate(options.dateRange?.end || new Date())}`;
-    const blob = new Blob([content], { type: 'text/plain' });
+  // Real API export functionality
+  const handleRealExport = async (options: ExportOptions) => {
+    try {
+      if (options.dataType === 'reports' && interviewId) {
+        // Interview-specific report export
+        const templateType = getTemplateTypeFromDataType(options.dataType);
+        const response = await apiFetch(`/conversations/reports/${interviewId}/export/${options.format}?template_type=${templateType}`);
+        
+        if (options.format === 'json') {
+          // For JSON/markdown, response should be string content
+          const content = typeof response === 'string' ? response : JSON.stringify(response, null, 2);
+          downloadFromContent(content, options.fileName || `interview_${interviewId}_report`, options.format);
+        } else {
+          // PDF/Excel - use returned data
+          const content = (response as any)?.content || response;
+          downloadFromData(content, options.fileName || `interview_${interviewId}_report`, options.format);
+        }
+        
+        addToast('Rapor başarıyla indirildi!', 'success');
+        
+      } else if (options.dataType === 'candidates' && jobId) {
+        // Bulk candidate reports
+        const templateType = getTemplateTypeFromDataType(options.dataType);
+        const response = await apiFetch(`/conversations/reports/bulk/${jobId}/candidates?template_type=${templateType}`);
+        
+        // Convert bulk data to requested format
+        const content = JSON.stringify(response, null, 2);
+        downloadFromContent(content, options.fileName || `job_${jobId}_candidates`, 'json');
+        
+        const successCount = (response as any)?.successful_reports || 0;
+        addToast(`${successCount} rapor başarıyla indirildi!`, 'success');
+        
+      } else {
+        // Fallback to comprehensive report data
+        const response = await apiFetch(`/conversations/analysis/${interviewId}`);
+        const content = JSON.stringify(response, null, 2);
+        downloadFromContent(content, options.fileName || `interview_${interviewId}_data`, 'json');
+        
+        addToast('Veri başarıyla indirildi!', 'success');
+      }
+      
+    } catch (error) {
+      console.error('Export failed:', error);
+      addToast('Export işlemi başarısız oldu. Lütfen tekrar deneyin.', 'error');
+      throw error;
+    }
+  };
+  
+  // Helper functions
+  const getTemplateTypeFromDataType = (dataType: ExportDataType): string => {
+    switch (dataType) {
+      case 'reports': return 'executive_summary';
+      case 'interviews': return 'detailed_technical';
+      case 'candidates': return 'behavioral_focus';
+      default: return 'executive_summary';
+    }
+  };
+  
+
+  
+  const downloadFromData = (data: any, fileName: string, format: string) => {
+    const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    downloadFromContent(content, fileName, format);
+  };
+  
+  const downloadFromContent = (content: string, fileName: string, format: string) => {
+    const mimeType = format === 'json' ? 'application/json' : 'text/plain';
+    const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${options.fileName}.${options.format === 'excel' ? 'xlsx' : options.format}`;
+    a.download = `${fileName}.${format}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -343,7 +413,7 @@ export function ExportSystem({
                 <EnhancedButton
                   variant="primary"
                   loading={isExporting}
-                  onClick={() => handleMockExport({
+                  onClick={() => handleRealExport({
                     format: selectedFormat,
                     dataType: selectedDataType,
                     dateRange,

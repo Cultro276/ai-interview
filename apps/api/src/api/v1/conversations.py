@@ -19,6 +19,7 @@ from src.api.v1.schemas import (
     InterviewAnalysisRead
 )
 from src.services.analysis import generate_llm_full_analysis
+from src.services.reporting import InterviewReportGenerator, export_to_markdown, export_to_structured_json
 from src.core.metrics import collector, Timer
 from fastapi import Request
 from slowapi.util import get_remote_address
@@ -382,3 +383,174 @@ async def update_analysis(
         result = await generate_llm_full_analysis(session, interview_id)
     collector.record_analysis_ms(t.ms)
     return result
+
+
+# ---- PHASE 1: COMPREHENSIVE REPORTING ENDPOINTS ----
+
+@router.get("/reports/{interview_id}/comprehensive")
+async def get_comprehensive_report(
+    interview_id: int,
+    template_type: str = "executive_summary",  # executive_summary, detailed_technical, behavioral_focus, hiring_decision
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user)
+):
+    """Get comprehensive interview report with multiple template options"""
+    # Verify ownership
+    owner_id = get_effective_owner_id(current_user)
+    interview = await session.execute(
+        select(Interview)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
+    )
+    interview = interview.scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Get existing analysis (comprehensive report should be in technical_assessment JSON)
+    analysis = await session.execute(
+        select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id)
+    )
+    analysis = analysis.scalar_one_or_none()
+    
+    if not analysis or not analysis.technical_assessment:
+        # Generate analysis if missing
+        analysis = await generate_llm_full_analysis(session, interview_id)
+    
+    # Parse technical_assessment JSON to get comprehensive_report
+    import json
+    try:
+        tech_data = json.loads(analysis.technical_assessment) if analysis.technical_assessment else {}
+        comprehensive_report = tech_data.get("comprehensive_report")
+        
+        if comprehensive_report and comprehensive_report.get("metadata", {}).get("template_type") == template_type:
+            return comprehensive_report
+        
+        # Generate new report with requested template
+        report_generator = InterviewReportGenerator()
+        
+        # Gather interview data
+        job = await session.execute(select(Job).where(Job.id == interview.job_id))
+        job = job.scalar_one_or_none()
+        
+        cand = await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))
+        cand = cand.scalar_one_or_none()
+        
+        interview_data = {
+            "id": interview_id,
+            "candidate_name": getattr(cand, "name", "Unknown") if cand else "Unknown",
+            "job_title": getattr(job, "title", "Unknown") if job else "Unknown",
+            "created_at": interview.created_at.isoformat() if interview.created_at else ""
+        }
+        
+        # Generate comprehensive report
+        comprehensive_report = report_generator.generate_comprehensive_report(
+            interview_data,
+            tech_data,
+            template_type=template_type
+        )
+        
+        return comprehensive_report
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+
+
+@router.get("/reports/{interview_id}/export/{format}")
+async def export_interview_report(
+    interview_id: int,
+    format: str,  # json, markdown, pdf, excel
+    template_type: str = "executive_summary",
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user)
+):
+    """Export interview report in various formats"""
+    # Get comprehensive report first
+    report = await get_comprehensive_report(interview_id, template_type, session, current_user)
+    
+    if format == "json":
+        content = export_to_structured_json(report)
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=interview_{interview_id}_report.json"}
+        )
+    
+    elif format == "markdown":
+        content = export_to_markdown(report)
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f"attachment; filename=interview_{interview_id}_report.md"}
+        )
+    
+    elif format == "pdf":
+        # For now, return structured data that frontend can convert to PDF
+        return {
+            "format": "pdf_data",
+            "content": report,
+            "download_url": f"/api/v1/conversations/reports/{interview_id}/export/json?template_type={template_type}",
+            "message": "Use frontend PDF generation with this data"
+        }
+    
+    elif format == "excel":
+        # For now, return structured data that frontend can convert to Excel
+        return {
+            "format": "excel_data", 
+            "content": report,
+            "download_url": f"/api/v1/conversations/reports/{interview_id}/export/json?template_type={template_type}",
+            "message": "Use frontend Excel generation with this data"
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported format. Use: json, markdown, pdf, excel")
+
+
+@router.get("/reports/bulk/{job_id}/candidates") 
+async def get_bulk_candidate_reports(
+    job_id: int,
+    template_type: str = "executive_summary",
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user)
+):
+    """Get reports for all candidates in a job"""
+    # Verify job ownership
+    owner_id = get_effective_owner_id(current_user)
+    job = await session.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == owner_id)
+    )
+    job = job.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Get all interviews for this job
+    interviews = await session.execute(
+        select(Interview).where(Interview.job_id == job_id)
+    )
+    interviews = interviews.scalars().all()
+    
+    reports = []
+    for interview in interviews:
+        try:
+            report = await get_comprehensive_report(interview.id, template_type, session, current_user)
+            reports.append({
+                "interview_id": interview.id,
+                "candidate_id": interview.candidate_id,
+                "report": report
+            })
+        except Exception as e:
+            reports.append({
+                "interview_id": interview.id,
+                "candidate_id": interview.candidate_id,
+                "error": str(e)
+            })
+    
+    return {
+        "job_id": job_id,
+        "job_title": job.title,
+        "template_type": template_type,
+        "total_interviews": len(interviews),
+        "successful_reports": len([r for r in reports if "error" not in r]),
+        "reports": reports
+    }

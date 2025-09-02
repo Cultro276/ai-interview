@@ -5,9 +5,24 @@ import { listen } from "@/lib/voice";
 import { Steps, Button } from "@/components/ui";
 import { LiveInsights } from "@/components/interview/LiveInsights";
 
-export default function InterviewPage({ params }: { params: { token: string } }) {
+import { cn } from "@/components/ui/utils";
+
+// Enhanced Interview Page with Professional UI
+function InterviewPageContent({ params }: { params: { token: string } }) {
   const { token } = params;
+  const [isMobile, setIsMobile] = useState(false);
   const forceWhisper = typeof window !== "undefined" && process.env.NEXT_PUBLIC_FORCE_WHISPER === "true";
+
+  // Simple responsive detection - fix tablet/desktop breakpoints
+  useEffect(() => {
+    const checkMobile = () => {
+      // More strict mobile detection - only phones
+      setIsMobile(window.innerWidth < 640);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
   const [status, setStatus] = useState<
     | "loading"
     | "invalid"
@@ -47,6 +62,7 @@ export default function InterviewPage({ params }: { params: { token: string } })
   // Conversation tracking
   const [interviewId, setInterviewId] = useState<number | null>(null);
   const [interviewJobId, setInterviewJobId] = useState<number | null>(null);
+  const [companyName, setCompanyName] = useState<string | null>(null);
   const preparedFirstQuestionRef = useRef<string | null>(null);
   const firstQuestionIssuedRef = useRef<boolean>(false);
   const sequenceNumberRef = useRef<number>(0);
@@ -125,9 +141,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
   const initializeInterview = async () => {
     try {
       // Fetch existing interview for this candidate by token (created by admin flow)
-      const interview = await apiFetch<{ id: number; job_id: number; prepared_first_question?: string | null }>(`/api/v1/interviews/by-token/${token}`);
+      const interview = await apiFetch<{ id: number; job_id: number; prepared_first_question?: string | null; company_name?: string | null }>(`/api/v1/interviews/by-token/${token}`);
       setInterviewId(interview.id);
       setInterviewJobId(interview.job_id);
+      setCompanyName(interview.company_name || null);
       preparedFirstQuestionRef.current = (interview as any).prepared_first_question || null;
       sequenceNumberRef.current = 0;
       // Save system message to indicate interview started
@@ -401,6 +418,8 @@ export default function InterviewPage({ params }: { params: { token: string } })
                   return h;
                 }
                 setQuestion(nextQ);
+                // Persist assistant question so transcript shows questions
+                saveConversationMessage("assistant", nextQ);
                 setPhase("speaking");
                 return [...h, { role: "assistant", text: nextQ }];
               });
@@ -748,60 +767,210 @@ export default function InterviewPage({ params }: { params: { token: string } })
     );
   }
 
-  if (status === "interview")
+  if (status === "interview") {
     return (
-      <div className="p-6 text-center">
-        <Steps steps={["Aydınlatma", "İzinler", "Cihaz Testi", "Tanıtım", "Mülakat"]} current={4} className="mb-6 justify-center" />
-        <div className="mx-auto max-w-2xl mb-3 flex items-center justify-between text-sm text-gray-600">
-          <div>
-            Soru: {askedCount}
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+        {/* Header */}
+        <header className="bg-white border-b border-gray-200 px-4 py-3">
+          <div className={cn(
+            "flex items-center justify-between max-w-4xl mx-auto",
+            isMobile ? "flex-col space-y-2" : ""
+          )}>
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                <span className="text-white text-sm font-bold">AI</span>
+              </div>
+              <div>
+                <h1 className={cn(
+                  "font-semibold text-gray-900",
+                  isMobile ? "text-base" : "text-lg"
+                )}>RecruiterAI</h1>
+                <p className="text-sm text-gray-500">Sesli görüşme devam ediyor</p>
+              </div>
+            </div>
+            <div className={cn(
+              "flex items-center",
+              isMobile ? "space-x-2 text-xs" : "space-x-4 text-sm"
+            )}>
+              <div className="text-gray-600">
+                Soru: {askedCount} | Süre: {Math.floor(elapsedSec/60).toString().padStart(2,'0')}:{(elapsedSec%60).toString().padStart(2,'0')}
+              </div>
+              <button
+                onClick={() => {
+                  setTimeout(() => {
+                    setPhase("idle");
+                    setStatus("finished");
+                  }, 3000);
+                }}
+                className={cn(
+                  "font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors",
+                  isMobile ? "px-3 py-1 text-xs" : "px-4 py-2 text-sm"
+                )}
+              >
+                Bitir
+              </button>
+            </div>
           </div>
-          <div>
-            Süre: {Math.floor(elapsedSec/60).toString().padStart(2,'0')}:{(elapsedSec%60).toString().padStart(2,'0')}
+        </header>
+
+        {/* Main Content */}
+        <main className={cn("flex-1", isMobile ? "p-2" : "p-4")}>
+          <div className="max-w-4xl mx-auto">
+            {/* Video Section */}
+            <div className={cn("mb-4", isMobile ? "mb-3" : "mb-6")}>
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div className={cn("border-b border-gray-100", isMobile ? "p-3" : "p-4")}>
+                  <h2 className={cn(
+                    "font-medium text-gray-900",
+                    isMobile ? "text-base" : "text-lg"
+                  )}>Video Görüşme</h2>
+                </div>
+                <div className={cn(isMobile ? "p-3" : "p-6")}>
+                  <div className={cn(
+                    "grid",
+                    isMobile ? "grid-cols-1 gap-3" : "grid-cols-2 gap-4"
+                  )}>
+                    {/* Candidate Video */}
+                    <div className="relative">
+                      <div className={cn(
+                        "bg-black rounded-lg overflow-hidden border border-gray-200",
+                        isMobile ? "aspect-square" : "aspect-video"
+                      )}>
+                        {stream ? (
+                          <video
+                            ref={videoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="w-full h-full object-cover transform scale-x-[-1]"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-white">
+                            <div className="text-center">
+                              <div className="text-4xl mb-2">📹</div>
+                              <p className="text-sm">Kamera bağlanıyor...</p>
+                            </div>
+                          </div>
+                        )}
+                        {/* Recording indicator */}
+                        <div className="absolute top-3 right-3 flex items-center space-x-1 bg-red-600 px-2 py-1 rounded-full">
+                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                          <span className="text-white text-xs font-medium">REC</span>
+                        </div>
+                        {/* Label */}
+                        <div className="absolute bottom-3 left-3 bg-black bg-opacity-60 px-2 py-1 rounded text-white text-sm">
+                          Siz
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* AI Avatar */}
+                    <div className="relative">
+                      <div className={cn(
+                        "bg-gradient-to-br from-blue-100 to-purple-100 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center",
+                        isMobile ? "aspect-square" : "aspect-video"
+                      )}>
+                        <div className="text-center">
+                          <div className={cn(
+                            "mb-2",
+                            isMobile ? "text-4xl mb-2" : "text-6xl mb-4"
+                          )}>🤖</div>
+                          <h3 className={cn(
+                            "font-medium text-gray-800 mb-2",
+                            isMobile ? "text-base" : "text-lg"
+                          )}>
+                            {companyName ? `${companyName} AI` : "AI Asistan"}
+                          </h3>
+                          <div className={cn(
+                            "px-3 py-1 rounded-full font-medium",
+                            isMobile ? "text-xs" : "text-sm",
+                            {
+                              "bg-green-100 text-green-800": phase === "listening",
+                              "bg-blue-100 text-blue-800": phase === "speaking",
+                              "bg-yellow-100 text-yellow-800": phase === "thinking",
+                              "bg-gray-100 text-gray-600": phase === "idle",
+                            }
+                          )}>
+                            {phase === "speaking" && "Konuşuyor..."}
+                            {phase === "listening" && "Dinliyor..."}
+                            {phase === "thinking" && "Düşünüyor..."}
+                            {phase === "idle" && "Beklemede"}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Question Section */}
+            {question && showCaptions && (
+              <div className={cn(isMobile ? "mb-3" : "mb-6")}>
+                <div className={cn(
+                  "bg-white rounded-xl shadow-sm border border-gray-200",
+                  isMobile ? "p-4" : "p-6"
+                )}>
+                  <div className="flex items-start space-x-3">
+                    <div className={cn(
+                      "bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0",
+                      isMobile ? "w-6 h-6" : "w-8 h-8"
+                    )}>
+                      <span className={cn(
+                        "text-blue-600",
+                        isMobile ? "text-xs" : "text-sm"
+                      )}>❓</span>
+                    </div>
+                    <div className="flex-1">
+                      <h3 className={cn(
+                        "font-medium text-gray-500 mb-2",
+                        isMobile ? "text-xs" : "text-sm"
+                      )}>Güncel Soru</h3>
+                      <p className={cn(
+                        "text-gray-900 leading-relaxed",
+                        isMobile ? "text-base" : "text-lg"
+                      )}>{question}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Status */}
+            <div className="text-center">
+              <div className={cn(
+                "inline-flex items-center space-x-2 rounded-full font-medium",
+                isMobile ? "px-3 py-2 text-xs" : "px-4 py-2 text-sm",
+                {
+                  "bg-green-100 text-green-800": phase === "listening",
+                  "bg-blue-100 text-blue-800": phase === "speaking",
+                  "bg-yellow-100 text-yellow-800": phase === "thinking",
+                  "bg-gray-100 text-gray-600": phase === "idle",
+                }
+              )}>
+                <div className={cn(
+                  "rounded-full",
+                  isMobile ? "w-1.5 h-1.5" : "w-2 h-2",
+                  {
+                    "bg-green-500 animate-pulse": phase === "listening",
+                    "bg-blue-500 animate-pulse": phase === "speaking",
+                    "bg-yellow-500 animate-pulse": phase === "thinking",
+                    "bg-gray-400": phase === "idle",
+                  }
+                )}></div>
+                <span>
+                  {phase === "speaking" && "Soru soruluyor…"}
+                  {phase === "listening" && "Cevabınız dinleniyor…"}
+                  {phase === "thinking" && "Yanıtınız işleniyor…"}
+                  {phase === "idle" && "Görüşme yakında başlayacak…"}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex gap-8 justify-center">
-          {/* Avatar placeholder */}
-          <div className="w-40 h-40 rounded-full bg-gray-200" />
-
-          {/* Candidate preview */}
-          <video
-            ref={videoRef}
-            className="w-40 h-40 rounded-full object-cover"
-            playsInline
-            autoPlay
-            muted
-          />
-        </div>
-
-        <p className="mt-6">
-          {phase === "speaking" && "Soru soruluyor…"}
-          {phase === "listening" && "Dinleniyor…"}
-          {phase === "thinking" && "Yanıt işleniyor…"}
-          {phase === "idle" && "Görüşme yakında başlayacak…"}
-        </p>
-        {question && showCaptions && (
-          <div className="mt-3 max-w-2xl mx-auto text-gray-800 border border-gray-200 rounded-lg p-3 bg-white">
-            <div className="text-sm font-medium text-gray-600 mb-1">Soru</div>
-            <div className="text-base">{question}</div>
-          </div>
-        )}
-
-        {/* Live Insights is for internal testing only; hide from candidate UI */}
-        {/* Geçici Bitir butonu */}
-        <Button
-          className="mt-3"
-          onClick={() => {
-            setTimeout(() => {
-              setPhase("idle");
-              setStatus("finished");
-            }, 3000); // 3 saniye kayıt yap, sonra bitir
-          }}
-        >
-          Mülakatı Bitir (Test)
-        </Button>
+        </main>
       </div>
     );
+  }
 
   if (status === "finished")
     return (
@@ -814,6 +983,10 @@ export default function InterviewPage({ params }: { params: { token: string } })
   return null; // fallback
 }
 
+// Main Interview Page
+export default function InterviewPage({ params }: { params: { token: string } }) {
+  return <InterviewPageContent params={params} />;
+}
 
 function onVisibility(this: Document, ev: Event) {
   throw new Error("Function not implemented.");

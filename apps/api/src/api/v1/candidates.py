@@ -68,7 +68,15 @@ async def list_candidates(
 ):
     owner_id = get_effective_owner_id(current_user)
     try:
-        result = await session.execute(select(Candidate).where(Candidate.user_id == owner_id))
+        # Only return candidates that have interviews associated with active jobs
+        from src.db.models.job import Job
+        result = await session.execute(
+            select(Candidate)
+            .join(Interview, Interview.candidate_id == Candidate.id)
+            .join(Job, Interview.job_id == Job.id)
+            .where(Candidate.user_id == owner_id, Job.user_id == owner_id)
+            .distinct()
+        )
         rows: List[Candidate] = list(result.scalars().all())
     except Exception as e:
         # Handle encryption/decryption errors gracefully

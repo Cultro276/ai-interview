@@ -14,7 +14,7 @@ from src.core.config import settings
 from src.db.models.user import User
 from src.db.session import get_session
 
-SECRET = settings.db_password + settings.db_user  # simple example, use JWT_SECRET env later
+SECRET = settings.jwt_secret
 
 # Pydantic Schemas --------------------------------------------------
 

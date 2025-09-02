@@ -62,20 +62,21 @@ async def extract_soft_skills(text: str, job_desc: str | None = None) -> Dict[st
 
 
 async def summarize_candidate_profile(resume_text: str, job_desc: str | None = None) -> str:
-    """Return a concise CV summary (max ~600 chars) tailored to the job.
+    """Return a concise CV summary tailored to the job.
 
-    Keeps it short for modal display. Returns empty string if unavailable.
+    Returns structured summary that's comprehensive but readable. Returns empty string if unavailable.
     """
     if not (settings.openai_api_key and resume_text.strip()):
         return ""
     
     prompt = (
-        "Aşağıdaki özgeçmişi detaylı analiz et ve iş ilanına göre değerlendir. "
-        "3-4 paragraf halinde şu bilgileri ver:\n"
-        "1. Genel profil özeti (deneyim, eğitim, ana yetkinlikler)\n"
-        "2. İş ilanına uygunluk analizi (eşleşen beceriler, eksik alanlar)\n"
-        "3. Öne çıkan projeler ve başarılar\n"
-        "4. Genel değerlendirme ve öneriler\n\n"
+        "Aşağıdaki özgeçmişi analiz et ve iş ilanına göre öz bir değerlendirme yap. "
+        "Maksimum 4-5 cümle ile şu bilgileri ver:\n\n"
+        "📋 **Profil Özeti**: Deneyim seviyesi, ana uzmanlık alanları ve eğitim durumu\n"
+        "🎯 **İş Uygunluğu**: İlan gereksinimlerine uygunluk ve öne çıkan yetenekler\n"
+        "🚀 **Öne Çıkan Başarılar**: En dikkat çekici proje/deneyim (varsa)\n"
+        "💡 **Genel Değerlendirme**: Kısa bir işe alım önerisi\n\n"
+        "Türkçe ve profesyonel bir dil kullan. Çok uzun olmasın, öz ve net ol.\n\n"
         f"İş İlanı: {job_desc or 'Belirtilmemiş'}\n\n"
         f"Özgeçmiş:\n{resume_text[:4000]}"
     )
@@ -84,7 +85,7 @@ async def summarize_candidate_profile(resume_text: str, job_desc: str | None = N
         "model": "gpt-4o-mini", 
         "messages": [{"role": "user", "content": prompt}], 
         "temperature": 0.3,
-        "max_tokens": 800
+        "max_tokens": 500
     }
     try:
         async with httpx.AsyncClient(timeout=25) as client:
@@ -92,11 +93,10 @@ async def summarize_candidate_profile(resume_text: str, job_desc: str | None = N
             resp.raise_for_status()
             data = resp.json()
             text = str(data["choices"][0]["message"]["content"]).strip()
-            # Compress to a concise summary suitable for modal display
+            # Clean up formatting
             text = re.sub(r"\n{3,}", "\n\n", text)  # collapse excessive blank lines
             text = text.strip()
-            if len(text) > 600:
-                text = text[:600].rstrip() + "…"
+            # No hard truncation - let LLM follow the instruction to be concise
             return text
     except Exception as e:
         # Better error handling for debugging
@@ -106,113 +106,440 @@ async def summarize_candidate_profile(resume_text: str, job_desc: str | None = N
 
 
 async def assess_hr_criteria(transcript_text: str) -> Dict[str, Any]:
-    """Score broad HR criteria using LLM: communication clarity, problem-solving, teamwork, leadership, growth mindset.
+    """Score broad HR criteria using structured prompts with evidence-based scoring.
 
-    Returns: { criteria: [{label, score_0_100, evidence}], summary }
+    Returns: { criteria: [{label, score_0_100, evidence, confidence, reasoning}], summary, meta }
     """
     if not (settings.openai_api_key and transcript_text.strip()):
         return {}
-    prompt = (
-        "Metne göre HR kriterlerini puanla (0-100) ve kısa kanıt ver. JSON dön.\n"
-        "Kriterler: iletişim netliği, problem çözme, takım çalışması, liderlik, büyüme zihniyeti.\n"
-        "Format: {\"criteria\":[{\"label\":str,\"score_0_100\":number,\"evidence\":str}],\"summary\":str} \n"
-        f"Metin: {transcript_text[:5000]}"
-    )
+    
+    prompt = f"""Sen deneyimli bir HR uzmanısın. Aşağıdaki mülakat transkriptini analiz et ve her kriter için objektif, kanıta dayalı değerlendirme yap.
+
+DEĞERLENDIRME KRİTERLERİ:
+1. İletişim Netliği (0-100): Açık ifade, yapılandırılmış cevaplar, dinleme becerisi
+2. Problem Çözme (0-100): Analitik düşünme, çözüm odaklılık, yaratıcılık
+3. Takım Çalışması (0-100): Birlikte çalışma örnekleri, işbirliği, çatışma yönetimi
+4. Liderlik (0-100): İnisiyatif alma, yönlendirme, sorumluluk üstlenme
+5. Büyüme Zihniyeti (0-100): Öğrenme isteği, hatalardan ders alma, gelişim odaklılık
+
+PUANLAMA REHBERİ:
+- 90-100: Mükemmel, çok güçlü kanıtlar
+- 80-89: Güçlü, net pozitif örnekler
+- 70-79: İyi, bazı pozitif göstergeler
+- 60-69: Orta, sınırlı kanıt
+- 50-59: Zayıf, minimal kanıt
+- 0-49: Yetersiz, kanıt yok veya negatif
+
+ZORUNLU JSON FORMAT:
+{{
+  "criteria": [
+    {{
+      "label": "İletişim Netliği",
+      "score_0_100": 85,
+      "evidence": "Sorulara yapılandırılmış ve net cevaplar verdi. 'STAR yöntemi ile...' gibi örnekler kullandı.",
+      "confidence": 0.9,
+      "reasoning": "3 farklı örnekte net açıklama ve somut detaylar sağladı."
+    }}
+  ],
+  "summary": "Genel HR değerlendirme özeti",
+  "overall_score": 78.5,
+  "meta": {{
+    "total_response_time": "18 dakika",
+    "answer_depth": "orta",
+    "evidence_quality": "güçlü"
+  }}
+}}
+
+MÜLAKAT TRANSKRİPTİ:
+{transcript_text[:6000]}"""
+
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    body = {
+        "model": "gpt-4o-mini", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "temperature": 0.05,
+        "response_format": {"type": "json_object"}
+    }
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
+        async with httpx.AsyncClient(timeout=35) as client:
             resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             import json as _json
-            return _json.loads(data["choices"][0]["message"]["content"])
+            result = _json.loads(data["choices"][0]["message"]["content"])
+            
+            # Validate and normalize result
+            if not isinstance(result.get("criteria"), list):
+                return {}
+            
+            # Ensure all criteria have required fields
+            for criterion in result["criteria"]:
+                criterion.setdefault("confidence", 0.5)
+                criterion.setdefault("reasoning", "")
+                
+            return result
     except Exception:
         return {}
 
 
 async def assess_job_fit(job_desc: str, transcript_text: str, resume_text: str | None = None) -> Dict[str, Any]:
-    """Produce job-fit summary and requirement coverage in natural language (LLM-level)."""
+    """Enhanced job-fit analysis with detailed requirement mapping and confidence scoring."""
     if not (settings.openai_api_key and (job_desc.strip() and transcript_text.strip())):
         return {}
-    prompt = (
-        "İş tanımı, adayın özgeçmişi ve mülakat cevaplarını karşılaştır.\n"
-        "ÖNEMLI: Özgeçmişte ZATEN bulunan yetenekleri 'cv_exists' olarak işaretle, mülakat sırasında test edilenleri 'interview_tested' olarak değerlendir.\n"
-        "Adayın özgeçmişinde yok ama iş ilanında istenen yetenikleri açıkça 'missing' olarak belirt.\n"
-        "JSON formatında döndür:\n"
-        "{\n"
-        "  \"job_fit_summary\": \"Genel değerlendirme özeti\",\n"
-        "  \"cv_existing_skills\": [\"Özgeçmişte zaten bulunan yetenekler\"],\n"
-        "  \"interview_demonstrated\": [\"Mülakatta kanıtlanan yetenekler\"],\n"
-        "  \"clear_gaps\": [\"Hem özgeçmişte hem mülakattta eksik yetenekler\"],\n"
-        "  \"recommendations\": [\"İşe alım önerileri\"],\n"
-        "  \"requirements_matrix\": [\n"
-        "    {\n"
-        "      \"label\": \"Yetenek adı\",\n"
-        "      \"meets\": \"yes|partial|no\",\n"
-        "      \"source\": \"cv|interview|both|neither\",\n"
-        "      \"evidence\": \"Kanıt açıklaması\"\n"
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        f"İş Tanımı: {job_desc[:4000]}\n"
-        f"Özgeçmiş: {(resume_text or '')[:3000]}\n"
-        f"Mülakat Cevapları: {transcript_text[:4000]}"
-    )
+    
+    prompt = f"""Sen senior bir işe alım uzmanısın. İş tanımı, özgeçmiş ve mülakat transkriptini detaylı analiz et.
+
+GÖREV: Her iş gereksinimini adayın profiliyle eşleştir ve kanıt seviyesini değerlendir.
+
+KAYNAK TIPLERI:
+- cv: Özgeçmişte yazılı/belgelenmiş
+- interview: Mülakatta sözlü olarak kanıtlanmış  
+- both: Hem özgeçmişte hem mülakatta teyit edilmiş
+- neither: Hiçbirinde kanıt yok
+
+KARŞILAMA SEVİYELERİ:
+- yes: Tam olarak karşılıyor (güçlü kanıt)
+- partial: Kısmen karşılıyor (sınırlı kanıt)
+- no: Karşılamıyor (kanıt yok)
+
+ZORUNLU JSON FORMAT:
+{{
+  "job_fit_summary": "3-4 cümlelik genel değerlendirme",
+  "overall_fit_score": 0.75,
+  "cv_existing_skills": ["Özgeçmişte net olan yetenekler"],
+  "interview_demonstrated": ["Mülakatta kanıtlanan yetenekler"],
+  "clear_gaps": ["Açık eksiklik gösteren alanlar"],
+  "requirements_matrix": [
+    {{
+      "label": "Spesifik yetenek/gereksinim",
+      "meets": "yes|partial|no",
+      "source": "cv|interview|both|neither",
+      "evidence": "Somut kanıt/örnek (özgeçmiş satırı veya mülakat cevabı)",
+      "confidence": 0.9,
+      "importance": "high|medium|low"
+    }}
+  ],
+  "recommendations": [
+    "Spesifik işe alım önerisi 1",
+    "Gelişim alanı önerisi 2"
+  ],
+  "risk_factors": ["Potansiyel risk alanları"],
+  "competitive_advantages": ["Adayın öne çıkan artıları"]
+}}
+
+İŞ TANIMI:
+{job_desc[:4500]}
+
+ÖZGEÇMIŞ:
+{(resume_text or 'Özgeçmiş bilgisi mevcut değil')[:3500]}
+
+MÜLAKAT TRANSKRİPTİ:
+{transcript_text[:4500]}"""
+
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+    body = {
+        "model": "gpt-4o-mini", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"}
+    }
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=40) as client:
             resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             import json as _json
-            return _json.loads(data["choices"][0]["message"]["content"])
+            result = _json.loads(data["choices"][0]["message"]["content"])
+            
+            # Validate and normalize
+            if not isinstance(result.get("requirements_matrix"), list):
+                result["requirements_matrix"] = []
+            
+            # Add confidence defaults
+            for req in result.get("requirements_matrix", []):
+                req.setdefault("confidence", 0.5)
+                req.setdefault("importance", "medium")
+                
+            result.setdefault("overall_fit_score", 0.0)
+            return result
     except Exception:
         return {}
 
 
 async def opinion_on_candidate(job_desc: str, transcript_text: str, resume_text: str | None = None) -> Dict[str, Any]:
-    """Return a detailed AI opinion for the candidate including salary analysis.
-
-    Returns JSON with detailed breakdown including salary expectations.
-    """
+    """Enhanced hiring decision analysis with structured recommendations and risk assessment."""
     if not (settings.openai_api_key and (job_desc.strip() and transcript_text.strip())):
         return {}
-    prompt = (
-        "İş tanımı, özgeçmiş ve mülakat transkriptine göre detaylı işe alım değerlendirmesi yap.\n"
-        "Maaş beklentisi sorusu ve cevabını özellikle analiz et.\n"
-        "Objektif ve profesyonel ol. Hem güçlü hem zayıf yönleri belirt.\n"
-        "JSON formatında döndür:\n"
-        "{\n"
-        "  \"hire_recommendation\": \"Strong Hire|Hire|Hold|No Hire\",\n"
-        "  \"overall_assessment\": \"3-4 cümlelik genel değerlendirme\",\n"
-        "  \"key_strengths\": [\"Güçlü yönler listesi\"],\n"
-        "  \"key_concerns\": [\"Endişe alanları listesi\"],\n"
-        "  \"salary_analysis\": {\n"
-        "    \"candidate_expectation\": \"Adayın belirttiği maaş beklentisi\",\n"
-        "    \"market_alignment\": \"market_appropriate|too_high|too_low|not_specified\",\n"
-        "    \"negotiation_notes\": \"Maaş müzakeresi notları\"\n"
-        "  },\n"
-        "  \"confidence_score\": 0.8,\n"
-        "  \"next_steps\": \"Önerilen sonraki adımlar\"\n"
-        "}\n\n"
-        f"İş Tanımı: {job_desc[:3500]}\n"
-        f"Özgeçmiş: {(resume_text or '')[:2000]}\n"
-        f"Mülakat Transkripti: {transcript_text[:4000]}"
-    )
+    
+    prompt = f"""Sen deneyimli bir CTO ve hiring manager'sın. İş tanımı, özgeçmiş ve mülakat transkriptine göre yapılandırılmış işe alım kararı ver.
+
+GÖREV: Objektif, veri-destekli ve uygulama-odaklı karar analizi yap.
+
+DEĞERLENDIRME ÇERÇEVESİ:
+1. Teknik yeterlilik (iş gereksinimleri vs aday profili)
+2. Yumuşak beceriler (takım uyumu, iletişim, liderlik)
+3. Büyüme potansiyeli (öğrenme hızı, adaptasyon)
+4. Kültürel uyum (şirket değerleri, çalışma tarzı)
+5. Risk faktörleri (kırmızı bayraklar, endişe alanları)
+
+HİRE RECOMMENDATİON SEVİYELERİ:
+- Strong Hire: Kesinlikle işe alınmalı, role mükemmel uyum
+- Hire: İşe alınmalı, gereksinimleri karşılıyor
+- Hold: Kararsız, ek bilgi/mülakat gerekli
+- No Hire: İşe alınmamalı, önemli eksiklikler var
+
+ZORUNLU JSON FORMAT:
+{{
+  "hire_recommendation": "Strong Hire|Hire|Hold|No Hire",
+  "overall_assessment": "4-5 cümlelik yapılandırılmış genel değerlendirme",
+  "decision_confidence": 0.85,
+  "key_strengths": [
+    "Spesifik güçlü yön 1 (kanıtla)",
+    "Spesifik güçlü yön 2 (kanıtla)"
+  ],
+  "key_concerns": [
+    "Spesifik endişe 1 (gerekçeyle)",
+    "Spesifik endişe 2 (gerekçeyle)"
+  ],
+  "skill_match": {{
+    "technical_fit": 0.8,
+    "soft_skills_fit": 0.7,
+    "cultural_fit": 0.9,
+    "growth_potential": 0.8
+  }},
+  "salary_analysis": {{
+    "candidate_expectation": "Adayın maaş beklentisi (varsa)",
+    "market_alignment": "market_appropriate|too_high|too_low|belirtilmedi",
+    "recommended_range": "Önerilen maaş aralığı",
+    "negotiation_notes": "Maaş müzakeresi stratejisi"
+  }},
+  "risk_factors": [
+    "Potansiyel risk 1",
+    "Potansiyel risk 2"
+  ],
+  "mitigation_strategies": [
+    "Risk azaltma önerisi 1",
+    "Risk azaltma önerisi 2"
+  ],
+  "next_steps": [
+    "Önerilen sonraki adım 1",
+    "Önerilen sonraki adım 2"
+  ],
+  "timeline_recommendation": "immediate|1_week|2_weeks|reassess"
+}}
+
+İŞ TANIMI:
+{job_desc[:4000]}
+
+ÖZGEÇMIŞ:
+{(resume_text or 'Özgeçmiş bilgisi mevcut değil')[:2500]}
+
+MÜLAKAT TRANSKRİPTİ:
+{transcript_text[:4500]}"""
+
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    body = {
+        "model": "gpt-4o-mini", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "temperature": 0.05,
+        "response_format": {"type": "json_object"}
+    }
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=35) as client:
             resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             import json as _json
-            return _json.loads(data["choices"][0]["message"]["content"])
+            result = _json.loads(data["choices"][0]["message"]["content"])
+            
+            # Validate and set defaults
+            result.setdefault("decision_confidence", 0.5)
+            result.setdefault("timeline_recommendation", "reassess")
+            
+            skill_match = result.setdefault("skill_match", {})
+            skill_match.setdefault("technical_fit", 0.5)
+            skill_match.setdefault("soft_skills_fit", 0.5)
+            skill_match.setdefault("cultural_fit", 0.5)
+            skill_match.setdefault("growth_potential", 0.5)
+            
+            return result
     except Exception:
         return {}
 
+
+# --- PHASE 2: ENHANCED MULTI-PASS ANALYSIS ---
+
+async def analyze_interview_multipass(job_desc: str, transcript_text: str, resume_text: str | None = None) -> Dict[str, Any]:
+    """Comprehensive multi-pass interview analysis with evidence extraction and confidence scoring.
+    
+    Pass 1: Technical assessment  
+    Pass 2: Behavioral evaluation
+    Pass 3: Cultural fit and growth mindset
+    Pass 4: Evidence synthesis and final scoring
+    """
+    if not (settings.openai_api_key and transcript_text.strip()):
+        return {}
+    
+    # Pass 1: Technical Assessment
+    technical_prompt = f"""Sen senior bir teknik lead'sin. Sadece teknik yetkinlik odağında mülakat analizi yap.
+
+ODAK ALANLARI:
+- Problem çözme yaklaşımı ve teknik düşünce süreci
+- Teknoloji bilgisi ve uygulamada derinlik  
+- Kod kalitesi, mimari anlayışı, best practices
+- Debugging, testing, performans optimizasyonu
+
+ZORUNLU JSON FORMAT:
+{{
+  "technical_score": 0.75,
+  "problem_solving_score": 0.8,
+  "technology_depth": 0.7,
+  "architecture_understanding": 0.6,
+  "evidence_items": [
+    {{
+      "category": "problem_solving",
+      "evidence": "STAR formatında somut örnek",
+      "strength_level": "strong|moderate|weak",
+      "technical_depth": "senior|mid|junior"
+    }}
+  ],
+  "technical_gaps": ["Eksik olan teknik alanlar"],
+  "standout_skills": ["Öne çıkan teknik beceriler"],
+  "confidence": 0.85
+}}
+
+İŞ GEREKSİNİMLERİ:
+{job_desc[:3000]}
+
+MÜLAKAT TRANSKRİPTİ:
+{transcript_text[:5000]}"""
+
+    # Pass 2: Behavioral Evaluation  
+    behavioral_prompt = f"""Sen experienced bir behavioral interviewer'sın. Sadece davranışsal yetkinlikleri değerlendir.
+
+ODAK ALANLARI:
+- Liderlik ve takım çalışması deneyimleri
+- Çatışma yönetimi ve iletişim becerileri
+- Stres altında performans ve adaptasyon
+- Motivasyon kaynakları ve career vision
+
+ZORUNLU JSON FORMAT:
+{{
+  "leadership_score": 0.7,
+  "teamwork_score": 0.8,
+  "communication_score": 0.9,
+  "adaptability_score": 0.6,
+  "behavioral_evidence": [
+    {{
+      "competency": "leadership|teamwork|communication|adaptability",
+      "situation": "Durum açıklaması",
+      "action": "Adayın aldığı aksiyonlar", 
+      "result": "Ölçülebilir sonuç",
+      "star_completeness": 0.9
+    }}
+  ],
+  "red_flags": ["Davranışsal kırmızı bayraklar"],
+  "behavioral_strengths": ["Güçlü davranışsal özellikler"],
+  "confidence": 0.8
+}}
+
+MÜLAKAT TRANSKRİPTİ:
+{transcript_text[:5000]}"""
+
+    # Pass 3: Cultural Fit & Growth Mindset
+    cultural_prompt = f"""Sen kültür ve değerler uzmanısın. Adayın şirket kültürü uyumu ve büyüme potansiyelini değerlendir.
+
+ODAK ALANLARI:
+- Öğrenme isteği ve merak seviyesi
+- Feedback alma ve verme yaklaşımı
+- Başarısızlık ve hatalardan öğrenme
+- Değer uyumu ve motivasyon faktörleri
+
+ZORUNLU JSON FORMAT:
+{{
+  "cultural_fit_score": 0.8,
+  "growth_mindset_score": 0.7,
+  "learning_agility": 0.9,
+  "feedback_openness": 0.6,
+  "cultural_indicators": [
+    {{
+      "value_area": "learning|collaboration|innovation|ownership",
+      "alignment": "strong|moderate|weak",
+      "evidence": "Spesifik örnek/cevap",
+      "growth_potential": "high|medium|low"
+    }}
+  ],
+  "motivation_drivers": ["Temel motivasyon faktörleri"],
+  "potential_concerns": ["Kültürel uyum endişeleri"],
+  "confidence": 0.75
+}}
+
+MÜLAKAT TRANSKRİPTİ:
+{transcript_text[:5000]}"""
+
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    
+    try:
+        results = {}
+        
+        # Execute all passes in parallel for efficiency
+        import asyncio
+        
+        async def run_pass(prompt_name: str, prompt: str):
+            body = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"}
+            }
+            
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                import json as _json
+                return prompt_name, _json.loads(data["choices"][0]["message"]["content"])
+        
+        # Run all passes concurrently
+        tasks = [
+            run_pass("technical", technical_prompt),
+            run_pass("behavioral", behavioral_prompt), 
+            run_pass("cultural", cultural_prompt)
+        ]
+        
+        pass_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Collect successful results
+        for result in pass_results:
+            if isinstance(result, tuple):
+                pass_name, pass_data = result
+                results[pass_name] = pass_data
+        
+        # Synthesize final comprehensive result
+        synthesis = {
+            "multipass_analysis": results,
+            "overall_scores": {
+                "technical": results.get("technical", {}).get("technical_score", 0.5),
+                "behavioral": results.get("behavioral", {}).get("communication_score", 0.5), 
+                "cultural": results.get("cultural", {}).get("cultural_fit_score", 0.5)
+            },
+            "evidence_summary": {
+                "technical_evidence": results.get("technical", {}).get("evidence_items", []),
+                "behavioral_evidence": results.get("behavioral", {}).get("behavioral_evidence", []),
+                "cultural_evidence": results.get("cultural", {}).get("cultural_indicators", [])
+            },
+            "aggregate_confidence": sum([
+                results.get("technical", {}).get("confidence", 0.5),
+                results.get("behavioral", {}).get("confidence", 0.5), 
+                results.get("cultural", {}).get("confidence", 0.5)
+            ]) / 3,
+            "analysis_completeness": len(results) / 3  # How many passes succeeded
+        }
+        
+        return synthesis
+        
+    except Exception:
+        return {}
 
 
 # --- Job requirements extraction (normalize spec from Turkish job description) ---

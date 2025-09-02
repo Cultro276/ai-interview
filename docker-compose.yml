@@ -18,6 +18,8 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - ./apps/api/.env
+    environment:
+      - ENCRYPTION_MASTER_KEY=iwWlsYVwbcm9S6CjILJEsDmn8DHkxKvo
     volumes:
       - ./apps/api:/app
     depends_on:

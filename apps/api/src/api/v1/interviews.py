@@ -239,7 +239,27 @@ async def get_interview_by_token(token: str, session: AsyncSession = Depends(get
         session.add(interview)
         await session.commit()
         await session.refresh(interview)
-    return interview
+    
+    # Get company name from user
+    user = (await session.execute(select(User).where(User.id == cand.user_id))).scalar_one_or_none()
+    company_name = user.company_name if user else None
+    
+    # Return interview with company name
+    interview_dict = {
+        "id": interview.id,
+        "job_id": interview.job_id,
+        "candidate_id": interview.candidate_id,
+        "status": interview.status,
+        "created_at": interview.created_at,
+        "audio_url": interview.audio_url,
+        "video_url": interview.video_url,
+        "completed_at": interview.completed_at,
+        "completed_ip": interview.completed_ip,
+        "prepared_first_question": interview.prepared_first_question,
+        "company_name": company_name
+    }
+    
+    return InterviewRead(**interview_dict)
 
 
 class MediaDownloadResponse(BaseModel):

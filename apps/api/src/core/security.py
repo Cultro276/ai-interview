@@ -311,6 +311,17 @@ class EnterpriseRateLimiter(BaseHTTPMiddleware):
         
         # Check rate limit
         if not self.store.is_allowed(rate_key, limit, window):
+            # Minimal security logging for rate limit events
+            try:
+                SecurityAuditLogger.log_security_event(
+                    event_type="rate_limit_exceeded",
+                    severity="LOW",
+                    details={"path": path, "limit": limit, "window": window},
+                    ip_address=client_ip,
+                    user_id=None,
+                )
+            except Exception:
+                pass
             from fastapi import HTTPException
             raise HTTPException(
                 status_code=429,

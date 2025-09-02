@@ -148,12 +148,13 @@ class InterviewRead(BaseModel):
     completed_at: Optional[datetime] = None
     completed_ip: Optional[str] = None
     prepared_first_question: Optional[str] = None
+    company_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
 
 class InterviewStatusUpdate(BaseModel):
-    status: str = Field(..., pattern="^(pending|completed)$")
+    status: str = Field(..., pattern="^(pending|completed|canceled)$")
 
 
 # --- Media upload ---

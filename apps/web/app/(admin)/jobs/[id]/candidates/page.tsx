@@ -26,8 +26,7 @@ import {
   EmptyState,
   Skeleton
 } from "@/components/ui";
-import { EvidenceBasedReport } from "@/components/reports/EvidenceBasedReport";
-import { CompetencyRadar } from "@/components/reports/CompetencyRadar";
+import { ExportSystem } from "@/components/analytics/ExportSystem";
 
 export default function JobCandidatesPage() {
   const params = useParams();
@@ -281,11 +280,153 @@ export default function JobCandidatesPage() {
   // (removed duplicate TranscriptBlock definition)
   // Scorecard UI kaldırıldı
 
-  const exportReportPdf = () => {
-    // Simple client-side print for now; can be replaced with server-side Puppeteer
+  const exportReportPdf = async (candidateId: number) => {
     try {
-      window.print();
-    } catch {}
+      setReportLoading(true);
+      // Get the interview ID for this candidate
+      const interview = findLatestInterview(candidateId);
+      if (!interview?.id) {
+        toastError('Bu aday için mülakat bulunamadı');
+        return;
+      }
+      
+      // Use the ExportSystem to generate proper PDF with actual data
+      const response = await apiFetch(`/api/v1/conversations/reports/${interview.id}/export/pdf?template_type=executive_summary`);
+      
+      if (response && (response as any).content) {
+        // Create a proper PDF document with the report data
+        const reportData = (response as any).content;
+        
+        // Create a new window with formatted report content
+        const printWindow = window.open('', '_blank');
+        if (printWindow) {
+          printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Mülakat Raporu</title>
+              <meta charset="utf-8">
+              <style>
+                body { 
+                  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                  margin: 20px; 
+                  line-height: 1.6;
+                  color: #333;
+                }
+                .header { 
+                  border-bottom: 2px solid #e5e7eb; 
+                  padding-bottom: 20px; 
+                  margin-bottom: 30px; 
+                }
+                .section { 
+                  margin-bottom: 25px; 
+                  page-break-inside: avoid;
+                }
+                .section-title { 
+                  font-size: 18px; 
+                  font-weight: bold; 
+                  color: #1f2937; 
+                  margin-bottom: 10px;
+                  border-left: 4px solid #3b82f6;
+                  padding-left: 10px;
+                }
+                .metadata { 
+                  background: #f9fafb; 
+                  padding: 15px; 
+                  border-radius: 6px; 
+                  margin-bottom: 20px;
+                }
+                .score-grid {
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                  gap: 15px;
+                  margin: 20px 0;
+                }
+                .score-item {
+                  background: #f0f9ff;
+                  padding: 12px;
+                  border-radius: 6px;
+                  border-left: 3px solid #0ea5e9;
+                }
+                @media print {
+                  body { margin: 0; }
+                  .no-print { display: none; }
+                }
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <h1>Mülakat Analiz Raporu</h1>
+                <div class="metadata">
+                  <p><strong>Aday:</strong> ${reportData.metadata?.candidate_name || 'Bilinmiyor'}</p>
+                  <p><strong>Pozisyon:</strong> ${reportData.metadata?.position || 'Bilinmiyor'}</p>
+                  <p><strong>Mülakat Tarihi:</strong> ${reportData.metadata?.interview_date ? new Date(reportData.metadata.interview_date).toLocaleDateString('tr-TR') : 'Bilinmiyor'}</p>
+                  <p><strong>Rapor Oluşturma:</strong> ${new Date().toLocaleDateString('tr-TR')}</p>
+                </div>
+              </div>
+              
+              ${reportData.content?.executive_summary ? `
+                <div class="section">
+                  <div class="section-title">Yönetici Özeti</div>
+                  <p>${reportData.content.executive_summary.replace(/\n/g, '<br>')}</p>
+                </div>
+              ` : ''}
+              
+              ${reportData.scoring ? `
+                <div class="section">
+                  <div class="section-title">Puanlama Özeti</div>
+                  <div class="score-grid">
+                    ${Object.entries(reportData.scoring).map(([key, value]) => `
+                      <div class="score-item">
+                        <strong>${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</strong><br>
+                        ${typeof value === 'number' ? Math.round(value * 100) + '%' : value}
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+              
+              ${reportData.content?.key_findings ? `
+                <div class="section">
+                  <div class="section-title">Ana Bulgular</div>
+                  <ul>
+                    ${reportData.content.key_findings.map((finding: string) => `<li>${finding}</li>`).join('')}
+                  </ul>
+                </div>
+              ` : ''}
+              
+              ${reportData.recommendations?.immediate_actions ? `
+                <div class="section">
+                  <div class="section-title">Öneriler</div>
+                  <ul>
+                    ${reportData.recommendations.immediate_actions.map((action: string) => `<li>${action}</li>`).join('')}
+                  </ul>
+                </div>
+              ` : ''}
+              
+              <div class="no-print" style="margin-top: 30px; text-align: center;">
+                <button onclick="window.print()" style="background: #3b82f6; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;">PDF Olarak İndir</button>
+                <button onclick="window.close()" style="background: #6b7280; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; margin-left: 10px;">Kapat</button>
+              </div>
+            </body>
+            </html>
+          `);
+          printWindow.document.close();
+          
+          // Auto-print after a short delay to allow content to load
+          setTimeout(() => {
+            printWindow.print();
+          }, 500);
+        }
+      } else {
+        toastError('Rapor verileri alınamadı');
+      }
+    } catch (error) {
+      console.error('PDF export error:', error);
+      toastError('PDF oluşturulurken hata oluştu');
+    } finally {
+      setReportLoading(false);
+    }
   };
 
   const onUpload = async () => {
@@ -806,10 +947,10 @@ export default function JobCandidatesPage() {
                 {(() => {
                   const it: any = findLatestInterview(c.id);
                   const status = it?.status || "—";
-                  const statusTr = status === "completed" ? "Tamamlandı" : status === "pending" ? "Bekliyor" : status === "invalid" ? "Geçersiz" : status;
+                  const statusTr = status === "completed" ? "Tamamlandı" : status === "pending" ? "Bekliyor" : status === "canceled" ? "İptal Edildi" : status === "invalid" ? "Geçersiz" : status;
                   const dur = it?.completed_at ? formatDuration(it?.created_at, it?.completed_at) : "—";
                   const last = it?.completed_at || it?.created_at || null;
-                  const badgeColor = status === "completed" ? "bg-emerald-100 text-emerald-700" : status === "pending" ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-600";
+                  const badgeColor = status === "completed" ? "bg-emerald-100 text-emerald-700" : status === "pending" ? "bg-amber-100 text-amber-700" : status === "canceled" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600";
                   return (
                     <>
                       <td className="px-6 py-4 whitespace-nowrap text-xs"><span className={`px-2 py-1 rounded ${badgeColor}`}>{statusTr}</span></td>
@@ -881,7 +1022,12 @@ export default function JobCandidatesPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end mb-2 print:hidden">
-            <Button variant="outline" onClick={exportReportPdf}>PDF Olarak Kaydet</Button>
+            <Button variant="outline" onClick={() => {
+              // Find candidate ID from the current interview
+              const interview = interviews.find(i => i.id === reportInterviewId);
+              const candidateId = interview?.candidate_id || 0;
+              exportReportPdf(candidateId);
+            }}>PDF Olarak Kaydet</Button>
           </div>
           {reportLoading ? (
             <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
@@ -1162,7 +1308,9 @@ export default function JobCandidatesPage() {
                                         <div key={i} className="text-sm">
                                           <div className="flex items-center justify-between">
                                             <span className="font-medium">{r.label}</span>
-                                            <span className={`${r.meets==='yes'?'bg-emerald-100 text-emerald-700':r.meets==='partial'?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'} text-xs px-2 py-0.5 rounded-full`}>{r.meets}</span>
+                                            <span className={`${r.meets==='yes'?'bg-emerald-100 text-emerald-700':r.meets==='partial'?'bg-amber-100 text-amber-700':r.meets==='neither'?'bg-gray-100 text-gray-700':'bg-rose-100 text-rose-700'} text-xs px-2 py-0.5 rounded-full`}>
+                                              {r.meets==='yes' ? 'evet' : r.meets==='partial' ? 'kısmen' : r.meets==='neither' ? 'belirsiz' : 'hayır'}
+                                            </span>
                                           </div>
                                           {r.evidence && <div className="text-xs text-gray-600 mt-1">{r.evidence}</div>}
                                         </div>
@@ -1224,172 +1372,331 @@ export default function JobCandidatesPage() {
           ) : (
             <div className="py-6 text-sm text-gray-500">Rapor bulunamadı</div>
           )}
-          {/* Competency Radar Chart */}
-          {reportInterviewId && reportLoading === false && (
-            <div className="mt-8 bg-white p-6 rounded-xl border border-gray-200">
-              <CompetencyRadar
-                competencies={[
-                  {
-                    competency: "Teknik Uzmanlık",
-                    score: 85,
-                    benchmark: 75,
-                    level: "proficient"
-                  },
-                  {
-                    competency: "Problem Çözme",
-                    score: 92,
-                    benchmark: 70,
-                    level: "expert"
-                  },
-                  {
-                    competency: "İletişim",
-                    score: 78,
-                    benchmark: 80,
-                    level: "proficient"
-                  },
-                  {
-                    competency: "Liderlik",
-                    score: 65,
-                    benchmark: 60,
-                    level: "basic"
-                  },
-                  {
-                    competency: "Adaptasyon",
-                    score: 88,
-                    benchmark: 65,
-                    level: "expert"
-                  },
-                  {
-                    competency: "Ekip Çalışması",
-                    score: 82,
-                    benchmark: 75,
-                    level: "proficient"
-                  }
-                ]}
-                candidateName="Aday"
-                showBenchmark={true}
-              />
-            </div>
-          )}
-
-          {/* Onboarding Recommendations */}
-          {reportInterviewId && reportLoading === false && (
-            <div className="mt-8 bg-gradient-to-r from-green-50 to-emerald-50 p-6 rounded-xl border border-green-200">
-              <h3 className="text-xl font-semibold text-gray-900 mb-6 flex items-center gap-2">
-                🚀 İşe Alım ve Onboarding Önerileri
-              </h3>
+          {/* Competency Radar Chart - Backend Generated */}
+          {(() => {
+            try {
+              const radarData = reportAnalysis?.comprehensive_report?.visualization_data?.competency_radar;
+              if (!radarData?.competencies?.length) return null;
               
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Hiring Decision */}
-                <div className="bg-white p-5 rounded-lg border border-green-300">
-                  <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    ✅ İşe Alım Kararı
-                  </h4>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between p-3 bg-green-100 rounded-lg">
-                      <span className="font-medium text-green-800">Öneri:</span>
-                      <span className="text-lg font-bold text-green-700">İşe Al</span>
-                    </div>
-                    <div className="text-sm text-gray-700">
-                      <p><strong>Güçlü Yönler:</strong></p>
-                      <ul className="list-disc list-inside mt-1 space-y-1">
-                        <li>Teknik problem çözme becerisi mükemmel</li>
-                        <li>Adaptasyon kabiliyeti benchmark'ın üstünde</li>
-                        <li>Öğrenme motivasyonu yüksek</li>
-                      </ul>
-                    </div>
-                    <div className="text-sm text-gray-700">
-                      <p><strong>Gelişim Alanları:</strong></p>
-                      <ul className="list-disc list-inside mt-1 space-y-1">
-                        <li>Liderlik becerilerinde mentörlük gerekiyor</li>
-                        <li>Sunum becerilerinde gelişim fırsatı</li>
-                      </ul>
+              return (
+                <div className="mt-8 bg-white p-6 rounded-xl border border-gray-200">
+                  <h3 className="text-xl font-semibold text-gray-900 mb-6">{radarData.title}</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                    {radarData.competencies.map((comp: any, index: number) => (
+                      <div key={index} className="text-center p-4 bg-gray-50 rounded-lg">
+                        <div className="relative w-16 h-16 mx-auto mb-3">
+                          <svg className="w-16 h-16 transform -rotate-90" viewBox="0 0 36 36">
+                            <path className="text-gray-200" strokeWidth="4" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                            <path className={`${comp.level === 'expert' ? 'text-purple-500' : comp.level === 'proficient' ? 'text-blue-500' : comp.level === 'basic' ? 'text-yellow-500' : 'text-gray-400'}`} strokeWidth="4" strokeDasharray={`${comp.score}, 100`} strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                          </svg>
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-sm font-bold text-gray-900">{comp.score}</span>
+                          </div>
+                        </div>
+                        <h4 className="font-medium text-sm text-gray-800">{comp.competency}</h4>
+                        <span className={`text-xs px-2 py-1 rounded-full mt-1 inline-block ${
+                          comp.level === 'expert' ? 'bg-purple-100 text-purple-800' :
+                          comp.level === 'proficient' ? 'bg-blue-100 text-blue-800' :
+                          comp.level === 'basic' ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {comp.level === 'expert' ? 'Uzman' : comp.level === 'proficient' ? 'Yetkin' : comp.level === 'basic' ? 'Temel' : 'Yok'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex justify-center">
+                    <div className="text-xs text-gray-500">
+                      Benchmark: {radarData.competencies[0]?.benchmark || 70}% | 
+                      Toplam {radarData.competencies.length} yetkinlik değerlendirildi
                     </div>
                   </div>
                 </div>
+              );
+            } catch { return null; }
+          })()}
 
-                {/* Onboarding Plan */}
-                <div className="bg-white p-5 rounded-lg border border-green-300">
-                  <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    📋 Onboarding Planı
-                  </h4>
-                  <div className="space-y-4">
-                    <div>
-                      <h5 className="font-medium text-gray-700 mb-2">İlk 30 Gün</h5>
-                      <ul className="text-sm text-gray-600 space-y-1">
-                        <li>• Teknik ekiple tanışma ve proje briefingleri</li>
-                        <li>• Kod tabanı incelemeleri ve pair programming</li>
-                        <li>• İletişim becerileri atölyesi</li>
-                      </ul>
+          {/* Onboarding Recommendations - Backend Generated */}
+          {(() => {
+            try {
+              if (!reportInterviewId || reportLoading || !reportAnalysis) return null;
+              
+              const hiringData = reportAnalysis?.comprehensive_report?.visualization_data?.hiring_decision;
+              if (!hiringData?.should_display) return null;
+              
+              return (
+                <div className="mt-8 bg-gradient-to-r from-green-50 to-emerald-50 p-6 rounded-xl border border-green-200">
+                  <h3 className="text-xl font-semibold text-gray-900 mb-6 flex items-center gap-2">
+                    🚀 İşe Alım ve Onboarding Önerileri
+                  </h3>
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Hiring Decision - Backend Generated */}
+                    <div className="bg-white p-5 rounded-lg border border-green-300">
+                      <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                        ✅ İşe Alım Kararı
+                      </h4>
+                      <div className="space-y-3">
+                        <div className={`flex items-center justify-between p-3 rounded-lg ${hiringData.hiring_recommendation.color_scheme.bg}`}>
+                          <span className="font-medium text-gray-800">Öneri:</span>
+                          <span className={`text-lg font-bold ${hiringData.hiring_recommendation.color_scheme.text}`}>
+                            {hiringData.hiring_recommendation.decision_label}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-600 text-center">
+                          Güven: %{Math.round((hiringData.hiring_recommendation.confidence || 0) * 100)}
+                        </div>
+                        
+                        {hiringData.key_strengths?.length > 0 && (
+                          <div className="text-sm text-gray-700">
+                            <p><strong>Güçlü Yönler:</strong></p>
+                            <ul className="list-disc list-inside mt-1 space-y-1">
+                              {hiringData.key_strengths.map((strength: string, i: number) => (
+                                <li key={i}>{strength}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        
+                        {hiringData.development_areas?.length > 0 && (
+                          <div className="text-sm text-gray-700">
+                            <p><strong>Gelişim Alanları:</strong></p>
+                            <ul className="list-disc list-inside mt-1 space-y-1">
+                              {hiringData.development_areas.map((area: string, i: number) => (
+                                <li key={i}>{area}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      <h5 className="font-medium text-gray-700 mb-2">30-90 Gün</h5>
-                      <ul className="text-sm text-gray-600 space-y-1">
-                        <li>• Küçük projelerde liderlik fırsatları</li>
-                        <li>• Mentor ataması (liderlik gelişimi)</li>
-                        <li>• Müşteri etkileşimi deneyimi</li>
-                      </ul>
-                    </div>
-                    <div>
-                      <h5 className="font-medium text-gray-700 mb-2">90+ Gün</h5>
-                      <ul className="text-sm text-gray-600 space-y-1">
-                        <li>• Takım liderliği rolü değerlendirmesi</li>
-                        <li>• Süreç iyileştirme projelerine katılım</li>
-                        <li>• Performans değerlendirmesi ve kariyer planlaması</li>
-                      </ul>
+
+                    {/* Onboarding Plan - Backend Generated */}
+                    <div className="bg-white p-5 rounded-lg border border-green-300">
+                      <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                        📋 Onboarding Planı
+                      </h4>
+                      <div className="space-y-4">
+                        {hiringData.onboarding_plan?.first_30_days && (
+                          <div>
+                            <h5 className="font-medium text-gray-700 mb-2">İlk 30 Gün</h5>
+                            <ul className="text-sm text-gray-600 space-y-1">
+                              {hiringData.onboarding_plan.first_30_days.map((item: string, i: number) => (
+                                <li key={i}>• {item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {hiringData.onboarding_plan?.["30_90_days"] && (
+                          <div>
+                            <h5 className="font-medium text-gray-700 mb-2">30-90 Gün</h5>
+                            <ul className="text-sm text-gray-600 space-y-1">
+                              {hiringData.onboarding_plan["30_90_days"].map((item: string, i: number) => (
+                                <li key={i}>• {item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {hiringData.onboarding_plan?.["90_plus_days"] && (
+                          <div>
+                            <h5 className="font-medium text-gray-700 mb-2">90+ Gün</h5>
+                            <ul className="text-sm text-gray-600 space-y-1">
+                              {hiringData.onboarding_plan["90_plus_days"].map((item: string, i: number) => (
+                                <li key={i}>• {item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Next Steps - Backend Generated */}
+                  {hiringData.next_steps?.length > 0 && (
+                    <div className="mt-6 bg-white p-5 rounded-lg border border-green-300">
+                      <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                        📋 Sonraki Adımlar
+                      </h4>
+                      <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        {hiringData.next_steps.map((step: string, i: number) => (
+                          <li key={i}>{step}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Risk Factors - Backend Generated */}
+                  {hiringData.risk_factors?.length > 0 && (
+                    <div className="mt-6 bg-amber-50 p-5 rounded-lg border border-amber-300">
+                      <h4 className="font-semibold text-amber-800 mb-4 flex items-center gap-2">
+                        ⚠️ Risk Faktörleri
+                      </h4>
+                      <ul className="list-disc list-inside text-sm text-amber-700 space-y-1">
+                        {hiringData.risk_factors.map((risk: string, i: number) => (
+                          <li key={i}>{risk}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Salary Analysis - Backend Generated */}
+                  {hiringData.salary_analysis && Object.keys(hiringData.salary_analysis).length > 0 && (
+                    <div className="mt-6 bg-blue-50 p-5 rounded-lg border border-blue-300">
+                      <h4 className="font-semibold text-blue-800 mb-4 flex items-center gap-2">
+                        💰 Maaş Analizi
+                      </h4>
+                      <div className="space-y-2 text-sm text-blue-700">
+                        {hiringData.salary_analysis.candidate_expectation && (
+                          <div><strong>Aday Beklentisi:</strong> {hiringData.salary_analysis.candidate_expectation === 'not_specified' ? 'Belirtilmedi' : hiringData.salary_analysis.candidate_expectation}</div>
+                        )}
+                        {hiringData.salary_analysis.recommended_range && (
+                          <div><strong>Önerilen Aralık:</strong> {hiringData.salary_analysis.recommended_range}</div>
+                        )}
+                        {hiringData.salary_analysis.negotiation_notes && (
+                          <div><strong>Müzakere Notları:</strong> {hiringData.salary_analysis.negotiation_notes}</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              );
+            } catch (e) {
+              console.error('Onboarding recommendations render error:', e);
+              return null;
+            }
+          })()}
 
-              {/* Additional Recommendations */}
-              <div className="mt-6 bg-white p-5 rounded-lg border border-green-300">
-                <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  💡 Ek Öneriler
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="text-center p-3 bg-blue-50 rounded-lg">
-                    <div className="text-2xl mb-2">📚</div>
-                    <h5 className="font-medium text-gray-800">Eğitim</h5>
-                    <p className="text-sm text-gray-600 mt-1">Liderlik ve iletişim eğitimleri</p>
+          {/* Evidence-Based Analysis - Backend Generated */}
+          {(() => {
+            try {
+              if (!reportInterviewId || reportLoading || !reportAnalysis) return null;
+              
+              const evidenceData = reportAnalysis?.comprehensive_report?.visualization_data?.evidence_based;
+              if (!evidenceData || (!evidenceData.evidence_items?.length && !evidenceData.behavioral_patterns?.length)) return null;
+              
+              return (
+                <div className="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-200">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+                      🔍 Kanıt Bazlı Değerlendirme
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <ExportSystem 
+                        interviewId={reportInterviewId}
+                        availableDataTypes={['reports', 'interviews']}
+                        className="text-sm"
+                      />
+                    </div>
                   </div>
-                  <div className="text-center p-3 bg-purple-50 rounded-lg">
-                    <div className="text-2xl mb-2">👥</div>
-                    <h5 className="font-medium text-gray-800">Mentor</h5>
-                    <p className="text-sm text-gray-600 mt-1">Deneyimli takım lideri ile eşleşme</p>
-                  </div>
-                  <div className="text-center p-3 bg-yellow-50 rounded-lg">
-                    <div className="text-2xl mb-2">🎯</div>
-                    <h5 className="font-medium text-gray-800">Hedefler</h5>
-                    <p className="text-sm text-gray-600 mt-1">3 aylık gelişim hedefleri belirleme</p>
-                  </div>
+                  
+                  {(!reportAnalysis || !(reportAnalysis?.model_used || "").toLowerCase().includes("llm-full")) ? (
+                    <div className="text-sm text-gray-600">{reportStatus || "Analiz kuyruğa alındı, tamamlanınca burada görünecek."}</div>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* Summary Stats */}
+                      {evidenceData.summary_stats && (
+                        <div className="grid grid-cols-3 gap-4 mb-6">
+                          <div className="bg-white p-4 rounded-lg border border-blue-200 text-center">
+                            <div className="text-2xl font-bold text-blue-600">{evidenceData.summary_stats.total_evidence_items}</div>
+                            <div className="text-sm text-gray-600">Toplam Kanıt</div>
+                          </div>
+                          <div className="bg-white p-4 rounded-lg border border-green-200 text-center">
+                            <div className="text-2xl font-bold text-green-600">{evidenceData.summary_stats.verified_claims}</div>
+                            <div className="text-sm text-gray-600">Doğrulanmış</div>
+                          </div>
+                          <div className="bg-white p-4 rounded-lg border border-purple-200 text-center">
+                            <div className="text-2xl font-bold text-purple-600">{evidenceData.summary_stats.high_confidence_items}</div>
+                            <div className="text-sm text-gray-600">Yüksek Güven</div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Evidence Items */}
+                      {evidenceData.evidence_items?.length > 0 && (
+                        <div>
+                          <h4 className="text-lg font-semibold text-gray-900 mb-4">🎯 İddia ve Kanıtlar</h4>
+                          <div className="space-y-3">
+                            {evidenceData.evidence_items.map((item: any, index: number) => (
+                              <div key={index} className="bg-white p-4 rounded-lg border border-gray-200">
+                                <div className="flex items-start justify-between mb-3">
+                                  <h5 className="font-medium text-gray-900">{item.claim}</h5>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-lg">
+                                      {item.verification_status === "verified" ? "✅" :
+                                       item.verification_status === "needs_verification" ? "❓" :
+                                       item.verification_status === "conflicting" ? "⚠️" : "🔍"}
+                                    </span>
+                                    <span className={`text-xs px-2 py-1 rounded-full ${
+                                      item.confidence_level >= 80 ? "text-green-600 bg-green-50" :
+                                      item.confidence_level >= 60 ? "text-yellow-600 bg-yellow-50" :
+                                      "text-red-600 bg-red-50"
+                                    }`}>
+                                      %{item.confidence_level}
+                                    </span>
+                                  </div>
+                                </div>
+                                {item.evidence_quotes?.length > 0 && (
+                                  <div className="mt-2">
+                                    <span className="text-sm font-medium text-gray-700">Destekleyici Kanıt:</span>
+                                    {item.evidence_quotes.map((quote: string, qIndex: number) => (
+                                      <div key={qIndex} className="mt-1 p-2 bg-blue-50 rounded text-sm text-blue-800 italic">
+                                        "{quote}"
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Behavioral Patterns */}
+                      {evidenceData.behavioral_patterns?.length > 0 && (
+                        <div>
+                          <h4 className="text-lg font-semibold text-gray-900 mb-4">📊 Davranış Kalıpları</h4>
+                          <div className="space-y-3">
+                            {evidenceData.behavioral_patterns.map((pattern: any, index: number) => (
+                              <div key={index} className={`bg-white p-4 rounded-lg border-l-4 ${
+                                pattern.impact === "positive" ? "border-l-green-500" :
+                                pattern.impact === "negative" ? "border-l-red-500" : "border-l-yellow-500"
+                              }`}>
+                                <div className="flex items-start justify-between mb-2">
+                                  <h5 className="font-medium text-gray-900">{pattern.pattern}</h5>
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-xs px-2 py-1 rounded-full ${
+                                      pattern.impact === "positive" ? "bg-green-100 text-green-800" :
+                                      pattern.impact === "negative" ? "bg-red-100 text-red-800" : "bg-yellow-100 text-yellow-800"
+                                    }`}>
+                                      {pattern.impact === "positive" ? "Olumlu" : 
+                                       pattern.impact === "negative" ? "Olumsuz" : "Nötr"}
+                                    </span>
+                                  </div>
+                                </div>
+                                {pattern.examples?.length > 0 && (
+                                  <div className="mt-2">
+                                    <span className="text-sm font-medium text-gray-700">Örnekler:</span>
+                                    {pattern.examples.map((example: string, eIndex: number) => (
+                                      <div key={eIndex} className="mt-1 p-2 bg-gray-50 rounded text-sm text-gray-700">
+                                        "{example}"
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Evidence-Based Analysis – use API result; remove mocks */}
-          {reportInterviewId && reportLoading === false && (
-            <div className="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-200">
-              <h3 className="text-xl font-semibold text-gray-900 mb-6 flex items-center gap-2">
-                🔍 Kanıt Bazlı Değerlendirme
-              </h3>
-              {(!reportAnalysis || !(reportAnalysis?.model_used || "").toLowerCase().includes("llm-full")) ? (
-                <div className="text-sm text-gray-600">{reportStatus || "Analiz kuyruğa alındı, tamamlanınca burada görünecek."}</div>
-              ) : (
-              <EvidenceBasedReport
-                evidence={(reportAnalysis?.job_fit?.requirements_matrix || []).map((it: any) => ({
-                  claim: it?.label || "",
-                  evidence_quotes: it?.evidence ? [String(it.evidence)] : [],
-                  confidence_level: it?.meets === 'yes' ? 90 : it?.meets === 'partial' ? 65 : 40,
-                  verification_status: it?.meets === 'yes' ? 'verified' : (it?.meets === 'partial' ? 'needs_verification' : 'conflicting')
-                }))}
-                behavioral_patterns={[]}
-                competency_evidence={[]}
-                transcript={(reportAnalysis?.transcript || '').trim()}
-              />)}
-            </div>
-          )}
+              );
+            } catch (e) {
+              console.error('Evidence-based analysis render error:', e);
+              return null;
+            }
+          })()}
 
           {/* Transcript toggle */}
           {reportInterviewId && (
@@ -1508,11 +1815,11 @@ export default function JobCandidatesPage() {
                 <Button onClick={loadCvSummary} disabled={cvSummaryLoading}>
                   {cvSummaryLoading ? "Özet çıkarılıyor…" : "CV Analiz Özeti"}
                 </Button>
-                {cvSummary && (
-                  <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                    {cvSummary.length > 600 ? (cvSummary.slice(0, 600) + "…") : cvSummary}
-                  </p>
-                )}
+                                 {cvSummary && (
+                   <div className="mt-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                     {cvSummary}
+                   </div>
+                 )}
               </div>
             </div>
           ) : (

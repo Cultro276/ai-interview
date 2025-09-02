@@ -219,7 +219,10 @@ async def tts_speak(req: TTSRequest):
                 "Cache-Control": "public, max-age=31536000",
                 "X-TTS-Provider": "elevenlabs",
             })
-        except Exception:
+        except Exception as e:
+            # Log ElevenLabs failure and continue to next provider
+            import logging
+            logging.warning(f"ElevenLabs TTS failed: {e}")
             pass
     # Then Azure Speech if configured
     if settings.azure_speech_key and settings.azure_speech_region:
@@ -260,12 +263,20 @@ async def tts_speak(req: TTSRequest):
                 "Cache-Control": "public, max-age=31536000",
                 "X-TTS-Provider": "azure",
             })
-        except Exception:
-            # fall through to gTTS
+        except Exception as e:
+            # Log Azure TTS failure and fall through to gTTS
+            import logging
+            logging.warning(f"Azure TTS failed: {e}")
             pass
 
     if not _TTS_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="TTS engine not available")
+        # Return empty audio response instead of error to prevent interview from getting stuck
+        empty_mp3 = b'\xff\xfb\x90\x00' + b'\x00' * 100  # Minimal valid MP3 header
+        return StreamingResponse(BytesIO(empty_mp3), media_type="audio/mpeg", headers={
+            "Content-Disposition": "inline; filename=silence.mp3",
+            "Cache-Control": "no-store",
+            "X-TTS-Provider": "fallback-silence",
+        })
     try:
         # If S3 available, cache by hash
         if settings.s3_bucket:
@@ -303,7 +314,15 @@ async def tts_speak(req: TTSRequest):
         headers["X-TTS-Provider"] = "gtts"
         return StreamingResponse(buf, media_type="audio/mpeg", headers=headers)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        # Return silent audio instead of error to prevent interview from getting stuck
+        import logging
+        logging.warning(f"TTS fallback failed: {e}")
+        empty_mp3 = b'\xff\xfb\x90\x00' + b'\x00' * 100  # Minimal valid MP3 header
+        return StreamingResponse(BytesIO(empty_mp3), media_type="audio/mpeg", headers={
+            "Content-Disposition": "inline; filename=silence.mp3",
+            "Cache-Control": "no-store",
+            "X-TTS-Provider": "error-fallback",
+        })
 
 
 

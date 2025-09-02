@@ -406,12 +406,13 @@ async def enrich_with_job_and_hr(
     session: AsyncSession,
     interview_id: int,
 ) -> None:
-    """Enrich analysis with HR criteria scores and job-fit summary."""
+    """Enhanced analysis with multi-pass evaluation and comprehensive reporting."""
     from sqlalchemy import select as _select
     from src.db.models.job import Job
     from src.db.models.candidate import Candidate
     from src.db.models.candidate_profile import CandidateProfile
-    from src.services.nlp import assess_hr_criteria, assess_job_fit, opinion_on_candidate
+    from src.services.nlp import assess_hr_criteria, assess_job_fit, opinion_on_candidate, analyze_interview_multipass
+    from src.services.reporting import InterviewReportGenerator
 
     interview = (
         await session.execute(_select(Interview).where(Interview.id == interview_id))
@@ -424,6 +425,7 @@ async def enrich_with_job_and_hr(
     job_desc = getattr(job, "description", None) or ""
 
     resume_text = ""
+    cand = None
     try:
         cand = (
             await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
@@ -436,6 +438,7 @@ async def enrich_with_job_and_hr(
                 resume_text = profile.resume_text
     except Exception:
         resume_text = ""
+        cand = None
 
     # Trim overly long transcripts for safety
     transcript_text = (interview.transcript_text or "")
@@ -459,14 +462,55 @@ async def enrich_with_job_and_hr(
     if not transcript_text.strip():
         return
 
+    # Enhanced multi-pass analysis
     hr = await assess_hr_criteria(transcript_text)
     fit = await assess_job_fit(job_desc, transcript_text, resume_text)
     op = await opinion_on_candidate(job_desc, transcript_text, resume_text)
+    
+    # New multi-pass comprehensive analysis
+    multipass = await analyze_interview_multipass(job_desc, transcript_text, resume_text)
+    
+    # Generate comprehensive report
+    report_generator = InterviewReportGenerator()
+    interview_data = {
+        "id": interview_id,
+        "candidate_name": getattr(cand, "name", "Unknown") if cand else "Unknown",
+        "job_title": getattr(job, "title", "Unknown"),
+        "created_at": interview.created_at.isoformat() if interview.created_at else ""
+    }
+    
+    analysis_results = {
+        "hr_criteria": hr,
+        "job_fit": fit,
+        "ai_opinion": op,
+        "multipass_analysis": multipass
+    }
+    
+    # Generate comprehensive report (store as JSON in technical_assessment)
+    comprehensive_report = report_generator.generate_comprehensive_report(
+        interview_data, 
+        analysis_results, 
+        template_type="executive_summary"
+    )
+    
+    # Generate all visualization data
+    competency_radar = report_generator.generate_competency_radar_data(analysis_results)
+    evidence_based = report_generator.generate_evidence_based_data(analysis_results)
+    hiring_decision = report_generator.generate_hiring_decision_data(analysis_results)
+    
+    # Add visualization data to comprehensive report
+    comprehensive_report["visualization_data"] = {
+        "competency_radar": competency_radar,
+        "evidence_based": evidence_based,
+        "hiring_decision": hiring_decision
+    }
 
     await merge_enrichment_into_analysis(session, interview_id, {
         "hr_criteria": hr,
         "job_fit": fit,
         "ai_opinion": op,
+        "multipass_analysis": multipass,
+        "comprehensive_report": comprehensive_report
     })
 
 

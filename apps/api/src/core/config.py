@@ -93,10 +93,55 @@ class Settings:
     def mail_from_name(self) -> str | None:
         return os.getenv("MAIL_FROM_NAME")
 
+    # Security & Secrets
+    @property
+    def environment(self) -> str:
+        return os.getenv("ENVIRONMENT", "development")
+
+    @property
+    def debug(self) -> bool:
+        return os.getenv("DEBUG", "false").lower() in {"1", "true", "yes"}
+
+    @property
+    def jwt_secret(self) -> str:
+        val = os.getenv("JWT_SECRET", "")
+        if self.environment == "production":
+            if len(val) < 32:
+                raise ValueError("JWT_SECRET must be set and at least 32 characters in production")
+        else:
+            if not val:
+                # Dev-safe default; DO NOT use in production
+                val = (os.getenv("DB_PASSWORD", "dev") + os.getenv("DB_USER", "dev")).ljust(32, "_")
+        return val
+
+    @property
+    def session_secret(self) -> str:
+        val = os.getenv("SESSION_SECRET", "")
+        if self.environment == "production" and len(val) < 32:
+            raise ValueError("SESSION_SECRET must be set and at least 32 characters in production")
+        return val or "dev-session-secret-please-change".ljust(32, "_")
+
+    @property
+    def encryption_master_key(self) -> str:
+        val = os.getenv("ENCRYPTION_MASTER_KEY", "")
+        if self.environment == "production" and len(val) < 32:
+            raise ValueError("ENCRYPTION_MASTER_KEY must be 32+ chars in production")
+        return val or "dev-encryption-master-key-please-change".ljust(32, "_")
+
     # Internal admin console
     @property
     def internal_admin_secret(self) -> str:
-        return os.getenv("INTERNAL_ADMIN_SECRET", "dev-internal-secret")
+        val = os.getenv("INTERNAL_ADMIN_SECRET", "dev-internal-secret")
+        if self.environment == "production" and len(val) < 32:
+            raise ValueError("INTERNAL_ADMIN_SECRET must be set and at least 32 characters in production")
+        return val
+
+    @property
+    def webhook_secret(self) -> str:
+        val = os.getenv("WEBHOOK_SECRET", "")
+        if self.environment == "production" and len(val) < 32:
+            raise ValueError("WEBHOOK_SECRET must be set and at least 32 characters in production")
+        return val or "dev-webhook-secret-change-in-production-secure-key".ljust(32, "_")
 
     # Interview thresholds (tunable via env)
     @property

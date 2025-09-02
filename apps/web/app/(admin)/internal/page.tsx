@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, Button, Input, Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui";
 
-type Tenant = { id: number; email: string; is_admin: boolean; is_active?: boolean; created_at: string };
+type Tenant = { id: number; email: string; is_admin: boolean; is_active?: boolean; created_at: string; company_name?: string };
 
 export default function InternalAdmin() {
   // Do not render in production unless the path is known; no link is provided anywhere.
@@ -24,8 +24,7 @@ export default function InternalAdmin() {
   const [creating, setCreating] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [companyName, setCompanyName] = useState("");
   // Activity filters/state
   const [actOwnerId, setActOwnerId] = useState<number | null>(null);
   const [actType, setActType] = useState<string>("all");
@@ -34,6 +33,10 @@ export default function InternalAdmin() {
   const [actQ, setActQ] = useState<string>("");
   const [actStart, setActStart] = useState<string>("");
   const [actEnd, setActEnd] = useState<string>("");
+  
+  // Company name editing state
+  const [editingTenant, setEditingTenant] = useState<number | null>(null);
+  const [editCompanyName, setEditCompanyName] = useState<string>("");
 
   const load = async () => {
     setLoading(true);
@@ -96,8 +99,8 @@ export default function InternalAdmin() {
   const createOwner = async () => {
     setCreating(true);
     try {
-      await apiFetch(`/api/v1/internal/tenant`, { method: "POST", body: JSON.stringify({ email, password, first_name: firstName || undefined, last_name: lastName || undefined }) });
-      setEmail(""); setPassword(""); setFirstName(""); setLastName("");
+      await apiFetch(`/api/v1/internal/tenant`, { method: "POST", body: JSON.stringify({ email, password, company_name: companyName || undefined }) });
+      setEmail(""); setPassword(""); setCompanyName("");
       await load();
     } catch (e:any) {
       alert(e.message || "Failed to create owner");
@@ -117,6 +120,30 @@ export default function InternalAdmin() {
       alert("Impersonated. Refreshing as owner...");
       window.location.href = "/dashboard";
     } catch {}
+  };
+  
+  const startEditCompany = (tenant: Tenant) => {
+    setEditingTenant(tenant.id);
+    setEditCompanyName(tenant.company_name || '');
+  };
+  
+  const saveCompanyName = async (ownerId: number) => {
+    try {
+      await apiFetch(`/api/v1/internal/tenant/${ownerId}`, { 
+        method: "PATCH", 
+        body: JSON.stringify({ company_name: editCompanyName || null }) 
+      });
+      setEditingTenant(null);
+      setEditCompanyName('');
+      await load();
+    } catch (e: any) {
+      alert(e.message || "Failed to update company name");
+    }
+  };
+  
+  const cancelEdit = () => {
+    setEditingTenant(null);
+    setEditCompanyName('');
   };
 
   return (
@@ -155,8 +182,7 @@ export default function InternalAdmin() {
           <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
             <Input placeholder="Sahip e‑postası" value={email} onChange={(e)=>setEmail(e.target.value)} />
             <Input placeholder="Geçici şifre" value={password} type="password" onChange={(e)=>setPassword(e.target.value)} />
-            <Input placeholder="Ad (opsiyonel)" value={firstName} onChange={(e)=>setFirstName(e.target.value)} />
-            <Input placeholder="Soyad (opsiyonel)" value={lastName} onChange={(e)=>setLastName(e.target.value)} />
+            <Input placeholder="Şirket Adı" value={companyName} onChange={(e)=>setCompanyName(e.target.value)} />
             <div>
               <Button onClick={createOwner} disabled={creating || !email || !password}>Sahip oluştur</Button>
             </div>
@@ -170,6 +196,7 @@ export default function InternalAdmin() {
                   <tr>
                     <th className="px-4 py-2 text-left">ID</th>
                     <th className="px-4 py-2 text-left">E‑posta</th>
+                    <th className="px-4 py-2 text-left">Şirket</th>
                     <th className="px-4 py-2 text-left">Sahip?</th>
                     <th className="px-4 py-2 text-left">Oluşturma</th>
                     <th className="px-4 py-2"></th>
@@ -180,6 +207,45 @@ export default function InternalAdmin() {
                     <tr key={t.id} className="border-b border-gray-200 dark:border-neutral-800">
                       <td className="px-4 py-3">{t.id}</td>
                       <td className="px-4 py-3">{t.email}</td>
+                      <td className="px-4 py-3">
+                        {editingTenant === t.id ? (
+                          <div className="flex items-center gap-2">
+                            <Input 
+                              value={editCompanyName} 
+                              onChange={(e) => setEditCompanyName(e.target.value)}
+                              placeholder="Şirket adı"
+                              className="h-8 text-sm"
+                            />
+                            <Button 
+                              size="sm" 
+                              onClick={() => saveCompanyName(t.id)}
+                              className="h-8 px-2"
+                            >
+                              ✓
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="ghost" 
+                              onClick={cancelEdit}
+                              className="h-8 px-2"
+                            >
+                              ✗
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm">{t.company_name || '—'}</span>
+                            <Button 
+                              size="sm" 
+                              variant="ghost" 
+                              onClick={() => startEditCompany(t)}
+                              className="h-6 px-1 text-xs"
+                            >
+                              ✏️
+                            </Button>
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3">{t.is_admin ? "Evet" : "Hayır"}</td>
                       <td className="px-4 py-3">{new Date(t.created_at).toLocaleString('tr-TR')}</td>
                       <td className="px-4 py-3 text-right space-x-2">

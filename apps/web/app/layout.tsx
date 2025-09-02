@@ -72,6 +72,34 @@ export default function RootLayout({
             </noscript>
           </>
         ) : null}
+        {process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === 'true' && !process.env.NEXT_PUBLIC_GTM_ID && process.env.NEXT_PUBLIC_GOOGLE_ANALYTICS_ID ? (
+          <>
+            <Script
+              src={`https://www.googletagmanager.com/gtag/js?id=${process.env.NEXT_PUBLIC_GOOGLE_ANALYTICS_ID}`}
+              strategy="afterInteractive"
+            />
+            <Script id="ga4-init" strategy="afterInteractive">
+              {`
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);} 
+                gtag('js', new Date());
+                gtag('config', '${process.env.NEXT_PUBLIC_GOOGLE_ANALYTICS_ID}');
+              `}
+            </Script>
+          </>
+        ) : null}
+        {process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === 'true' && process.env.NEXT_PUBLIC_MIXPANEL_TOKEN ? (
+          <>
+            <Script src="https://cdn.mxpnl.com/libs/mixpanel-2-latest.min.js" strategy="afterInteractive" />
+            <Script id="mixpanel-init" strategy="afterInteractive">
+              {`
+                if (window.mixpanel && window.mixpanel.init) {
+                  window.mixpanel.init('${process.env.NEXT_PUBLIC_MIXPANEL_TOKEN}', { debug: false, track_pageview: true });
+                }
+              `}
+            </Script>
+          </>
+        ) : null}
         {/* JSON-LD Organization & SoftwareApplication */}
         <script
           type="application/ld+json"

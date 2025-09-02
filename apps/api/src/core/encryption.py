@@ -12,6 +12,7 @@ import base64
 import os
 from typing import Optional
 import logging
+from src.core.config import settings
 
 
 class EncryptionManager:
@@ -21,11 +22,8 @@ class EncryptionManager:
     """
     
     def __init__(self, master_key: Optional[str] = None):
-        self.master_key = master_key or os.getenv("ENCRYPTION_MASTER_KEY")
-        if not self.master_key:
-            # Generate a new key for development (store securely in production)
-            self.master_key = Fernet.generate_key().decode()
-            logging.warning("Generated new encryption key - store securely in production!")
+        # Prefer explicit arg, then env var, then app settings (which provides a stable dev default)
+        self.master_key = master_key or os.getenv("ENCRYPTION_MASTER_KEY") or settings.encryption_master_key
         
         self._cipher = None
     
@@ -81,8 +79,9 @@ class EncryptionManager:
             decrypted = cipher.decrypt(encrypted_data)
             return decrypted.decode('utf-8')
         except Exception as e:
+            # Soft-fail: log and return original value so upstream can sanitize/fallback
             logging.error(f"Decryption failed: {e}")
-            raise ValueError("Decryption failed")
+            return ciphertext
 
 
 # Global encryption manager instance

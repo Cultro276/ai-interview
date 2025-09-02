@@ -28,6 +28,8 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     can_manage_candidates: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
     can_view_interviews: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
     can_manage_members: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
+    # Company information for AI context
+    company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     
     # Relationships for RBAC (late import to avoid circular imports)
     # The relationship will be added by RBAC module during initialization
