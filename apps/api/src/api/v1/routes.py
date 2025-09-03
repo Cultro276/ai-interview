@@ -16,6 +16,7 @@ from .signals import router as signals_router
 from .team import router as team_router
 from .internal import router as internal_router
 from .enterprise import router as enterprise_router
+from .premium_interviews import router as premium_router
 from slowapi.util import get_remote_address
 from slowapi import Limiter
 from fastapi import Request
@@ -45,3 +46,4 @@ router.include_router(signals_router)
 router.include_router(team_router)
 router.include_router(internal_router)
 router.include_router(enterprise_router)
+router.include_router(premium_router)

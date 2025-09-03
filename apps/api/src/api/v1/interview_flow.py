@@ -82,8 +82,46 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     profile = (
                         await session.execute(select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
                     ).scalar_one_or_none()
+                    
+                    # First try to get resume_text from profile
                     if profile and profile.resume_text:
                         resume_text = profile.resume_text
+                    # If no resume_text but resume_url exists, try to parse on-demand
+                    elif cand.resume_url and cand.resume_url.strip():
+                        try:
+                            from src.core.s3 import generate_presigned_get_url
+                            from src.services.nlp import parse_resume_bytes
+                            from urllib.parse import urlparse
+                            import httpx
+                            
+                            def _to_key(url: str) -> str | None:
+                                if url.startswith("s3://"):
+                                    p = urlparse(url)
+                                    return p.path.lstrip("/")
+                                try:
+                                    p = urlparse(url)
+                                    return p.path.lstrip("/")
+                                except Exception:
+                                    return None
+                            
+                            key = _to_key(cand.resume_url)
+                            if key:
+                                presigned = generate_presigned_get_url(key, expires=180)
+                                async with httpx.AsyncClient(timeout=20.0) as client:
+                                    resp = await client.get(presigned)
+                                    if resp.status_code == 200:
+                                        parsed_text = parse_resume_bytes(resp.content, resp.headers.get("Content-Type"), cand.resume_url)
+                                        if parsed_text:
+                                            resume_text = parsed_text
+                                            # Cache for future use
+                                            if not profile:
+                                                profile = CandidateProfile(candidate_id=cand.id)
+                                                session.add(profile)
+                                                await session.flush()
+                                            profile.resume_text = parsed_text[:100000]
+                                            await session.commit()
+                        except Exception:
+                            pass
             except Exception:
                 resume_text = ""
 
@@ -100,6 +138,16 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
             try:
                 # Build a private context only for LLM guidance
                 private_ctx = (job_desc or "")
+                
+                # Add CV-Job relevance checking
+                try:
+                    from src.services.cv_job_matcher import generate_cv_aware_context
+                    cv_relevance_context = generate_cv_aware_context(resume_text or "", job_desc or "")
+                    if cv_relevance_context:
+                        private_ctx += "\n\n" + cv_relevance_context
+                except Exception:
+                    pass
+                
                 if resume_text:
                     # Provide full resume text to the LLM as hidden context
                     private_ctx += ("\n\nResume (full text):\n" + resume_text)
@@ -493,14 +541,30 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
     ).scalars().first()
     next_seq = (last.sequence_number if last else 0) + 1
     if text:
-        msg = ConversationMessage(
-            interview_id=body.interview_id,
-            role=DBMessageRole.USER,
-            content=text,
-            sequence_number=next_seq,
-        )
-        session.add(msg)
-        await session.commit()
+        # Check for existing message with same sequence number to avoid duplicates
+        existing_msg = (
+            await session.execute(
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.interview_id == body.interview_id,
+                    ConversationMessage.sequence_number == next_seq
+                )
+            )
+        ).scalars().first()
+        
+        if not existing_msg:
+            msg = ConversationMessage(
+                interview_id=body.interview_id,
+                role=DBMessageRole.USER,
+                content=text,
+                sequence_number=next_seq,
+            )
+            session.add(msg)
+            try:
+                await session.commit()
+            except Exception:
+                # If conflict occurs, rollback and continue
+                await session.rollback()
     else:
         # Reserve the sequence but do not persist empty content
         pass
@@ -716,19 +780,32 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 
                 if not existing_msg:
                     next_seq2 = (last2.sequence_number if last2 else 0) + 1
-                    session.add(
-                        ConversationMessage(
-                            interview_id=body.interview_id,
-                            role=DBMessageRole.ASSISTANT,
-                            content=result.question,
-                            sequence_number=next_seq2,
+                    
+                    # Double-check for sequence conflicts before inserting
+                    seq_conflict = (
+                        await session.execute(
+                            select(ConversationMessage)
+                            .where(
+                                ConversationMessage.interview_id == body.interview_id,
+                                ConversationMessage.sequence_number == next_seq2
+                            )
                         )
-                    )
-                    try:
-                        await session.commit()
-                    except Exception:
-                        # If there's still a conflict, rollback and continue
-                        await session.rollback()
+                    ).scalars().first()
+                    
+                    if not seq_conflict:
+                        session.add(
+                            ConversationMessage(
+                                interview_id=body.interview_id,
+                                role=DBMessageRole.ASSISTANT,
+                                content=result.question,
+                                sequence_number=next_seq2,
+                            )
+                        )
+                        try:
+                            await session.commit()
+                        except Exception:
+                            # If there's still a conflict, rollback and continue
+                            await session.rollback()
         except Exception:
             # Best-effort: do not fail the turn if persistence has a conflict
             try:

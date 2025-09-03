@@ -222,6 +222,19 @@ export default function JobCandidatesPage() {
   const openReportForCandidate = async (candId: number) => {
     const intId = findLatestInterviewId(candId);
     if (!intId) return toastError("Bu aday için mülakat bulunamadı");
+    
+    // Check interview status first
+    try {
+      const statusData = await apiFetch<any>(`/api/v1/interviews/${intId}/status`);
+      if (!statusData.is_completed) {
+        toastError("Rapor görüntülenebilmesi için mülakatın tamamlanması bekleniyor. Lütfen adayın mülakatı tamamlamasını bekleyin.");
+        return;
+      }
+    } catch (e: any) {
+      toastError("Mülakat durumu kontrol edilemedi: " + (e.message || "Bilinmeyen hata"));
+      return;
+    }
+    
     setReportInterviewId(intId);
     setReportLoading(true);
     setReportOpen(true);

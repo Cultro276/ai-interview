@@ -281,45 +281,22 @@ async def merge_enrichment_into_analysis(
 
 # --- LLM-based full analysis (job + resume + transcript) ---
 
-async def generate_llm_full_analysis(session: AsyncSession, interview_id: int) -> InterviewAnalysis:
-    """Generate a comprehensive LLM-based analysis using job description, resume text, and transcript.
-
-    Uses OpenAI via services.nlp helpers. Falls back to existing record if inputs are missing.
+async def generate_comprehensive_interview_analysis(session: AsyncSession, interview_id: int) -> InterviewAnalysis:
     """
-    from sqlalchemy import select as _select
-    from src.db.models.job import Job
-    from src.db.models.candidate import Candidate
-    from src.db.models.candidate_profile import CandidateProfile
-    from src.services.nlp import assess_hr_criteria, assess_job_fit, opinion_on_candidate
+    Generate comprehensive interview analysis using unified analyzers.
+    Replaces both generate_llm_full_analysis and enrich_with_job_and_hr with efficient implementation.
+    """
+    from src.services.interview_engine import InterviewEngine
+    from src.services.comprehensive_analyzer import comprehensive_interview_analysis
 
-    interview = (
-        await session.execute(_select(Interview).where(Interview.id == interview_id))
-    ).scalar_one_or_none()
-    if not interview:
-        raise ValueError("Interview not found")
+    # Load interview context using InterviewEngine
+    engine = InterviewEngine(session)
+    context = await engine.load_context(interview_id)
 
-    job = (
-        await session.execute(_select(Job).where(Job.id == interview.job_id))
-    ).scalar_one_or_none()
-    job_desc = (getattr(job, "description", None) or "").strip()
-
-    resume_text = ""
-    try:
-        cand = (
-            await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
-        ).scalar_one_or_none()
-        if cand:
-            profile = (
-                await session.execute(_select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
-            ).scalar_one_or_none()
-            if profile and profile.resume_text:
-                resume_text = profile.resume_text
-    except Exception:
-        resume_text = ""
-
-    # Assemble transcript text
-    transcript_text = (interview.transcript_text or "").strip()
-    if not transcript_text:
+    # Ensure we have minimum required data
+    if not context.transcript_text.strip():
+        # Try to build from conversation messages if transcript is empty
+        from sqlalchemy import select as _select
         msgs = (
             await session.execute(
                 _select(ConversationMessage)
@@ -329,43 +306,65 @@ async def generate_llm_full_analysis(session: AsyncSession, interview_id: int) -
         ).scalars().all()
         if msgs:
             def _prefix(m):
-                return ("Interviewer" if m.role.value == "assistant" else ("Candidate" if m.role.value == "user" else "System"))
-            transcript_text = "\n\n".join([f"{_prefix(m)}: {m.content.strip()}" for m in msgs if (m.content or "").strip()])
+                return ("Interviewer" if m.role.value == "assistant" 
+                       else "Candidate" if m.role.value == "user" 
+                       else "System")
+            context.transcript_text = "\n\n".join([
+                f"{_prefix(m)}: {m.content.strip()}" 
+                for m in msgs 
+                if (m.content or "").strip()
+            ])
 
-    # If inputs are partial, proceed with what we have (no rule-based fallback)
-    if not transcript_text.strip() and resume_text.strip():
-        # Use resume as proxy transcript for analysis
-        transcript_text = resume_text[:5000]
+    # Fallback: use resume as proxy transcript if still no transcript
+    if not context.transcript_text.strip() and context.resume_text.strip():
+        context.transcript_text = context.resume_text[:5000]
 
-    # Call LLM helpers
-    hr = await assess_hr_criteria(transcript_text)
-    fit = await assess_job_fit(job_desc, transcript_text, resume_text)
-    op = await opinion_on_candidate(job_desc, transcript_text, resume_text)
+    if not context.transcript_text.strip():
+        raise ValueError("No transcript or resume available for analysis")
 
-    # Derive simple overall score from HR criteria average if available; else 0
-    overall = None
-    try:
-        crit = hr.get("criteria", []) if isinstance(hr, dict) else []
-        if crit:
-            scores = [float(c.get("score_0_100", 0.0)) for c in crit if isinstance(c, dict)]
-            if scores:
-                overall = round(sum(scores) / len(scores), 2)
-    except Exception:
-        overall = None
+    # Trim overly long transcripts for performance
+    if len(context.transcript_text) > 50000:
+        context.transcript_text = context.transcript_text[:50000]
 
-    # Upsert
+    # Run comprehensive analysis using new unified analyzer
+    analysis_results = await comprehensive_interview_analysis(
+        job_desc=context.job_description,
+        transcript_text=context.transcript_text,
+        resume_text=context.resume_text,
+        candidate_name=context.candidate_name,
+        job_title=context.job_title
+    )
+
+    # Extract overall score from results
+    overall_score = analysis_results.get("meta", {}).get("overall_score")
+
+    # Extract summary from hiring decision
+    summary = ""
+    hiring_decision = analysis_results.get("hiring_decision", {})
+    if isinstance(hiring_decision, dict):
+        summary = str(hiring_decision.get("overall_assessment", ""))[:2000]
+
+    # Also try job_fit summary as fallback
+    if not summary:
+        job_fit = analysis_results.get("job_fit", {})
+        if isinstance(job_fit, dict):
+            summary = str(job_fit.get("job_fit_summary", ""))[:2000]
+
+    # Upsert analysis record
     existing = (
         await session.execute(
             select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id)
         )
     ).scalar_one_or_none()
+    
     import json
-    blob = {"hr_criteria": hr, "job_fit": fit, "ai_opinion": op}
+    
     if existing:
-        if overall is not None:
-            existing.overall_score = overall
-        existing.summary = (fit.get("job_fit_summary") if isinstance(fit, dict) else None) or existing.summary
-        existing.model_used = "llm-full-v1"
+        existing.overall_score = overall_score
+        existing.summary = summary or existing.summary
+        existing.model_used = "comprehensive-v1"
+        
+        # Merge with existing technical assessment
         try:
             base = {}
             if existing.technical_assessment:
@@ -373,145 +372,56 @@ async def generate_llm_full_analysis(session: AsyncSession, interview_id: int) -
                     base = json.loads(existing.technical_assessment)
                 except Exception:
                     base = {}
-            base.update(blob)
+            base.update(analysis_results)
             existing.technical_assessment = json.dumps(base, ensure_ascii=False)
         except Exception:
-            pass
-        await session.commit()
-        await session.refresh(existing)
-        return existing
+            existing.technical_assessment = json.dumps(analysis_results, ensure_ascii=False)
     else:
         analysis = InterviewAnalysis(
             interview_id=interview_id,
-            overall_score=overall,
-            summary=(fit.get("job_fit_summary") if isinstance(fit, dict) else None),
+            overall_score=overall_score,
+            summary=summary,
             strengths=None,
             weaknesses=None,
             communication_score=None,
             technical_score=None,
             cultural_fit_score=None,
-            model_used="llm-full-v1",
+            model_used="comprehensive-v1",
         )
         try:
-            analysis.technical_assessment = json.dumps(blob, ensure_ascii=False)
+            analysis.technical_assessment = json.dumps(analysis_results, ensure_ascii=False)
         except Exception:
             pass
         session.add(analysis)
-        await session.commit()
-        await session.refresh(analysis)
-        return analysis
+        existing = analysis
+
+    await session.commit()
+    await session.refresh(existing)
+    
+    return existing
+
+
+async def generate_llm_full_analysis(session: AsyncSession, interview_id: int) -> InterviewAnalysis:
+    """
+    DEPRECATED: Use generate_comprehensive_interview_analysis instead.
+    Maintained for backward compatibility with existing API endpoints.
+    """
+    return await generate_comprehensive_interview_analysis(session, interview_id)
 
 
 async def enrich_with_job_and_hr(
     session: AsyncSession,
     interview_id: int,
 ) -> None:
-    """Enhanced analysis with multi-pass evaluation and comprehensive reporting."""
-    from sqlalchemy import select as _select
-    from src.db.models.job import Job
-    from src.db.models.candidate import Candidate
-    from src.db.models.candidate_profile import CandidateProfile
-    from src.services.nlp import assess_hr_criteria, assess_job_fit, opinion_on_candidate, analyze_interview_multipass
-    from src.services.reporting import InterviewReportGenerator
-
-    interview = (
-        await session.execute(_select(Interview).where(Interview.id == interview_id))
-    ).scalar_one_or_none()
-    if not interview:
-        return
-    job = (
-        await session.execute(_select(Job).where(Job.id == interview.job_id))
-    ).scalar_one_or_none()
-    job_desc = getattr(job, "description", None) or ""
-
-    resume_text = ""
-    cand = None
+    """
+    DEPRECATED: Use generate_comprehensive_interview_analysis instead.
+    Maintained for backward compatibility only.
+    """
     try:
-        cand = (
-            await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
-        ).scalar_one_or_none()
-        if cand:
-            profile = (
-                await session.execute(_select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
-            ).scalar_one_or_none()
-            if profile and profile.resume_text:
-                resume_text = profile.resume_text
+        await generate_comprehensive_interview_analysis(session, interview_id)
     except Exception:
-        resume_text = ""
-        cand = None
-
-    # Trim overly long transcripts for safety
-    transcript_text = (interview.transcript_text or "")
-    if len(transcript_text) > 50000:
-        transcript_text = transcript_text[:50000]
-    if not transcript_text.strip():
-        # Fallback to assembling from conversation messages (assistant + user)
-        msgs = (
-            await session.execute(
-                _select(ConversationMessage)
-                .where(ConversationMessage.interview_id == interview_id)
-                .order_by(ConversationMessage.sequence_number)
-            )
-        ).scalars().all()
-        if msgs:
-            def _prefix(m):
-                return ("Interviewer" if m.role.value == "assistant" else ("Candidate" if m.role.value == "user" else "System"))
-            transcript_text = "\n\n".join(
-                [f"{_prefix(m)}: {m.content.strip()}" for m in msgs if (m.content or "").strip()]
-            )
-    if not transcript_text.strip():
-        return
-
-    # Enhanced multi-pass analysis
-    hr = await assess_hr_criteria(transcript_text)
-    fit = await assess_job_fit(job_desc, transcript_text, resume_text)
-    op = await opinion_on_candidate(job_desc, transcript_text, resume_text)
-    
-    # New multi-pass comprehensive analysis
-    multipass = await analyze_interview_multipass(job_desc, transcript_text, resume_text)
-    
-    # Generate comprehensive report
-    report_generator = InterviewReportGenerator()
-    interview_data = {
-        "id": interview_id,
-        "candidate_name": getattr(cand, "name", "Unknown") if cand else "Unknown",
-        "job_title": getattr(job, "title", "Unknown"),
-        "created_at": interview.created_at.isoformat() if interview.created_at else ""
-    }
-    
-    analysis_results = {
-        "hr_criteria": hr,
-        "job_fit": fit,
-        "ai_opinion": op,
-        "multipass_analysis": multipass
-    }
-    
-    # Generate comprehensive report (store as JSON in technical_assessment)
-    comprehensive_report = report_generator.generate_comprehensive_report(
-        interview_data, 
-        analysis_results, 
-        template_type="executive_summary"
-    )
-    
-    # Generate all visualization data
-    competency_radar = report_generator.generate_competency_radar_data(analysis_results)
-    evidence_based = report_generator.generate_evidence_based_data(analysis_results)
-    hiring_decision = report_generator.generate_hiring_decision_data(analysis_results)
-    
-    # Add visualization data to comprehensive report
-    comprehensive_report["visualization_data"] = {
-        "competency_radar": competency_radar,
-        "evidence_based": evidence_based,
-        "hiring_decision": hiring_decision
-    }
-
-    await merge_enrichment_into_analysis(session, interview_id, {
-        "hr_criteria": hr,
-        "job_fit": fit,
-        "ai_opinion": op,
-        "multipass_analysis": multipass,
-        "comprehensive_report": comprehensive_report
-    })
+        # Fallback to ensure no complete failure
+        pass
 
 
 # --- Pre-interview dialog planning (CV + Job) ---

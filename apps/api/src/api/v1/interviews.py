@@ -331,6 +331,36 @@ async def update_status(
     return interview
 
 
+@router.get("/{int_id}/status")
+async def get_interview_status(
+    int_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Get interview status and completion information."""
+    # Ensure ownership
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    interview = (
+        await session.execute(
+            select(Interview)
+            .join(Job, Interview.job_id == Job.id)
+            .where(Interview.id == int_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    
+    return {
+        "interview_id": int_id,
+        "status": interview.status,
+        "completed_at": interview.completed_at,
+        "is_completed": interview.status == "completed",
+        "has_media": bool(interview.audio_url or interview.video_url),
+        "has_transcript": bool(interview.transcript_text),
+    }
+
+
 # --- Candidate uploads media URLs (audio / video) ---
 
 

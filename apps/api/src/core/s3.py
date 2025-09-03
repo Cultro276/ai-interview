@@ -105,7 +105,12 @@ def move_object(source_key: str, dest_key: str) -> str:
             )
             logger.info("[S3 DELETE] Cleaned up temp file: %s", source_key)
         except Exception as del_error:
-            logger.warning("[S3 DELETE] Could not delete temp file %s: %s", source_key, del_error)
+            # Check if it's just a permission issue (which is expected and harmless)
+            error_str = str(del_error)
+            if "AccessDenied" in error_str and "s3:DeleteObject" in error_str:
+                logger.debug("[S3 DELETE] Temp file cleanup skipped due to permissions (expected): %s", source_key)
+            else:
+                logger.warning("[S3 DELETE] Could not delete temp file %s: %s", source_key, del_error)
             # Continue anyway - we have the file in the right place
         
         return new_url

@@ -3,13 +3,41 @@ from functools import lru_cache
 
 
 class Settings:
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables with validation."""
 
+    # Database settings
     db_user: str = os.getenv("DB_USER", "postgres")
-    db_password: str = os.getenv("DB_PASSWORD", "postgres")
+    db_password: str = os.getenv("DB_PASSWORD", "postgres") 
     db_host: str = os.getenv("DB_HOST", "postgres")
     db_port: str = os.getenv("DB_PORT", "5432")
     db_name: str = os.getenv("DB_NAME", "interview")
+    
+    # LLM Provider Configuration (NEW)
+    @property
+    def primary_llm_provider(self) -> str:
+        """Primary LLM provider: openai, gemini, or fallback"""
+        return os.getenv("PRIMARY_LLM_PROVIDER", "openai").lower()
+    
+    @property
+    def enable_llm_caching(self) -> bool:
+        """Enable LLM response caching"""
+        return os.getenv("ENABLE_LLM_CACHING", "true").lower() == "true"
+    
+    @property  
+    def llm_cache_ttl_hours(self) -> int:
+        """LLM cache TTL in hours"""
+        try:
+            return int(os.getenv("LLM_CACHE_TTL_HOURS", "1"))
+        except ValueError:
+            return 1
+    
+    @property
+    def max_parallel_llm_calls(self) -> int:
+        """Maximum parallel LLM calls"""
+        try:
+            return int(os.getenv("MAX_PARALLEL_LLM_CALLS", "5"))
+        except ValueError:
+            return 5
 
     aws_region: str = os.getenv("AWS_REGION", "us-east-1")
     aws_access_key_id: str | None = os.getenv("AWS_ACCESS_KEY_ID")

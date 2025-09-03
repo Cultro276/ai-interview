@@ -1,0 +1,10 @@
+[33mcdb6dea[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m feat: Major updates including new interview components, analytics improvements, and API enhancements
+[33m7f53caa[m chore: misc root/config updates
+[33m0b92947[m feat(web): major UI/UX updates and pages
+[33m1e01794[m feat(api): large updates across endpoints, models, services
+[33mc8ec6a1[m Interview: first-turn full context (job + full CV + extra questions); sliding-window memory (20 turns); stricter persona to avoid topic drift and repetition; server-side dedupe of assistant questions; frontend avoids double-saving assistant msg; add optional unique index migration (may be skipped on some PG setups)
+[33m2b8535d[m Interview: first-turn LLM gets full Job Description + full CV + full Extra Questions; subsequent turns use sliding window history only
+[33m63dfcd7[m Interview memory: keep last 20 turns; send full CV only for first question (reduce per-turn context cost)
+[33mbd3fa25[m Interview: feed full resume text to LLM context; remove keyword/project/tech injections; expand LLM context window
+[33m40f320f[m Jobs: add extra_questions; Admin UI field; Interview flow asks recruiter extra questions first; stronger self-finish cues and CV targeting
+[33m3c4ed1b[m chore: push
