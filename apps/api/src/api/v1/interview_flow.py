@@ -702,16 +702,33 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
             if last2 and getattr(last2.role, "value", str(last2.role)) == "assistant" and (last2.content or "").strip() == (result.question or "").strip():
                 pass
             else:
-                next_seq2 = (last2.sequence_number if last2 else 0) + 1
-                session.add(
-                    ConversationMessage(
-                        interview_id=body.interview_id,
-                        role=DBMessageRole.ASSISTANT,
-                        content=result.question,
-                        sequence_number=next_seq2,
+                # Check for existing message with same content (due to unique constraint)
+                existing_msg = (
+                    await session.execute(
+                        select(ConversationMessage)
+                        .where(
+                            ConversationMessage.interview_id == body.interview_id,
+                            ConversationMessage.role == DBMessageRole.ASSISTANT,
+                            ConversationMessage.content == result.question
+                        )
                     )
-                )
-                await session.commit()
+                ).scalars().first()
+                
+                if not existing_msg:
+                    next_seq2 = (last2.sequence_number if last2 else 0) + 1
+                    session.add(
+                        ConversationMessage(
+                            interview_id=body.interview_id,
+                            role=DBMessageRole.ASSISTANT,
+                            content=result.question,
+                            sequence_number=next_seq2,
+                        )
+                    )
+                    try:
+                        await session.commit()
+                    except Exception:
+                        # If there's still a conflict, rollback and continue
+                        await session.rollback()
         except Exception:
             # Best-effort: do not fail the turn if persistence has a conflict
             try:
