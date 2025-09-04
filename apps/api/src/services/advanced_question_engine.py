@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from src.services.llm_client import get_llm_client, LLMRequest
+from src.services.prompt_registry import generic_question_prompt, situational_prompt_base, build_role_guidance_block as PR_ROLE_BLOCK
 
 
 class QuestionType(str, Enum):
@@ -171,6 +172,55 @@ class AdvancedQuestionEngine:
         
         return competencies
     
+    def _build_situational_prompt(
+        self, 
+        industry: IndustryType, 
+        difficulty: DifficultyLevel,
+        job_description: str,
+        competencies: List[str],
+        conversation_history: List[Dict[str, Any]]
+    ) -> str:
+        """Build job-specific situational question prompt"""
+        return f"""Sen deneyimli bir İK uzmanısın. Aşağıdaki iş tanımını analiz et ve bu pozisyonda GERÇEKTEN yaşanabilecek spesifik durumu konu alan bir soru yaz.
+
+İŞ TANIMI:
+{job_description[:3000]}
+
+GÖREV: Bu işte çalışan birinin karşılaşacağı gerçekçi bir durum sorusu oluştur.
+
+ZORUNLU KURALLAR:
+1. Soru o işin GÜNLÜK GERÇEKLİĞİNDEN alınmalı (müşteri, takım, süreç, kriz durumları)
+2. Spesifik bir durumu betimle: "Bu pozisyonda [somut durum açıklaması]. Bu durumda nasıl hareket edersiniz?"
+3. Durum o sektör ve pozisyona özel olmalı (genel değil, özel!)
+4. Hedef yetkinlik test etsin: {', '.join(competencies)}
+
+YASAKLI SORULAR:
+❌ "Hangi iletişim yöntemlerini kullanırsınız?" (çok genel)
+❌ "E-posta dışında hangi araçları tercih edersiniz?" (anlamsız)
+❌ "Takım çalışması deneyiminiz nedir?" (özgeçmiş sorusu)
+❌ "Problem çözme yaklaşımınızı anlatın" (teorik)
+
+ÖRNEK KALİTE (Pozisyona göre):
+✅ Satış Danışmanı: "Müşteri beğendiği ürünün fiyatını çok yüksek bulduğunu belirtiyor ve mağazadan çıkmak istiyor. Bu durumda nasıl yaklaşırsınız?"
+✅ İK Uzmanı: "Şirketinize yeni katılan bir çalışan ilk haftasında takım arkadaşlarıyla uyum sorunu yaşıyor ve şikayet geliyor. Bu durumda nasıl müdahale edersiniz?"
+✅ Proje Yöneticisi: "Proje deadline'ına 1 hafta kala müşteriden major değişiklik talebi geliyor. Bu durumda nasıl yönetirsiniz?"
+
+JSON FORMAT:
+{{
+  "question": "Gerçekçi durum sorusu (Türkçe, spesifik, o işe özel)",
+  "context": "Bu sorunun test ettiği yetkinlikler ve STAR bileşenleri",
+  "follow_up_questions": [
+    "Bu durumda önceliğinizi nasıl belirlerdiniz?",
+    "Sonuçtan nasıl emin olurdunuz?",
+    "Bu yaklaşımınızın risklerini nasıl yönetirdiniz?"
+  ],
+  "evaluation_rubric": {{
+    "excellent": "Somut adımlar, risk analizi, sonuç odaklı yaklaşım",
+    "good": "Temel adımları bilme, uygun yaklaşım",
+    "poor": "Belirsiz cevap, adımları bilmeme"
+  }}
+}}"""
+
     async def _generate_smart_question(
         self, 
         question_type: QuestionType, 
@@ -182,66 +232,22 @@ class AdvancedQuestionEngine:
     ) -> GeneratedQuestion:
         """Generate a smart question using LLM that naturally extracts STAR components"""
         
-        # Build context for question generation
-        prompt = f"""Sen dünyaca ünlü bir mülakat uzmanısın. {industry.value} sektöründe, {difficulty.value} seviye için {question_type.value} tipinde bir mülakat sorusu oluştur.
-
-TEMEL PRENSIP: 
-- STAR metodunu adaya SÖYLEMEYECEKSİN
-- Sorun doğal olarak STAR bileşenlerini (Durum, Görev, Eylem, Sonuç) çıkaracak şekilde olmalı
-- Aday fark etmeden somut örnekler vermeye yönlendirilmeli
-
-CONTEXT:
-- Sektör: {industry.value}
-- Seviye: {difficulty.value} 
-- Soru tipi: {question_type.value}
-- Hedef yetkinlikler: {', '.join(competencies)}
-- Konuşma geçmişi: {len(conversation_history)} soru soruldu
-
-İŞ TANIMI (Referans için):
-{job_description[:2000]}
-
-SORU ÖZELLİKLERİ:
-1. Somut durum/proje sorulsun ("en zorlu", "en başarılı", "kritik bir durumda")
-2. Süreç ve eylemler doğal olarak çıksın ("nasıl çözdünüz", "ne yaptınız", "hangi adımları")
-3. Sonuçlar ve öğrenmeler sorulsun ("sonuç ne oldu", "ne öğrendiniz")
-4. Real-world senaryoları kullansın
-5. Detay isteyici olsun ama STAR kelimesini GEÇMESİN
-
-ÖRNEK TİPLER:
-- Behavioral: "En zorlu takım konfliktini nasıl çözdünüz?" (durumu, yaptıklarını, sonucu doğal çıkarır)
-- Technical: "Production'da kritik hatayı nasıl tespit edip düzelttiniz?" (süreci doğal çıkarır)
-- Problem Solving: "Beklenmedik sistem yavaşlığını nasıl analiz ettiniz?" (yaklaşımı çıkarır)
-
-ZORUNLU JSON FORMAT:
-{{
-  "question": "Ana mülakat sorusu (Türkçe, net ve doğal)",
-  "context": "Bu sorunun amacı ve hangi STAR bileşenlerini çıkaracağı",
-  "follow_up_questions": [
-    "Bu durumda hangi alternatifleri değerlendirdiniz?",
-    "Sonuçları nasıl ölçtünüz?",
-    "Bu deneyimden hangi dersleri çıkardınız?",
-    "Benzer durumda ne farklı yaparsınız?"
-  ],
-  "evaluation_rubric": {{
-    "excellent": "Detaylı durum, net eylemler, ölçülebilir sonuçlar, öz-değerlendirme",
-    "good": "Somut örnek, temel eylemler, genel sonuçlar",
-    "poor": "Belirsiz örnek, eksik detay, sonuçsuz anlatım"
-  }},
-  "red_flags": [
-    "Somut örnek verememe",
-    "Sorumluluk almaktan kaçınma",
-    "Sonuçları paylaşmama",
-    "Öğrenme çıkarımı yok"
-  ],
-  "ideal_response_indicators": [
-    "Spesifik durum/proje tarifi",
-    "Net eylem ve kararlar",
-    "Ölçülebilir sonuçlar",
-    "Öğrenme ve gelişim farkındalığı"
-  ]
-}}
-
-ÖNEMLİ: STAR metodunu, Situation/Task/Action/Result kelimelerini kullanma. Sadece doğal sorularla bu bilgileri çıkar."""
+        # Build context for question generation  
+        if question_type == QuestionType.SITUATIONAL:
+            # Special job-specific situational question logic (centralized)
+            role_block = PR_ROLE_BLOCK(job_description)
+            base = situational_prompt_base(job_description=job_description, competencies=competencies)
+            prompt = base + ("\n\n" + role_block if role_block else "")
+        else:
+            # Generic prompt for other question types (centralized)
+            prompt = generic_question_prompt(
+                industry=industry.value,
+                difficulty=difficulty.value,
+                question_type=question_type.value,
+                job_description=job_description,
+                competencies=competencies,
+                conversation_len=len(conversation_history),
+            )
 
         try:
             response = await self.llm_client.generate(LLMRequest(

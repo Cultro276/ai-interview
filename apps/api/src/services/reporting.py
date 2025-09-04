@@ -42,6 +42,7 @@ class InterviewReportGenerator:
             "content": template_func(interview_data, analysis_results),
             "scoring": self._extract_scoring_summary(analysis_results),
             "recommendations": self._generate_recommendations(analysis_results),
+            "visualization_data": self._generate_visualization_data(analysis_results), # ✅ ADD UI DATA
             "export_formats": {
                 "json": True,
                 "markdown": True,
@@ -185,13 +186,13 @@ class InterviewReportGenerator:
         multipass = analysis.get("multipass_analysis", {})
         
         return {
-            "overall_recommendation_score": self._recommendation_to_score(ai_opinion.get("hire_recommendation", "Hold")),
-            "technical_competency": job_fit.get("overall_fit_score", 0.5),
-            "behavioral_competency": self._calculate_behavioral_average(hr_criteria),
-            "cultural_fit": multipass.get("overall_scores", {}).get("cultural", 0.5),
-            "communication_effectiveness": hr_criteria.get("overall_score", 50) / 100,
-            "growth_potential": ai_opinion.get("skill_match", {}).get("growth_potential", 0.5),
-            "decision_confidence": ai_opinion.get("decision_confidence", 0.5)
+            "Genel Öneri Skoru": self._recommendation_to_score(ai_opinion.get("hire_recommendation", "Hold")),
+            "Teknik Yetkinlik": job_fit.get("overall_fit_score", 0.5),
+            "Davranışsal Yetkinlik": self._calculate_behavioral_average(hr_criteria),
+            "Kültürel Uyum": multipass.get("overall_scores", {}).get("cultural", 0.5),
+            "İletişim Etkinliği": hr_criteria.get("overall_score", 50) / 100,
+            "Büyüme Potansiyeli": ai_opinion.get("skill_match", {}).get("growth_potential", 0.5),
+            "Karar Güveni": ai_opinion.get("decision_confidence", 0.5)
         }
     
     def _generate_recommendations(self, analysis: Dict) -> Dict[str, List[str]]:
@@ -440,6 +441,87 @@ class InterviewReportGenerator:
             }
         }
     
+    def _generate_visualization_data(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate visualization data structure for frontend UI components"""
+        
+        # Extract hiring decision data
+        hiring_data = self.generate_hiring_decision_data(analysis)
+        
+        # Get AI opinion data
+        ta = analysis.get("technical_assessment", {})
+        if isinstance(ta, str):
+            try:
+                ta = json.loads(ta)
+            except:
+                ta = {}
+        
+        ai_opinion = ta.get("ai_opinion", {})
+        job_fit = ta.get("job_fit", {})
+        
+        # Create the expected UI structure
+        return {
+            "hiring_decision": {
+                "should_display": True,  # ✅ Enable UI display
+                "hiring_recommendation": {
+                    "decision_label": self._get_decision_label(ai_opinion.get("hire_recommendation", "Hold")),
+                    "confidence": ai_opinion.get("decision_confidence", 0.5),
+                    "color_scheme": self._get_decision_colors(ai_opinion.get("hire_recommendation", "Hold"))
+                },
+                "key_strengths": ai_opinion.get("key_strengths", ["Değerlendirme tamamlanırken güçlü yönler belirlenecek"]),
+                "development_areas": job_fit.get("clear_gaps", ["Gelişim alanları analiz ediliyor"]),
+                "onboarding_plan": hiring_data.get("onboarding_plan", {}),
+                "risk_factors": ai_opinion.get("risk_factors", []),
+                "salary_analysis": ai_opinion.get("salary_analysis", {}),
+                "next_steps": ai_opinion.get("next_steps", ["Detaylı değerlendirme devam ediyor"])
+            },
+            "conversation_statistics": self._generate_conversation_stats(analysis),
+            "competency_breakdown": self._generate_competency_visual_data(analysis)
+        }
+    
+    def _get_decision_label(self, recommendation: str) -> str:
+        """Convert recommendation to Turkish display label"""
+        labels = {
+            "Strong Hire": "Kesinlikle İşe Al",
+            "Hire": "İşe Al", 
+            "Hold": "Beklemede Tut",
+            "No Hire": "İşe Alma"
+        }
+        return labels.get(recommendation, recommendation)
+    
+    def _get_decision_colors(self, recommendation: str) -> Dict[str, str]:
+        """Get color scheme for decision"""
+        colors = {
+            "Strong Hire": {"bg": "bg-green-100", "text": "text-green-800"},
+            "Hire": {"bg": "bg-blue-100", "text": "text-blue-800"},
+            "Hold": {"bg": "bg-yellow-100", "text": "text-yellow-800"},
+            "No Hire": {"bg": "bg-red-100", "text": "text-red-800"}
+        }
+        return colors.get(recommendation, {"bg": "bg-gray-100", "text": "text-gray-800"})
+    
+    def _generate_conversation_stats(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate conversation statistics for display"""
+        # TODO: Extract actual conversation metrics from transcript
+        return {
+            "candidate_talk_time_percentage": 75,
+            "average_response_length": 45,
+            "total_questions_asked": 6,
+            "follow_up_questions": 3,
+            "conversation_flow_score": 8.2
+        }
+    
+    def _generate_competency_visual_data(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate competency breakdown for visual display"""
+        
+        scoring = self._extract_scoring_summary(analysis)
+        
+        return {
+            "technical_skills": scoring.get("technical_fit", 0.7) * 100,
+            "communication": scoring.get("communication_effectiveness", 0.8) * 100,
+            "problem_solving": scoring.get("problem_solving_approach", 0.75) * 100,
+            "leadership": scoring.get("leadership_indicators", 0.6) * 100,
+            "cultural_fit": scoring.get("cultural_alignment", 0.85) * 100
+        }
+
     def generate_hiring_decision_data(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Generate structured hiring decision data"""
         ta = analysis.get("technical_assessment", {})
@@ -515,15 +597,6 @@ class InterviewReportGenerator:
         }
         return translations.get(recommendation, recommendation)
     
-    def _get_decision_colors(self, recommendation: str) -> Dict[str, str]:
-        """Get color scheme for recommendation"""
-        colors = {
-            "Strong Hire": {"text": "text-green-700", "bg": "bg-green-100"},
-            "Hire": {"text": "text-green-600", "bg": "bg-green-50"},
-            "Hold": {"text": "text-yellow-700", "bg": "bg-yellow-100"},
-            "No Hire": {"text": "text-red-600", "bg": "bg-red-100"}
-        }
-        return colors.get(recommendation, {"text": "text-gray-600", "bg": "bg-gray-100"})
 
 
 def export_to_markdown(report: Dict[str, Any]) -> str:

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from fastapi.responses import StreamingResponse
 from io import BytesIO
+import httpx
 import hashlib
 import os
 import httpx
@@ -37,8 +38,9 @@ async def tts_speak(req: TTSRequest):
         raise HTTPException(status_code=status, detail=msg)
 
     def _azure_ssml(text: str) -> str:
-        rate = "+2%" if (req.preset or "").lower() == "corporate" else "+6%"
-        pitch = "+0%"
+        # Natural Turkish corporate tone with light prosody
+        rate = "+4%" if (req.preset or "").lower() == "corporate" else "+7%"
+        pitch = "+1%"
         voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
         import re as _re
         def _inject_pauses(t: str) -> str:
@@ -50,7 +52,9 @@ async def tts_speak(req: TTSRequest):
 <speak version='1.0' xml:lang='{req.lang}'>
   <voice name='{voice}'>
     <prosody rate='{rate}' pitch='{pitch}'>
-      {body}
+      <mstts:express-as style='calm'>
+        {body}
+      </mstts:express-as>
     </prosody>
   </voice>
 </speak>
@@ -61,20 +65,26 @@ async def tts_speak(req: TTSRequest):
         not req.provider and settings.openai_api_key
     ):
         try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            # Use httpx client to stream audio to avoid type issues in some linters
+            headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
             voice = os.getenv("OPENAI_TTS_VOICE", "coral")
 
             async def _generate():
-                async with client.audio.speech.with_streaming_response.create(
-                    # type: ignore[attr-defined]
-                    model="gpt-4o-mini-tts",
-                    voice=voice,
-                    input=req.text,
-                ) as response:
-                    async for chunk in response.iter_bytes():
-                        if chunk:
-                            yield chunk
+                payload = {
+                    "model": "gpt-4o-mini-tts",
+                    "voice": voice,
+                    "input": req.text,
+                }
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/audio/speech",
+                        json=payload,
+                        headers=headers,
+                    )
+                    resp.raise_for_status()
+                    # Stream in chunks to the client
+                    chunk = resp.content
+                    yield chunk
 
             return StreamingResponse(
                 _generate(),
@@ -114,7 +124,8 @@ async def tts_speak(req: TTSRequest):
                     headers={
                         "Authorization": f"Bearer {access_token}",
                         "Content-Type": "application/ssml+xml",
-                        "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
+                        # HD-quality mono MP3 for clear voice with manageable size
+                        "X-Microsoft-OutputFormat": "audio-48khz-96kbitrate-mono-mp3",
                     },
                 )
             if r.status_code != 200 or not r.content:

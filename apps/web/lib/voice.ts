@@ -94,6 +94,14 @@ export function listen(
     }
   };
 
+  // Fail-safe: if recognition errors or cannot match, end speech to avoid hang
+  recognition.onerror = () => {
+    try { onSpeechEnd?.(); } catch {}
+  };
+  (recognition as any).onnomatch = () => {
+    try { onSpeechEnd?.(); } catch {}
+  };
+
   if (onSpeechEnd) {
     recognition.onspeechend = onSpeechEnd;
     recognition.onend = onSpeechEnd;

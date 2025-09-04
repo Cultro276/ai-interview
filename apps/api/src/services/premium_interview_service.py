@@ -442,13 +442,13 @@ class PremiumInterviewService:
         improvement_areas = []
         
         competencies = {
-            "Technical Competency": assessment.technical_competency,
-            "Behavioral Competency": assessment.behavioral_competency,
-            "Communication": assessment.communication_effectiveness,
-            "Problem Solving": assessment.problem_solving_approach,
-            "Cultural Alignment": assessment.cultural_alignment,
-            "Growth Potential": assessment.growth_potential,
-            "Leadership": assessment.leadership_indicators
+            "Teknik Yetkinlik": assessment.technical_competency,
+            "Davranışsal Yetkinlik": assessment.behavioral_competency,
+            "İletişim": assessment.communication_effectiveness,
+            "Problem Çözme": assessment.problem_solving_approach,
+            "Kültürel Uyum": assessment.cultural_alignment,
+            "Büyüme Potansiyeli": assessment.growth_potential,
+            "Liderlik": assessment.leadership_indicators
         }
         
         for comp_name, comp_score in competencies.items():
@@ -468,13 +468,13 @@ class PremiumInterviewService:
         strengths = []
         
         competencies = {
-            "Technical Competency": assessment.technical_competency,
-            "Behavioral Competency": assessment.behavioral_competency,
-            "Communication": assessment.communication_effectiveness,
-            "Problem Solving": assessment.problem_solving_approach,
-            "Cultural Alignment": assessment.cultural_alignment,
-            "Growth Potential": assessment.growth_potential,
-            "Leadership": assessment.leadership_indicators
+            "Teknik Yetkinlik": assessment.technical_competency,
+            "Davranışsal Yetkinlik": assessment.behavioral_competency,
+            "İletişim": assessment.communication_effectiveness,
+            "Problem Çözme": assessment.problem_solving_approach,
+            "Kültürel Uyum": assessment.cultural_alignment,
+            "Büyüme Potansiyeli": assessment.growth_potential,
+            "Liderlik": assessment.leadership_indicators
         }
         
         for comp_name, comp_score in competencies.items():
@@ -494,10 +494,10 @@ class PremiumInterviewService:
         concerns = []
         
         competencies = {
-            "Technical Competency": assessment.technical_competency,
-            "Behavioral Competency": assessment.behavioral_competency,
-            "Communication": assessment.communication_effectiveness,
-            "Problem Solving": assessment.problem_solving_approach
+            "Teknik Yetkinlik": assessment.technical_competency,
+            "Davranışsal Yetkinlik": assessment.behavioral_competency,
+            "İletişim": assessment.communication_effectiveness,
+            "Problem Çözme": assessment.problem_solving_approach
         }
         
         for comp_name, comp_score in competencies.items():

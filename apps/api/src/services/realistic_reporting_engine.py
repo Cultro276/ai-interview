@@ -470,13 +470,13 @@ PUANLAMA ÖLÇEĞİ (0-100):
         
         # Core competencies to assess
         competencies = [
-            "Technical Competency",
-            "Behavioral Competency", 
-            "Communication Effectiveness",
-            "Problem Solving Approach",
-            "Cultural Alignment",
-            "Growth Potential",
-            "Leadership Indicators"
+            "Teknik Yetkinlik",
+            "Davranışsal Yetkinlik", 
+            "İletişim Etkinliği",
+            "Problem Çözme Yaklaşımı",
+            "Kültürel Uyum",
+            "Büyüme Potansiyeli",
+            "Liderlik Göstergeleri"
         ]
         
         # Generate detailed scores for each competency

@@ -67,6 +67,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   const firstQuestionIssuedRef = useRef<boolean>(false);
   const sequenceNumberRef = useRef<number>(0);
   const audioStartIndexRef = useRef<number>(0);
+  const initPostedRef = useRef<boolean>(false);
   // Dedicated per-answer audio recorder to produce a single valid container
   const answerRecorderRef = useRef<MediaRecorder | null>(null);
   const answerChunksRef = useRef<Blob[]>([]);
@@ -147,20 +148,23 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       setCompanyName(interview.company_name || null);
       preparedFirstQuestionRef.current = (interview as any).prepared_first_question || null;
       sequenceNumberRef.current = 0;
-      // Save system message to indicate interview started
-      const systemMessage = `Interview started at ${new Date().toISOString()}`;
-      const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
-      await fetch(`${base}/api/v1/conversations/messages-public`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          interview_id: interview.id,
-          role: "system",
-          content: systemMessage,
-          sequence_number: 0,
-          token,
-        }),
-      });
+      // Save system message to indicate interview started (guard against double post)
+      if (!initPostedRef.current) {
+        const systemMessage = `Interview started at ${new Date().toISOString()}`;
+        const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+        await fetch(`${base}/api/v1/conversations/messages-public`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            interview_id: interview.id,
+            role: "system",
+            content: systemMessage,
+            sequence_number: 0,
+            token,
+          }),
+        });
+        initPostedRef.current = true;
+      }
     } catch (error) {
       console.error("Failed to initialize interview:", error);
     }
@@ -295,6 +299,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     };
 
     // Force ElevenLabs when available by adding provider in query body
+    // Always prefer Azure/ElevenLabs (HD) if configured via server
     playTTS(question, () => {
       setPhase("listening");
       // mark the start index for recent audio chunks to enable Whisper fallback STT per answer
@@ -381,19 +386,17 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
         setHistory(newHistoryLocal);
         setPhase("thinking");
 
-        // Save user's answer to database
-        saveConversationMessage("user", full);
-
         // Behavior signals for adaptive tone
         const signals: string[] = [];
         try {
           if (buffer.join(" ").trim().length < 10) signals.push("very_short_answer");
         } catch {}
+        // Let backend persist user turn and return next question atomically
         apiFetch<{ question: string | null; done: boolean }>(
-          "/api/v1/interview/next-question",
+          "/api/v1/interview/next-turn",
           {
             method: "POST",
-            body: JSON.stringify({ history: newHistoryLocal, interview_id: interviewId, signals }),
+            body: JSON.stringify({ interview_id: interviewId, token, text: full, signals }),
           },
         )
           .then((res) => {
@@ -418,8 +421,6 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                   return h;
                 }
                 setQuestion(nextQ);
-                // Persist assistant question so transcript shows questions
-                saveConversationMessage("assistant", nextQ);
                 setPhase("speaking");
                 return [...h, { role: "assistant", text: nextQ }];
               });
@@ -436,6 +437,35 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       };
 
       const listenStart = Date.now();
+      let volumeHistory: number[] = [];
+      let lastSpeechTime = Date.now();
+      let speechConfidence = 0;
+
+      // Intelligent Speech Detection Class
+      const detectSpeechEnd = (audioLevel: number = 0, transcript: string = "") => {
+        volumeHistory.push(audioLevel);
+        if (volumeHistory.length > 10) volumeHistory.shift();
+        
+        const avgVolume = volumeHistory.length > 0 ? 
+          volumeHistory.reduce((a, b) => a + b) / volumeHistory.length : 0;
+        const silenceDuration = Date.now() - lastSpeechTime;
+        
+        // Adaptive thresholds based on content type
+        const hasContent = transcript.trim().length > 3;
+        const isQuestion = transcript.includes('?') || transcript.includes('mı') || transcript.includes('mi');
+        const isQuiet = avgVolume < 15;
+        
+        // Dynamic pause thresholds
+        const pauseThreshold = hasContent ? 
+          (isQuestion ? 1800 : 2200) : 3500; // Questions need less wait
+        
+        if (!isQuiet && hasContent) {
+          lastSpeechTime = Date.now();
+          speechConfidence = Math.min(1, speechConfidence + 0.1);
+        }
+        
+        return isQuiet && silenceDuration > pauseThreshold && hasContent && speechConfidence > 0.3;
+      };
 
       document.addEventListener("visibilitychange", handleVisibilityChange);
       window.addEventListener("blur", handleWindowBlur);
@@ -445,19 +475,27 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
           const clean = (t || "").trim();
           if (!clean || clean === "..." || clean.length < 2) return;
           buffer.push(clean);
-          // Each time we get speech, reset timer; hold a bit longer to avoid early cutoff
+          
+          // Intelligent speech detection
           if (silenceTimer) clearTimeout(silenceTimer);
-          const minHold = Math.max(0, 2200 - (Date.now() - listenStart));
-          silenceTimer = setTimeout(finalize, 3400 + minHold);
+          
+          // Get current audio level (simplified approach)
+          const currentTranscript = buffer.join(' ');
+          if (detectSpeechEnd(50, currentTranscript)) { // Mock audio level for now
+            silenceTimer = setTimeout(finalize, 1200); // Slightly longer to avoid truncation
+          } else {
+            // Continue listening with adaptive timeout
+            const adaptiveDelay = currentTranscript.length > 50 ? 3500 : 4500;
+            silenceTimer = setTimeout(finalize, adaptiveDelay);
+          }
         },
         () => {
-          // Only finalize if we have some content; otherwise keep listening for a short grace period
-          if (buffer.length > 0) finalize();
+          // Let the timers control finalization to reduce premature cut-offs
         }
       );
 
-      // Safety net: allow longer answers but still fail-safe
-      hardStopTimer = setTimeout(() => { if (buffer.length > 0) finalize(); }, 14000);
+      // Safety net: allow longer answers but still fail-safe (always finalize)
+      hardStopTimer = setTimeout(() => { finalize(); }, 22000);
     });
 
     return () => {
@@ -484,40 +522,71 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     if (status !== "interview" || !stream) return;
     try {
       console.log("Starting recording with stream tracks:", stream.getTracks().length);
-      // Prefer a supported mimeType for video
+      // Enhanced codec selection with quality prioritization
       const videoMimeCandidates = [
-        // Prefer VP8 for broadest compatibility across Chromium-based browsers
-        "video/webm;codecs=vp8,opus",
+        // High quality codecs with opus audio
         "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus", 
+        "video/mp4;codecs=avc1,aac", // H.264 with AAC
+        "video/webm;codecs=h264,opus",
         "video/webm",
       ];
+      
+      const audioMimeCandidates = [
+        "audio/webm;codecs=opus",
+        "audio/mp4;codecs=aac",
+        "audio/webm",
+      ];
+      
       const chosenVideoMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
         ? videoMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
+        : undefined;
+        
+      const chosenAudioMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
+        ? audioMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
         : undefined;
       // Reset chunk buffers before starting
       videoChunksRef.current = [];
       audioChunksRef.current = [];
-      // Build WebAudio mixing graph (mic + tts)
+      // Build enhanced WebAudio mixing graph with quality optimization
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      // Set optimal sample rate for better quality
+      if (audioCtx.sampleRate < 44100) {
+        console.warn("Low sample rate detected:", audioCtx.sampleRate, "- Quality may be affected");
+      }
+      
       audioCtxRef.current = audioCtx;
+      
       // Prefer createMediaStreamDestination; gracefully degrade if unavailable
       let dest: MediaStreamAudioDestinationNode | null = null;
       if (typeof (audioCtx as any).createMediaStreamDestination === "function") {
         dest = (audioCtx as any).createMediaStreamDestination();
       }
       mixDestRef.current = dest;
-      // Mic pipeline
+      
+      // Enhanced mic pipeline with noise suppression and gain control
       const micSource = audioCtx.createMediaStreamSource(stream);
       const micGain = audioCtx.createGain();
-      micGain.gain.value = 1.0;
+      micGain.gain.value = 1.2; // Slightly boost mic input
+      
+      // Add dynamics compressor for better audio consistency
+      const compressor = audioCtx.createDynamicsCompressor();
+      compressor.threshold.value = -24;
+      compressor.knee.value = 30;
+      compressor.ratio.value = 6;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+      
       micGainRef.current = micGain;
+      
       if (dest) {
-        micSource.connect(micGain).connect(dest);
+        micSource.connect(compressor).connect(micGain).connect(dest);
       }
-      // TTS pipeline (only if mixing available)
+      
+      // TTS pipeline (only if mixing available) with better balance
       if (dest) {
         const ttsGain = audioCtx.createGain();
-        ttsGain.gain.value = 0.9;
+        ttsGain.gain.value = 0.85; // Slightly lower TTS to prioritize candidate voice
         ttsGainRef.current = ttsGain;
         ttsGain.connect(dest);
       } else {
@@ -528,7 +597,27 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       const combinedStream = dest && dest.stream.getAudioTracks().length
         ? new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()])
         : stream;
-      const rec = new MediaRecorder(combinedStream, chosenVideoMime ? { mimeType: chosenVideoMime } : undefined);
+
+      // Enhanced MediaRecorder options with quality settings
+      const getRecorderOptions = (mimeType: string) => {
+        const baseOptions = { mimeType };
+        
+        // Add quality-specific options based on mime type
+        if (mimeType.includes('vp9')) {
+          return { ...baseOptions, videoBitsPerSecond: 2500000, audioBitsPerSecond: 128000 }; // High quality
+        } else if (mimeType.includes('vp8')) {
+          return { ...baseOptions, videoBitsPerSecond: 2000000, audioBitsPerSecond: 128000 }; // Good quality
+        } else if (mimeType.includes('h264') || mimeType.includes('avc1')) {
+          return { ...baseOptions, videoBitsPerSecond: 2500000, audioBitsPerSecond: 128000 }; // High quality H.264
+        } else {
+          return { ...baseOptions, videoBitsPerSecond: 1500000, audioBitsPerSecond: 96000 }; // Default
+        }
+      };
+      // Create MediaRecorder with enhanced options
+      const recorderOptions = chosenVideoMime ? getRecorderOptions(chosenVideoMime) : undefined;
+      const rec = new MediaRecorder(combinedStream, recorderOptions);
+      
+      console.log("MediaRecorder initialized with:", recorderOptions);
       rec.ondataavailable = (e) => {
         // accumulate chunks silently
         videoChunksRef.current.push(e.data);
@@ -551,7 +640,21 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
         const chosenAudioMime = (window as any).MediaRecorder && typeof (window as any).MediaRecorder.isTypeSupported === "function"
           ? audioMimeCandidates.find((t) => (window as any).MediaRecorder.isTypeSupported(t)) || undefined
           : undefined;
-        const audioRec = new MediaRecorder(audioOnlyStream, chosenAudioMime ? { mimeType: chosenAudioMime } : undefined);
+        // Enhanced audio recorder options for better transcription quality
+        const getAudioRecorderOptions = (mimeType: string) => {
+          const baseOptions = { mimeType };
+          if (mimeType.includes('opus')) {
+            return { ...baseOptions, audioBitsPerSecond: 128000 }; // High quality Opus
+          } else if (mimeType.includes('aac') || mimeType.includes('mp4')) {
+            return { ...baseOptions, audioBitsPerSecond: 128000 }; // High quality AAC
+          } else {
+            return { ...baseOptions, audioBitsPerSecond: 96000 }; // Default quality
+          }
+        };
+        
+        const audioRecorderOptions = chosenAudioMime ? getAudioRecorderOptions(chosenAudioMime) : undefined;
+        const audioRec = new MediaRecorder(audioOnlyStream, audioRecorderOptions);
+        console.log("Audio recorder initialized with:", audioRecorderOptions);
         audioRec.ondataavailable = (e) => {
           // accumulate chunks silently
           audioChunksRef.current.push(e.data);

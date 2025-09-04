@@ -449,6 +449,14 @@ async def get_comprehensive_report(
             template_type=template_type
         )
         
+        # Cache back into analysis.technical_assessment under "comprehensive_report"
+        try:
+            tech_data["comprehensive_report"] = comprehensive_report
+            import json as _json
+            analysis.technical_assessment = _json.dumps(tech_data, ensure_ascii=False)
+            await session.commit()
+        except Exception:
+            pass
         return comprehensive_report
         
     except Exception as e:

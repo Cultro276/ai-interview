@@ -28,6 +28,11 @@ class MetricsCollector:
         # Track presign issuance times by token to estimate upload duration
         self._presign_issued_at: Dict[str, float] = {}
         self._presign_lock = Lock()
+        # Generic counters and histograms for ad-hoc metrics
+        self.counters: Dict[str, int] = {}
+        self._counter_lock = Lock()
+        self.histograms: Dict[str, _Series] = {}
+        self._hists_lock = Lock()
 
     def mark_presign_issued(self, token: str) -> None:
         now = perf_counter()
@@ -57,6 +62,22 @@ class MetricsCollector:
     def record_error(self) -> None:
         with self._error_lock:
             self.error_count += 1
+
+    # --- Generic helpers used by various call sites ---
+    def increment_counter(self, name: str, value: int = 1) -> None:
+        """Increment a named counter by value (default 1)."""
+        with self._counter_lock:
+            self.counters[name] = self.counters.get(name, 0) + int(value)
+
+    def record_histogram(self, name: str, value: float) -> None:
+        """Append a value to a named histogram series (P95 can be computed externally)."""
+        with self._hists_lock:
+            series = self.histograms.get(name)
+            if series is None:
+                series = _Series(deque(maxlen=self.capacity), Lock())
+                self.histograms[name] = series
+        with series.lock:  # type: ignore[has-type]
+            series.values.append(float(value))
 
     def _percentile(self, series: _Series, p: float) -> float:
         with series.lock:

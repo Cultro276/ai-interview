@@ -184,12 +184,21 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     )
                 except Exception:
                     pass
-                # Ask LLM for a concise opening question (allowed to reference resume items)
-                result0 = await asyncio.wait_for(
-                    generate_question_robust([], private_ctx, max_questions=7), timeout=8.0
-                )
-                q0_raw = result0.get("question")
-                q0 = (q0_raw if isinstance(q0_raw, str) else "").strip()
+                # Ask LLM for a concise opening question with AI failure fallback
+                q0 = None
+                try:
+                    result0 = await asyncio.wait_for(
+                        generate_question_robust([], private_ctx, max_questions=7), timeout=8.0
+                    )
+                    q0_raw = result0.get("question")
+                    q0 = (q0_raw if isinstance(q0_raw, str) else "").strip()
+                except Exception as ai_error:
+                    # 🚨 AI FAILURE FALLBACK: Record error and continue with backup
+                    collector.record_error()
+                    # Log the specific error for debugging
+                    import logging as _log
+                    _log.getLogger(__name__).warning(f"AI opening question failed: {ai_error}")
+                    q0 = None
                 # If recruiter provided extra questions, prefer the first one as opener
                 try:
                     if (not q0) and extra_list:
@@ -197,7 +206,37 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 except Exception:
                     pass
                 if not q0:
-                    q0 = "Özgeçmişinizde öne çıkan bir proje/başarıyı STAR çerçevesinde kısaca anlatır mısınız?"
+                    # 🚨 EMERGENCY FALLBACK: Job-specific opening questions
+                    job_desc_lower = (job_desc or "").lower()
+                    if "satış" in job_desc_lower or "sales" in job_desc_lower:
+                        q0 = "Satış sürecinizde müşterinin 'hayır' dediği bir durumda nasıl yaklaştınız ve sonucu ne oldu?"
+                    elif "yazılım" in job_desc_lower or "developer" in job_desc_lower or "software" in job_desc_lower:
+                        q0 = "Karşılaştığınız en zorlu teknik problemlerden birini ve çözüm sürecini anlatır mısınız?"
+                    elif "yönetici" in job_desc_lower or "manager" in job_desc_lower or "müdür" in job_desc_lower:
+                        q0 = "Takımınızda yaşadığınız bir çatışma durumunu nasıl çözdünüz?"
+                    elif "insan kaynakları" in job_desc_lower or "ik" in job_desc_lower or "hr" in job_desc_lower:
+                        q0 = "Zor bir işe alım sürecinde karşılaştığınız zorluğu ve nasıl çözdüğünüzü anlatır mısınız?"
+                    elif "proje" in job_desc_lower or "project" in job_desc_lower:
+                        q0 = "Yönettiğiniz bir projede beklenmeyen bir sorunla karşılaştığınızda nasıl çözdünüz?"
+                    else:
+                        # Ultimate fallback for any position
+                        q0 = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucunu kısaca paylaşır mısınız?"
+                
+                # ✅ FIX: Store first question in database to include in transcript
+                if q0:
+                    try:
+                        first_msg = ConversationMessage(
+                            interview_id=req.interview_id,
+                            role=DBMessageRole.ASSISTANT,
+                            content=q0,
+                            sequence_number=1,
+                        )
+                        session.add(first_msg)
+                        await session.commit()
+                    except Exception as e:
+                        # Handle potential sequence conflicts gracefully
+                        await session.rollback()
+                        print(f"Failed to store first question in DB: {e}")
                 # Friendly intro with candidate name and job title
                 intro = None
                 try:
@@ -336,9 +375,14 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 result = {"question": pend, "done": False}
             else:
                 result = await asyncio.wait_for(
-                    generate_question_robust(history, combined_ctx, max_questions=50), timeout=12.0
+                    generate_question_robust(history, combined_ctx, max_questions=50), timeout=18.0
                 )
-        except Exception:
+        except Exception as ai_error:
+            # 🚨 AI FAILURE FALLBACK: Emergency question generation
+            collector.record_error()
+            # Log the specific error for debugging
+            import logging as _log
+            _log.getLogger(__name__).warning(f"AI follow-up question failed: {ai_error}")
             # Heuristic HR-style follow-up using last user text
             try:
                 last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
@@ -353,13 +397,47 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     except Exception:
                         q = None
                 if not q:
+                    # 🚨 ENHANCED EMERGENCY QUESTION POOL
                     from src.services.dialog import extract_keywords as _extract_keywords
                     kws = _extract_keywords(last_user_text) if last_user_text else []
+                    
                     if kws:
                         key = kws[0]
                         q = f"{key} ile ilgili somut bir örnek ve ölçülebilir sonucunuzu paylaşır mısınız?"
                     else:
-                        q = "Bu deneyiminizde tam olarak nasıl bir rol üstlendiniz ve sonuç ne oldu?"
+                        # Position-based emergency questions 
+                        emergency_pool = []
+                        job_desc_lower = (job_desc or "").lower()
+                        
+                        if "satış" in job_desc_lower:
+                            emergency_pool = [
+                                "Hedeflerinizi aştığınız bir satış dönemini ve stratejinizi anlatır mısınız?",
+                                "Zor bir müşteriyi nasıl ikna ettiniz?",
+                                "Rakiplerden farklılığınızı müşteriye nasıl anlattınız?"
+                            ]
+                        elif "yazılım" in job_desc_lower or "developer" in job_desc_lower:
+                            emergency_pool = [
+                                "Production'da critical bug'ı nasıl çözdünüz?",
+                                "Kod review'da aldığınız önemli bir feedback ve sonrası?",
+                                "Performans optimizasyonu yaptığınız bir örnek?"
+                            ]
+                        elif "yönetici" in job_desc_lower:
+                            emergency_pool = [
+                                "Takımın performansını nasıl artırdınız?",
+                                "Zor bir karar verme sürecinizi anlatır mısınız?",
+                                "Çatışma yönetimi deneyiminizden örnek?"
+                            ]
+                        else:
+                            emergency_pool = [
+                                "Bu deneyiminizde tam olarak nasıl bir rol üstlendiniz ve sonuç ne oldu?",
+                                "Başardığınız somut bir projeyi ve katkınızı anlatır mısınız?",
+                                "Zorluklarla karşılaştığınızda nasıl yaklaştınız?"
+                            ]
+                        
+                        # Pick question based on interview progress
+                        asked_count = len([t for t in history if t.get("role") == "assistant"])
+                        question_index = min(asked_count % len(emergency_pool), len(emergency_pool) - 1)
+                        q = emergency_pool[question_index]
                 result = {"question": q, "done": False}
             except Exception:
                 result = {"question": "Kısa bir örnekle katkınızı ve sonucu anlatır mısınız?", "done": False}
@@ -449,6 +527,10 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         s = remaining[0]
                 except Exception:
                     pass
+                # Ensure we return a complete sentence ending with question mark
+                s = (s or "").strip()
+                if s and not s.endswith("?"):
+                    s = s + "?"
                 result["question"] = s
             except Exception:
                 if asked >= 1 and isinstance(q_candidate, str) and q_candidate.strip() == GENERIC_OPENING:

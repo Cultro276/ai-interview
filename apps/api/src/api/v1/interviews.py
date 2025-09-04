@@ -104,10 +104,46 @@ async def _maybe_complete_interview(
             )
         ).first()
         has_transcript = cm is not None
-    if has_media and has_transcript:
+    # 🚨 ENHANCED COMPLETION VALIDATION: Prevent partial save corruption
+    min_questions = 2  # Minimum questions for valid interview
+    res = await session.execute(
+        select(ConversationMessage).where(
+            ConversationMessage.interview_id == interview.id,
+            ConversationMessage.role == "assistant",
+        )
+    )
+    assistant_messages = res.scalars().all()
+    question_count = len(assistant_messages)
+
+    min_duration = 60  # Minimum 60 seconds for real interview 
+    duration_ok = True
+    duration = 0.0
+    if interview.created_at:
+        from datetime import datetime, timezone
+        created = interview.created_at
+        # Ensure both datetimes are timezone-aware before subtracting
+        if created.tzinfo is None:
+            # Treat DB naive timestamps as UTC
+            created_aware = created.replace(tzinfo=timezone.utc)
+        else:
+            created_aware = created
+        now_aware = datetime.now(timezone.utc)
+        duration = (now_aware - created_aware).total_seconds()
+        duration_ok = duration >= min_duration
+    
+    if has_media and has_transcript and question_count >= min_questions and duration_ok:
         from datetime import datetime, timezone
         interview.status = "completed"
         interview.completed_at = datetime.now(timezone.utc)
+        
+        # Record completion metrics for monitoring
+        try:
+            from src.core.metrics import collector
+            collector.increment_counter("interview_completed_successfully")
+            collector.record_histogram("interview_duration_seconds", duration)
+            collector.record_histogram("interview_question_count", question_count)
+        except Exception:
+            pass
         try:
             ip = request.client.host if request and request.client else None
             interview.completed_ip = ip
