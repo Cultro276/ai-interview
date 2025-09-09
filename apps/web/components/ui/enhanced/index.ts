@@ -1,13 +1,4 @@
 // Enhanced UI Components
-export { AdvancedButton } from './AdvancedButton';
-export { 
-  AdvancedCard, 
-  AdvancedCardHeader, 
-  AdvancedCardTitle, 
-  AdvancedCardDescription, 
-  AdvancedCardContent, 
-  AdvancedCardFooter 
-} from './AdvancedCard';
 export { EnhancedButton } from './EnhancedButton';
 export { 
   EnhancedCard, 

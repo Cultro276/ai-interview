@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { EnhancedButton, EnhancedCard } from '@/components/ui';
-import { cn } from '@/components/ui/cn';
+import { cn } from '@/components/ui/utils/cn';
 import { apiFetch } from '@/lib/api';
 
 export type ExportFormat = 'pdf' | 'excel' | 'csv' | 'json';

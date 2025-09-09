@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useInterviewTheme } from './InterviewDesignSystem';
 import { cn } from '@/components/ui/utils';
 
@@ -44,22 +44,7 @@ export function InterviewAudio({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number | undefined>(undefined);
 
-  useEffect(() => {
-    if (showVisualizer && canvasRef.current) {
-      startAudioVisualization();
-    }
-    
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-      if (audioContext) {
-        audioContext.close();
-      }
-    };
-  }, [showVisualizer]);
-
-  const startAudioVisualization = async () => {
+  const startAudioVisualization = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const context = new AudioContext();
@@ -77,7 +62,22 @@ export function InterviewAudio({
     } catch (error) {
       console.error('Error accessing microphone:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (showVisualizer && canvasRef.current) {
+      startAudioVisualization();
+    }
+    
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+      if (audioContext) {
+        audioContext.close();
+      }
+    };
+  }, [showVisualizer, startAudioVisualization, audioContext]);
 
   const drawVisualization = (analyserNode: AnalyserNode) => {
     const canvas = canvasRef.current;

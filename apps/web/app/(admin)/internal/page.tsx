@@ -154,7 +154,7 @@ export default function InternalAdmin() {
           <div className="text-sm text-red-600 dark:text-red-400 mb-2">{error}</div>
           {error.includes('Erişim reddedildi') && (
             <div className="text-xs text-red-500 dark:text-red-400 space-y-2">
-              <div>💡 <strong>Çözüm:</strong> Browser konsolunda <code>localStorage.setItem("founders_secret","dev-internal-secret-change-in-production-super-secure")</code> komutunu çalıştırın.</div>
+              <div>💡 <strong>Çözüm:</strong> Browser konsolunda <code>localStorage.setItem(&quot;founders_secret&quot;,&quot;dev-internal-secret-change-in-production-super-secure&quot;)</code> komutunu çalıştırın.</div>
               <button 
                 onClick={() => {
                   localStorage.setItem("founders_secret","dev-internal-secret-change-in-production-super-secure");
@@ -163,7 +163,7 @@ export default function InternalAdmin() {
                 }}
                 className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
               >
-                🔧 Secret'ı Ayarla ve Tekrar Dene
+                🔧 Secret&rsquo;ı Ayarla ve Tekrar Dene
               </button>
             </div>
           )}

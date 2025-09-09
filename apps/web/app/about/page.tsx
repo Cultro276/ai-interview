@@ -100,7 +100,7 @@ export default function AboutPage() {
             <div className="flex flex-wrap items-center justify-between gap-3 p-5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
               <div>
                 <h3 className="font-semibold mb-1">Sizin senaryonuz için konuşalım</h3>
-                <p className="text-gray-700 dark:text-gray-300">Kısa bir demo ile {productName}'i iş akışınıza göre gösterelim.</p>
+                <p className="text-gray-700 dark:text-gray-300">Kısa bir demo ile {productName}&apos;i iş akışınıza göre gösterelim.</p>
               </div>
               <div className="flex gap-2">
                 <Link href="/contact?utm_source=site&utm_medium=cta&utm_campaign=about_footer" className="px-4 py-2 rounded-lg bg-brand-700 text-white hover:bg-brand-600">Demo Talep Et</Link>

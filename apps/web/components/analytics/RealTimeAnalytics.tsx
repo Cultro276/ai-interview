@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { EnhancedCard, EnhancedButton } from '@/components/ui';
-import { cn } from '@/components/ui/cn';
+import { cn } from '@/components/ui/utils/cn';
 
 interface RealTimeMetric {
   id: string;
@@ -98,7 +98,7 @@ export function RealTimeAnalytics({
   };
 
   // Fetch real-time data
-  const fetchRealTimeData = async () => {
+  const fetchRealTimeData = useCallback(async () => {
     try {
       // In a real app, this would be an API call
       const newMetrics = generateMockMetrics();
@@ -114,7 +114,7 @@ export function RealTimeAnalytics({
     } catch (error) {
       console.error('Error fetching real-time data:', error);
     }
-  };
+  }, [maxEvents]);
 
   // Start/stop live updates
   useEffect(() => {
@@ -132,7 +132,7 @@ export function RealTimeAnalytics({
         clearInterval(intervalRef.current);
       }
     };
-  }, [isLive, refreshInterval]);
+  }, [isLive, refreshInterval, fetchRealTimeData]);
 
   const toggleLive = () => {
     setIsLive(!isLive);

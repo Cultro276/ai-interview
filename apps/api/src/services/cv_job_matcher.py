@@ -2,7 +2,7 @@
 CV-Job relevance checking and sector matching functionality.
 """
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ def extract_job_required_sectors(job_description: str) -> List[str]:
     return list(set(required_sectors))  # Remove duplicates
 
 
-def check_cv_job_relevance(resume_text: str, job_description: str) -> Dict[str, any]:
+def check_cv_job_relevance(resume_text: str, job_description: str) -> Dict[str, Any]:
     """
     Check relevance between candidate's CV and job requirements.
     Returns relevance score and recommendations.

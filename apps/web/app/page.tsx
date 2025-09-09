@@ -1,6 +1,7 @@
 import { MarketingNav } from "@/components/marketing/Nav";
 import { MarketingFooter } from "@/components/marketing/Footer";
 import { Button, Steps } from "@/components/ui";
+import Image from "next/image";
 
 export default function HomePage() {
   return (
@@ -11,7 +12,7 @@ export default function HomePage() {
       <section className="px-6 py-20 text-center bg-gradient-to-b from-brand-25 to-white dark:from-neutral-900 dark:to-neutral-950 animate-in fade-in-0 slide-in-from-top-2 duration-700">
         <div className="max-w-4xl mx-auto">
           <div className="mb-6 flex justify-center">
-            <img src="/logo.png" alt="Logo" className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
+            <Image src="/logo.png" alt="Logo" width={40} height={40} className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
           </div>
           <div className="inline-flex items-center px-3 py-1 mb-6 text-sm text-brand-700 bg-brand-100 dark:text-brand-300 dark:bg-brand-700/20 rounded-full">
             <span className="mr-2">🆕</span>

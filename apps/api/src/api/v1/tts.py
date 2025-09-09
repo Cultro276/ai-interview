@@ -1,11 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 import httpx
-import hashlib
 import os
-import httpx
 from anyio import to_thread
 
 try:
@@ -26,7 +24,6 @@ class TTSRequest(BaseModel):
     similarity_boost: float | None = Field(default=None, ge=0, le=1)
     style: float | None = Field(default=None, ge=0, le=1)
     use_speaker_boost: bool | None = Field(default=None)
-    allow_inline_hints: bool | None = Field(default=False)
     preset: str | None = Field(default=None)
 
 

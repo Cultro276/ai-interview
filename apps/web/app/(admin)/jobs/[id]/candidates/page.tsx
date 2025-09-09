@@ -51,9 +51,9 @@ export default function JobCandidatesPage() {
   const [progressCancelled, setProgressCancelled] = useState(false);
   const [progressStarted, setProgressStarted] = useState(false);
 
-  const jobInterviews = interviews.filter((i) => i.job_id === jobId);
-  const jobCandidateIds = jobInterviews.map((i) => i.candidate_id);
-  const jobCandidates = candidates.filter((c) => jobCandidateIds.includes(c.id));
+  const jobInterviews = useMemo(() => interviews.filter((i) => i.job_id === jobId), [interviews, jobId]);
+  const jobCandidateIds = useMemo(() => jobInterviews.map((i) => i.candidate_id), [jobInterviews]);
+  const jobCandidates = useMemo(() => candidates.filter((c) => jobCandidateIds.includes(c.id)), [candidates, jobCandidateIds]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "completed" | "pending">("all");
   const [hasCvOnly, setHasCvOnly] = useState(false);
@@ -149,11 +149,16 @@ export default function JobCandidatesPage() {
     const sorted = [...list].sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     return sorted[0].id;
   };
-  const findLatestInterview = (candidateId: number) => {
-    const list = jobInterviews.filter((i) => i.candidate_id === candidateId);
-    if (list.length === 0) return null as any;
-    return [...list].sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-  };
+  const findLatestInterview = useMemo(() => {
+    const map = new Map<number, any>();
+    jobInterviews.forEach((i: any) => {
+      const prev = map.get(i.candidate_id);
+      if (!prev || new Date(i.created_at).getTime() > new Date(prev.created_at).getTime()) {
+        map.set(i.candidate_id, i);
+      }
+    });
+    return (candidateId: number) => map.get(candidateId) || null;
+  }, [jobInterviews]);
   const formatDuration = (startIso?: string, endIso?: string) => {
     if (!startIso || !endIso) return "—";
     const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
@@ -665,7 +670,7 @@ export default function JobCandidatesPage() {
         return 0;
       })
       .slice(0, 1000);
-  }, [jobCandidates, search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy]);
+  }, [jobCandidates, search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy, findLatestInterview]);
 
   const totalPages = Math.max(1, Math.ceil(filteredSortedCandidates.length / 10));
 
@@ -863,7 +868,7 @@ export default function JobCandidatesPage() {
             </label>
             <label className="text-sm text-gray-600 flex items-center gap-2">
               <input type="checkbox" checked={hasCvOnly} onChange={(e) => setHasCvOnly(e.target.checked)} />
-              Sadece CV'si olanlar
+              Sadece CV&apos;si olanlar
             </label>
             <label className="text-sm text-gray-600 flex items-center gap-2">
               <input type="checkbox" checked={hasMediaOnly} onChange={(e) => setHasMediaOnly(e.target.checked)} />
@@ -946,7 +951,7 @@ export default function JobCandidatesPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{c.email}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                   {c.resume_url ? (
-                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV'yi Görüntüle</Button>
+                    <Button variant="ghost" onClick={() => viewCv(c.id)} className="text-brand-700 hover:text-brand-900 p-0 h-auto">CV&apos;yi Görüntüle</Button>
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
@@ -1653,7 +1658,7 @@ export default function JobCandidatesPage() {
                                     <span className="text-sm font-medium text-gray-700">Destekleyici Kanıt:</span>
                                     {item.evidence_quotes.map((quote: string, qIndex: number) => (
                                       <div key={qIndex} className="mt-1 p-2 bg-blue-50 rounded text-sm text-blue-800 italic">
-                                        "{quote}"
+                                        &quot;{quote}&quot;
                                       </div>
                                     ))}
                                   </div>
@@ -1691,7 +1696,7 @@ export default function JobCandidatesPage() {
                                     <span className="text-sm font-medium text-gray-700">Örnekler:</span>
                                     {pattern.examples.map((example: string, eIndex: number) => (
                                       <div key={eIndex} className="mt-1 p-2 bg-gray-50 rounded text-sm text-gray-700">
-                                        "{example}"
+                                        &quot;{example}&quot;
                                       </div>
                                     ))}
                                   </div>
@@ -1758,7 +1763,7 @@ export default function JobCandidatesPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Toplu Yükleme</DialogTitle>
-            <DialogDescription>CV'ler analiz ediliyor, lütfen bekleyin.</DialogDescription>
+            <DialogDescription>CV&#39;ler analiz ediliyor, lütfen bekleyin.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="text-sm text-gray-700">Durum: {progressDone}/{progressTotal}</div>

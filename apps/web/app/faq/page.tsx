@@ -1,10 +1,11 @@
+import Image from "next/image";
 "use client";
 import { useMemo, useState } from "react";
 
 export default function FAQPage() {
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"genel" | "guvenlik" | "entegrasyon" | "sektor">("genel");
-  const faqs = [
+  const faqs = useMemo(() => [
     { q: "Kurulum için teknik ekip gerekiyor mu?", a: "Hayır. Tarayıcı üzerinden çalışır; davet linkiyle adayı içeri alırsınız." },
     { q: "Veriler nerede saklanıyor?", a: "KVKK odaklı olarak yetkili servis sağlayıcılarımızda saklanır; erişim politikaları uygulanır." },
     { q: "Raporlar nasıl paylaşılıyor?", a: "Panel üzerinden tek tıkla ekiple paylaşabilir, PDF’e aktarabilirsiniz." },
@@ -20,24 +21,24 @@ export default function FAQPage() {
     { q: "Teknolojide junior ve mid adayları ayırmak neden zor olur?", a: "Video yanıtlarındaki teknik açıklamalar anahtar kavramlara göre çıkarılır; temel ile uygulama farkı görünür hale gelir, ekip odağını doğru seviyeye taşır." },
     { q: "Lojistik/operasyonda vardiya bazlı işe alımı nasıl hızlandırırsınız?", a: "Adayların uygunluk ve düzen algısını kısa yanıtlarla ölçüp sıraladığınızda, sahadaki yöneticiye yalnızca planlanabilir adaylar iletilir." },
     { q: "Satış rollerinde kültürel uyumu nasıl önden anlarsınız?", a: "Senaryo sorularına verilen yaklaşımlar, ekip değerleriyle uyumu sezdirir; görüşmeye giden adayların hit oranı artar." },
-  ];
-  const groups = {
+  ], []);
+  const groups = useMemo(() => ({
     genel: faqs.slice(0, 6),
     guvenlik: faqs.filter(f => f.q.includes("Güvenlik") || f.q.includes("Veriler") || f.q.includes("AI bazen hata")),
     entegrasyon: [{ q: "Farklı pozisyonlar için soru setlerini özelleştirebilir miyiz?", a: "Evet. Pozisyon bazlı şablonlar ve değerlendirme kriterleri tanımlanabilir." }],
     sektor: faqs.slice(-5),
-  } as const;
+  }) as const, [faqs]);
   const items = useMemo(() => {
     const pool = groups[tab];
     if (!query.trim()) return pool;
     const q = query.toLowerCase();
     return pool.filter(i => i.q.toLowerCase().includes(q) || i.a.toLowerCase().includes(q));
-  }, [query, tab]);
+  }, [query, tab, groups]);
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-4xl mx-auto p-6">
         <div className="mb-4 flex justify-center">
-          <img src="/logo.png" alt="Logo" className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
+          <Image src="/logo.png" alt="Logo" width={40} height={40} className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
         </div>
         <h1 className="text-3xl font-bold mb-4">Sıkça Sorulan Sorular</h1>
         <p className="text-gray-600 mb-4">Aradığını yaz ya da kategori seç.</p>

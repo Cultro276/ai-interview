@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import Image from 'next/image';
 import { useInterviewTheme } from './InterviewDesignSystem';
 import { cn } from '@/components/ui/utils';
 
@@ -87,7 +88,7 @@ export function InterviewResponsive({
       setCurrentLayout(newLayout);
       onLayoutChange?.(newLayout, newBreakpoint);
     }
-  }, [config, onLayoutChange]);
+  }, [config, onLayoutChange, currentBreakpoint, currentLayout]);
 
   useEffect(() => {
     updateScreenInfo();
@@ -270,22 +271,17 @@ export function useResponsive(customBreakpoints?: Partial<ResponsiveConfig['brea
   const [isDesktop, setIsDesktop] = useState(true);
   const lastSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
 
-  const defaultBreakpoints = {
+  const defaultBreakpoints = useMemo(() => ({
     mobile: 768,
     tablet: 1024,
     desktop: 1280,
     wide: 1920,
-  };
+  }), []);
 
   const breakpoints = useMemo(() => ({
     ...defaultBreakpoints,
     ...(customBreakpoints || {}),
-  }), [
-    customBreakpoints?.mobile,
-    customBreakpoints?.tablet,
-    customBreakpoints?.desktop,
-    customBreakpoints?.wide,
-  ]);
+  }), [defaultBreakpoints, customBreakpoints]);
 
   const updateBreakpoint = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -466,12 +462,14 @@ export function ResponsiveImage({
     return {};
   };
 
+  const size = getImageSize() as { width?: number; height?: number };
   return (
-    <img
+    <Image
       src={src}
       alt={alt}
+      width={size.width || 40}
+      height={size.height || 40}
       className={cn('responsive-image', className)}
-      {...getImageSize()}
     />
   );
 }

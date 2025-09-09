@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useInterviewTheme } from './InterviewDesignSystem';
 import { cn } from '@/components/ui/utils';
 
@@ -49,6 +49,7 @@ export function InterviewFeedback({
 
   // Filter and sort messages
   useEffect(() => {
+    const currentMap = timeoutRefs.current;
     const sortedMessages = [...messages]
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
       .slice(0, maxMessages);
@@ -56,26 +57,32 @@ export function InterviewFeedback({
     setVisibleMessages(sortedMessages);
   }, [messages, maxMessages]);
 
+  const handleDismiss = useCallback((messageId: string) => {
+    const timeout = timeoutRefs.current.get(messageId);
+    if (timeout) {
+      clearTimeout(timeout);
+      timeoutRefs.current.delete(messageId);
+    }
+    onMessageDismiss?.(messageId);
+  }, [onMessageDismiss]);
+
   // Auto-dismiss messages
   useEffect(() => {
     if (!autoDismiss) return;
-
+    const mapRef = timeoutRefs.current;
     visibleMessages.forEach(message => {
-      if (message.persistent || timeoutRefs.current.has(message.id)) return;
-
+      if (message.persistent || mapRef.has(message.id)) return;
       const duration = message.duration || getDefaultDuration(message.type);
       const timeout = setTimeout(() => {
         handleDismiss(message.id);
       }, duration);
-
-      timeoutRefs.current.set(message.id, timeout);
+      mapRef.set(message.id, timeout);
     });
-
     return () => {
-      timeoutRefs.current.forEach(timeout => clearTimeout(timeout));
-      timeoutRefs.current.clear();
+      mapRef.forEach((t) => clearTimeout(t));
+      mapRef.clear();
     };
-  }, [visibleMessages, autoDismiss]);
+  }, [visibleMessages, autoDismiss, handleDismiss]);
 
   const getDefaultDuration = (type: FeedbackMessage['type']) => {
     switch (type) {
@@ -94,14 +101,7 @@ export function InterviewFeedback({
     }
   };
 
-  const handleDismiss = (messageId: string) => {
-    const timeout = timeoutRefs.current.get(messageId);
-    if (timeout) {
-      clearTimeout(timeout);
-      timeoutRefs.current.delete(messageId);
-    }
-    onMessageDismiss?.(messageId);
-  };
+  
 
   const getPositionClasses = () => {
     const baseClasses = 'fixed z-50';

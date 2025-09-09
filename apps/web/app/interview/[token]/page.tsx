@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import { listen } from "@/lib/voice";
 import { Steps, Button } from "@/components/ui";
@@ -117,7 +117,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   };
 
   // Save conversation message to database (no-redirect for unauthenticated candidate)
-  const saveConversationMessage = async (role: "assistant" | "user" | "system", content: string) => {
+  const saveConversationMessage = useCallback(async (role: "assistant" | "user" | "system", content: string) => {
     if (!interviewId || !canPostPublicRef.current) return;
     try {
       sequenceNumberRef.current += 1;
@@ -136,7 +136,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     } catch (error) {
       // best-effort only in candidate UI
     }
-  };
+  }, [interviewId, token]);
 
   // Get or create interview record and save initial system message
   const initializeInterview = async () => {
@@ -507,7 +507,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       if (typeof (window as any).silenceTimer !== "undefined" && (window as any).silenceTimer) clearTimeout((window as any).silenceTimer);
       if (typeof (window as any).hardStopTimer !== "undefined" && (window as any).hardStopTimer) clearTimeout((window as any).hardStopTimer);
     };
-  }, [status, question]);
+  }, [status, question, interviewId, token, stream, saveConversationMessage, forceWhisper, history]);
 
   // Lightweight timer (no user interaction)
   useEffect(() => {

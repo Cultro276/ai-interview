@@ -1,5 +1,6 @@
 import { MarketingNav } from "@/components/marketing/Nav";
 import { MarketingFooter } from "@/components/marketing/Footer";
+import Image from "next/image";
 
 export default function SolutionsPage() {
   return (
@@ -9,7 +10,7 @@ export default function SolutionsPage() {
       <section className="px-6 py-20 text-center">
         <div className="max-w-4xl mx-auto">
           <div className="mb-6 flex justify-center">
-            <img src="/logo.png" alt="Logo" className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
+            <Image src="/logo.png" alt="Logo" width={40} height={40} className="h-10 w-10 rounded-xl ring-1 ring-brand-200/60" />
           </div>
           <h1 className="mb-6 text-5xl font-bold text-gray-900">Çözümler</h1>
           <p className="mb-12 text-xl text-gray-600 max-w-3xl mx-auto">

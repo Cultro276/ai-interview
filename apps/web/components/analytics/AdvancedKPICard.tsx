@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { EnhancedCard } from '@/components/ui';
-import { cn } from '@/components/ui/cn';
+import { cn } from '@/components/ui/utils/cn';
 
 
 export interface KPIData {

@@ -83,7 +83,7 @@ export default function DashboardPageClassic() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [jobs.length, interviews.length, isLive, refreshData]);
+  }, [jobs, interviews, isLive, refreshData]);
 
   if (loading) {
     return (

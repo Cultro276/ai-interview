@@ -33,7 +33,7 @@ export default function JobEditorPage(){
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-2xl font-bold">Yapılandırma Kaldırıldı</h1>
       {error && <div className="text-red-600 text-sm">{error}</div>}
-      <p className="text-gray-700">Bu sayfadaki "gereksinim" ve "rubrik" ayarları kaldırıldı. Sistem, iş ilanı metnine ve adayın özgeçmişine göre soruları otomatik uyarlar.</p>
+      <p className="text-gray-700">Bu sayfadaki &quot;gereksinim&quot; ve &quot;rubrik&quot; ayarları kaldırıldı. Sistem, iş ilanı metnine ve adayın özgeçmişine göre soruları otomatik uyarlar.</p>
       <div>
         <Button onClick={()=> (window.location.href = "/jobs")}>Geri Dön</Button>
       </div>
