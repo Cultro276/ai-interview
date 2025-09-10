@@ -1,7 +1,7 @@
 import datetime as dt
 from uuid import uuid4
 
-from sqlalchemy import String, Text, func, DateTime, ForeignKey
+from sqlalchemy import String, Text, func, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 from src.core.encryption import EncryptedPersonalData, EncryptedEmail, EncryptedPhone
 
@@ -13,6 +13,7 @@ class Candidate(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(EncryptedPersonalData(255), nullable=False)
     email: Mapped[str] = mapped_column(EncryptedEmail(), nullable=False, unique=True)
     phone: Mapped[str | None] = mapped_column(EncryptedPhone())

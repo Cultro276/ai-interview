@@ -149,6 +149,7 @@ class InterviewRead(BaseModel):
     completed_ip: Optional[str] = None
     prepared_first_question: Optional[str] = None
     company_name: Optional[str] = None
+    overall_score: Optional[float] = None
 
     model_config = {"from_attributes": True}
 

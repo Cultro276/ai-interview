@@ -4,6 +4,14 @@ import { Button } from "@/components/ui";
 import Image from "next/image";
 
 export default function ContactPage() {
+  const utm = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const utmFields = utm ? {
+    source: utm.get('utm_source') || '',
+    medium: utm.get('utm_medium') || '',
+    campaign: utm.get('utm_campaign') || '',
+    content: utm.get('utm_content') || '',
+    term: utm.get('utm_term') || ''
+  } : { source: '', medium: '', campaign: '', content: '', term: '' };
   return (
     <div className="min-h-screen bg-white">
       <MarketingNav active="contact" />
@@ -124,6 +132,12 @@ export default function ContactPage() {
               </div>
               
               <Button className="w-full" type="submit">Mesajı Gönder</Button>
+              {/* UTM Hidden Fields */}
+              <input type="hidden" name="utm_source" value={utmFields.source} />
+              <input type="hidden" name="utm_medium" value={utmFields.medium} />
+              <input type="hidden" name="utm_campaign" value={utmFields.campaign} />
+              <input type="hidden" name="utm_content" value={utmFields.content} />
+              <input type="hidden" name="utm_term" value={utmFields.term} />
             </form>
           </div>
         </div>

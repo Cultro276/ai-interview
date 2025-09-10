@@ -1,5 +1,5 @@
 "use client";
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
@@ -56,6 +56,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const { user, token } = useAuth();
 
   const cacheKey = typeof window !== 'undefined' && user ? `dashboardData:${user.id}` : null;
+  const notifiedKey = typeof window !== 'undefined' && user ? `notifiedAnalyses:${user.id}` : null;
+  const notifiedRef = useRef<Set<number>>(new Set());
 
   const loadData = async () => {
     try {
@@ -182,6 +184,68 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     setInterviews([]);
     setDataLoaded(false);
   }, [user?.id, token]);
+
+  // Load previously notified analysis ids from sessionStorage
+  useEffect(() => {
+    if (typeof window === 'undefined' || !notifiedKey) return;
+    try {
+      const raw = sessionStorage.getItem(notifiedKey);
+      if (raw) {
+        const arr: number[] = JSON.parse(raw);
+        notifiedRef.current = new Set(Array.isArray(arr) ? arr : []);
+      }
+    } catch {}
+  }, [notifiedKey]);
+
+  // Attempt to show a browser notification (graceful no-op if blocked)
+  const tryShowNotification = (title: string, body: string, url?: string) => {
+    if (typeof window === 'undefined' || !("Notification" in window)) return;
+    const show = () => {
+      try {
+        const n = new Notification(title, { body, icon: "/logo.png" });
+        if (url) {
+          n.onclick = () => {
+            try { window.focus(); } catch {}
+            try { window.open(url, "_blank"); } catch {}
+          };
+        }
+      } catch {}
+    };
+    if (Notification.permission === 'granted') {
+      show();
+    } else if (Notification.permission === 'default') {
+      try {
+        Notification.requestPermission().then((perm) => {
+          if (perm === 'granted') show();
+        });
+      } catch {}
+    }
+  };
+
+  // Detect newly completed interviews, ensure analysis exists, then notify once
+  useEffect(() => {
+    if (!dataLoaded || !interviews?.length) return;
+    const completed = interviews.filter(iv => iv.status === 'completed');
+    completed.forEach(async (iv) => {
+      if (notifiedRef.current.has(iv.id)) return;
+      try {
+        // Ensure analysis exists (backend returns existing or generates if missing)
+        await apiFetch(`/api/v1/conversations/analysis/${iv.id}`);
+        const cand = candidates.find(c => c.id === iv.candidate_id);
+        const name = cand?.name || `Aday #${iv.candidate_id}`;
+        const title = "Rapor hazır";
+        const body = `${name} için analiz raporu tamamlandı.`;
+        const url = `/jobs/${iv.job_id}/candidates`;
+        tryShowNotification(title, body, url);
+        notifiedRef.current.add(iv.id);
+        if (typeof window !== 'undefined' && notifiedKey) {
+          try { sessionStorage.setItem(notifiedKey, JSON.stringify(Array.from(notifiedRef.current))); } catch {}
+        }
+      } catch {
+        // ignore and try next cycle
+      }
+    });
+  }, [interviews, candidates, dataLoaded, notifiedKey]);
 
   return (
     <DashboardContext.Provider

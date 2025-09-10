@@ -21,6 +21,7 @@ from src.api.v1.schemas import (
 from src.services.analysis import generate_llm_full_analysis
 from src.services.reporting import InterviewReportGenerator, export_to_markdown, export_to_structured_json
 from src.core.metrics import collector, Timer
+from src.core.mail import send_email_resend
 from fastapi import Request
 from slowapi.util import get_remote_address
 from slowapi import Limiter
@@ -244,6 +245,65 @@ async def create_analysis(
     with Timer() as t:
         result = await generate_llm_full_analysis(session, analysis_in.interview_id)
     collector.record_analysis_ms(t.ms)
+    # Notify responsible users via email (best-effort)
+    try:
+        # Find interview, job and owner email
+        interview = (await session.execute(select(Interview).where(Interview.id == analysis_in.interview_id))).scalar_one_or_none()
+        if interview:
+            job = (await session.execute(select(Job).where(Job.id == interview.job_id))).scalar_one_or_none()
+            if job:
+                # Build recipient list: current_user + job owner + team members under same tenant (owner_user_id)
+                recipients: set[str] = set()
+                try:
+                    # current_user (who likely initiated report view)
+                    if getattr(current_user, "email", None):
+                        recipients.add(current_user.email)
+                except Exception:
+                    pass
+                # Prefer explicit creators when available
+                try:
+                    cand = (await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))).scalar_one_or_none()
+                except Exception:
+                    cand = None
+                if cand and getattr(cand, "created_by_user_id", None):
+                    creator = (await session.execute(select(User).where(User.id == cand.created_by_user_id))).scalar_one_or_none()
+                    if creator and getattr(creator, "email", None):
+                        recipients.add(creator.email)
+                # job owner / creator
+                owner = (await session.execute(select(User).where(User.id == job.user_id))).scalar_one_or_none()
+                if owner and getattr(owner, "email", None):
+                    recipients.add(owner.email)
+                if getattr(job, "created_by_user_id", None):
+                    jcreator = (await session.execute(select(User).where(User.id == job.created_by_user_id))).scalar_one_or_none()
+                    if jcreator and getattr(jcreator, "email", None):
+                        recipients.add(jcreator.email)
+                # team members under same tenant
+                team_rows = await session.execute(select(User).where(User.owner_user_id == job.user_id))
+                team = team_rows.scalars().all()
+                for u in team:
+                    if getattr(u, "email", None) and (getattr(u, "role", None) in {"organization_admin", "hr_manager", "recruiter"} or not getattr(u, "role", None)):
+                        recipients.add(u.email)
+
+                if recipients:
+                    cand = (await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))).scalar_one_or_none()
+                    cand_name = getattr(cand, "name", None) or f"Aday #{interview.candidate_id}"
+                    job_title = getattr(job, "title", None) or "Pozisyon"
+                    subject = f"Rapor hazır: {cand_name} – {job_title}"
+                    body = (
+                        f"Merhaba,\n\n"
+                        f"{cand_name} için {job_title} mülakat analiz raporu hazırlandı.\n"
+                        f"Raporu panele giriş yaparak görüntüleyebilirsiniz.\n\n"
+                        f"Görüşme ID: {interview.id}\n"
+                        f"Saygılarımızla\n"
+                        f"RecruiterAI"
+                    )
+                    for email in recipients:
+                        try:
+                            await send_email_resend(email, subject, body)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
     return result
 
 
@@ -273,7 +333,61 @@ async def get_analysis(
     analysis = result.scalar_one_or_none()
     if analysis:
         return analysis
-    return await generate_llm_full_analysis(session, interview_id)
+    result = await generate_llm_full_analysis(session, interview_id)
+    # Notify responsible users via email (best-effort)
+    try:
+        interview = (await session.execute(select(Interview).where(Interview.id == interview_id))).scalar_one_or_none()
+        if interview:
+            job = (await session.execute(select(Job).where(Job.id == interview.job_id))).scalar_one_or_none()
+            if job:
+                recipients: set[str] = set()
+                try:
+                    if getattr(current_user, "email", None):
+                        recipients.add(current_user.email)
+                except Exception:
+                    pass
+                # Prefer explicit creators when available
+                try:
+                    cand = (await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))).scalar_one_or_none()
+                except Exception:
+                    cand = None
+                if cand and getattr(cand, "created_by_user_id", None):
+                    creator = (await session.execute(select(User).where(User.id == cand.created_by_user_id))).scalar_one_or_none()
+                    if creator and getattr(creator, "email", None):
+                        recipients.add(creator.email)
+                owner = (await session.execute(select(User).where(User.id == job.user_id))).scalar_one_or_none()
+                if owner and getattr(owner, "email", None):
+                    recipients.add(owner.email)
+                if getattr(job, "created_by_user_id", None):
+                    jcreator = (await session.execute(select(User).where(User.id == job.created_by_user_id))).scalar_one_or_none()
+                    if jcreator and getattr(jcreator, "email", None):
+                        recipients.add(jcreator.email)
+                team_rows = await session.execute(select(User).where(User.owner_user_id == job.user_id))
+                team = team_rows.scalars().all()
+                for u in team:
+                    if getattr(u, "email", None) and (getattr(u, "role", None) in {"organization_admin", "hr_manager", "recruiter"} or not getattr(u, "role", None)):
+                        recipients.add(u.email)
+                if recipients:
+                    cand = (await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))).scalar_one_or_none()
+                    cand_name = getattr(cand, "name", None) or f"Aday #{interview.candidate_id}"
+                    job_title = getattr(job, "title", None) or "Pozisyon"
+                    subject = f"Rapor hazır: {cand_name} – {job_title}"
+                    body = (
+                        f"Merhaba,\n\n"
+                        f"{cand_name} için {job_title} mülakat analiz raporu hazırlandı.\n"
+                        f"Raporu panele giriş yaparak görüntüleyebilirsiniz.\n\n"
+                        f"Görüşme ID: {interview.id}\n"
+                        f"Saygılarımızla\n"
+                        f"RecruiterAI"
+                    )
+                    for email in recipients:
+                        try:
+                            await send_email_resend(email, subject, body)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    return result
 
 
 # --- Requirements coverage (for dashboard heatmap) ---

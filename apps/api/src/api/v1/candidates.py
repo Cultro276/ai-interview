@@ -147,7 +147,7 @@ async def create_candidate(
         candidate_data['phone'] = _norm_phone(candidate_data.get('phone'))
     if 'linkedin_url' in candidate_data:
         candidate_data['linkedin_url'] = _norm_linkedin(candidate_data.get('linkedin_url'))
-    candidate = Candidate(**candidate_data, user_id=get_effective_owner_id(current_user))
+    candidate = Candidate(**candidate_data, user_id=get_effective_owner_id(current_user), created_by_user_id=current_user.id)
     candidate.token = uuid4().hex
     # If caller didn't specify, fallback to 7 days
     candidate.expires_at = datetime.utcnow() + timedelta(days=candidate_in.expires_in_days or 7)

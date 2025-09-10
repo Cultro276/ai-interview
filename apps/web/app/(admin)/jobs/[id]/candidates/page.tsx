@@ -56,6 +56,7 @@ export default function JobCandidatesPage() {
   const jobCandidates = useMemo(() => candidates.filter((c) => jobCandidateIds.includes(c.id)), [candidates, jobCandidateIds]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "completed" | "pending">("all");
+  const [scoreBand, setScoreBand] = useState<'all' | '70+' | '50-69' | '<50'>('all');
   const [hasCvOnly, setHasCvOnly] = useState(false);
   const [hasMediaOnly, setHasMediaOnly] = useState(false);
   const [dateFrom, setDateFrom] = useState<string>("");
@@ -130,6 +131,13 @@ export default function JobCandidatesPage() {
     const path = typeof window !== 'undefined' ? window.location.pathname : `/jobs/${jobId}/candidates`;
     router.replace(qs ? `${path}?${qs}` : path, { scroll: false });
   }, [search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy, pageNum, jobId, router]);
+
+  // Reset score band when not in completed status
+  useEffect(() => {
+    if (statusFilter !== 'completed' && scoreBand !== 'all') {
+      setScoreBand('all');
+    }
+  }, [statusFilter, scoreBand]);
 
   // Report modal state
   const [reportOpen, setReportOpen] = useState(false);
@@ -247,9 +255,10 @@ export default function JobCandidatesPage() {
     try {
       // 1) Try to fetch existing (will generate if yok)
       let data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
-      // 2) If not LLM, trigger recompute and poll until llm-full-v1 or timeout
-      const isLlm = (data?.model_used || "").toLowerCase().includes("llm-full");
-      if (!isLlm) {
+      // 2) If not ready, trigger recompute and poll until analysis ready or timeout
+      const model0 = (data?.model_used || "").toLowerCase();
+      const isReady0 = model0.includes("llm-full") || model0.includes("comprehensive") || model0.includes("premium");
+      if (!isReady0) {
         try { await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`, { method: "PUT", body: JSON.stringify({ interview_id: intId }) }); } catch {}
         const started = Date.now();
         const timeoutMs = 25000;
@@ -258,7 +267,9 @@ export default function JobCandidatesPage() {
           await new Promise(r => setTimeout(r, 1500));
           try {
             data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
-            if ((data?.model_used || "").toLowerCase().includes("llm-full")) break;
+            const model = (data?.model_used || "").toLowerCase();
+            const ready = model.includes("llm-full") || model.includes("comprehensive") || model.includes("premium");
+            if (ready) break;
           } catch {}
         }
       }
@@ -620,6 +631,13 @@ export default function JobCandidatesPage() {
         if (statusFilter !== "all") {
           if (!it || it.status !== statusFilter) return false;
         }
+        if (statusFilter === 'completed' && scoreBand !== 'all') {
+          const sc = typeof it?.overall_score === 'number' ? it.overall_score : null;
+          if (sc === null) return false;
+          if (scoreBand === '70+' && sc < 70) return false;
+          if (scoreBand === '50-69' && (sc < 50 || sc > 69)) return false;
+          if (scoreBand === '<50' && sc >= 50) return false;
+        }
         if (hasCvOnly && !c.resume_url) return false;
         if (hasMediaOnly) {
           if (!it || (!it.audio_url && !it.video_url)) return false;
@@ -673,6 +691,17 @@ export default function JobCandidatesPage() {
   }, [jobCandidates, search, statusFilter, hasCvOnly, hasMediaOnly, dateFrom, dateTo, minDurationMin, maxDurationMin, sortBy, findLatestInterview]);
 
   const totalPages = Math.max(1, Math.ceil(filteredSortedCandidates.length / 10));
+
+  // Counts for filter badges
+  const statusCounts = useMemo(() => {
+    let completed = 0, pending = 0;
+    for (const c of jobCandidates) {
+      const it: any = findLatestInterview(c.id);
+      if (it?.status === 'completed') completed++;
+      else pending++;
+    }
+    return { all: jobCandidates.length, completed, pending };
+  }, [jobCandidates, findLatestInterview]);
 
   // Clamp current page within [1, totalPages]
   useEffect(() => {
@@ -861,11 +890,22 @@ export default function JobCandidatesPage() {
             <label className="text-sm text-gray-600 flex items-center gap-2">
               Durum:
               <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
-                <option value="all">Tümü</option>
-                <option value="completed">Tamamlanan</option>
-                <option value="pending">Bekleyen</option>
+                <option value="all">Tümü ({statusCounts.all})</option>
+                <option value="completed">Tamamlanan ({statusCounts.completed})</option>
+                <option value="pending">Bekleyen ({statusCounts.pending})</option>
               </select>
             </label>
+            {statusFilter === 'completed' && (
+              <label className="text-sm text-gray-600 flex items-center gap-2">
+                Skor bandı:
+                <select value={scoreBand} onChange={(e) => setScoreBand(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
+                  <option value="all">Tümü</option>
+                  <option value="70+">≥ 70</option>
+                  <option value="50-69">50–69</option>
+                  <option value="<50">&lt; 50</option>
+                </select>
+              </label>
+            )}
             <label className="text-sm text-gray-600 flex items-center gap-2">
               <input type="checkbox" checked={hasCvOnly} onChange={(e) => setHasCvOnly(e.target.checked)} />
               Sadece CV&apos;si olanlar

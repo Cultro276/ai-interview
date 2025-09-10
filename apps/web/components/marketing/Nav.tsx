@@ -17,6 +17,7 @@ export function MarketingNav({ active }: { active?: "home" | "contact" }) {
       <div className="hidden md:flex space-x-8">
         <Link href="/solutions" className={`${active === "home" ? "text-brand-700 font-semibold" : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"}`}>Çözümler</Link>
         <Link href="/how-it-works" className={`text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white`}>Nasıl Çalışır</Link>
+        <Link href="/roi" className={`text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white`}>ROI</Link>
         <Link href="/contact" className={`${active === "contact" ? "text-brand-700 font-semibold" : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"}`}>İletişim</Link>
       </div>
       <div className="flex space-x-3 items-center">

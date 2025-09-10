@@ -123,6 +123,7 @@ async def create_job(
         description=job_in.description,
         extra_questions=(job_in.extra_questions or None),
         user_id=get_effective_owner_id(current_user),
+        created_by_user_id=current_user.id,
         default_invite_expiry_days=expiry,
     )
     session.add(job)
@@ -314,6 +315,7 @@ async def bulk_upload_candidates(
             try:
                 cand = Candidate(
                     user_id=owner_id,
+                    created_by_user_id=current_user.id,
                     name=(name or "Candidate").strip() or "Candidate",
                     email=use_email,
                     phone=None,
@@ -464,6 +466,7 @@ async def create_candidate_for_job(
     try:
         candidate = Candidate(
             user_id=owner_id,
+            created_by_user_id=current_user.id,
             name=cand_in.name,
             email=cand_in.email,
             resume_url=cand_in.resume_url,

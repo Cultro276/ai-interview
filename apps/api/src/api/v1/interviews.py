@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from src.services.analysis import generate_llm_full_analysis
 from src.services.analysis import merge_enrichment_into_analysis
 from src.core.metrics import collector, Timer
+from src.core.mail import send_email_resend
 from pydantic import BaseModel
 import httpx
 import asyncio
@@ -241,11 +242,43 @@ async def list_interviews(
     # Only show interviews for jobs that belong to the tenant owner
     owner_id = get_effective_owner_id(current_user)
     result = await session.execute(
-        select(Interview)
+        select(Interview, User)
         .join(Job, Interview.job_id == Job.id)
+        .join(User, User.id == Job.user_id)
         .where(Job.user_id == owner_id)
     )
-    return result.scalars().all()
+    rows = result.all()
+    out: List[InterviewRead] = []
+    for iv, user in rows:
+        try:
+            iv_dict = {
+                "id": iv.id,
+                "job_id": iv.job_id,
+                "candidate_id": iv.candidate_id,
+                "status": iv.status,
+                "created_at": iv.created_at,
+                "audio_url": iv.audio_url,
+                "video_url": iv.video_url,
+                "completed_at": iv.completed_at,
+                "completed_ip": iv.completed_ip,
+                "prepared_first_question": iv.prepared_first_question,
+                "company_name": getattr(user, "company_name", None),
+            }
+            # Try to include latest overall_score if analysis exists
+            try:
+                from sqlalchemy import select as _select
+                from src.db.models.conversation import InterviewAnalysis
+                row = await session.execute(_select(InterviewAnalysis).where(InterviewAnalysis.interview_id == iv.id))
+                ana = row.scalar_one_or_none()
+                over = getattr(ana, "overall_score", None)
+                if isinstance(over, (int, float)):
+                    iv_dict["overall_score"] = float(over)
+            except Exception:
+                pass
+            out.append(InterviewRead(**iv_dict))
+        except Exception:
+            continue
+    return out
 
 
 @candidate_router.get("/by-token/{token}", response_model=InterviewRead)
@@ -265,7 +298,6 @@ async def get_interview_by_token(token: str, session: AsyncSession = Depends(get
     if not interview:
         # Create a placeholder interview so that the client can record conversation messages
         # Choose the newest job for this tenant; if none exists, create a minimal interview without job context
-        from src.db.models.job import Job
         job = (
             await session.execute(
                 select(Job).where(Job.user_id == cand.user_id).order_by(Job.created_at.desc())
@@ -412,7 +444,6 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Reques
     ).scalar_one_or_none()
     if not interview:
         # Create new interview if none exists. Choose a job that belongs to the same tenant (cand.user_id)
-        from src.db.models.job import Job
         job = (
             await session.execute(
                 select(Job).where(Job.user_id == cand.user_id).order_by(Job.created_at.desc())
@@ -482,7 +513,7 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Reques
     try:
         if interview.status == "completed":
             with Timer() as t:
-                await generate_llm_full_analysis(session, interview.id)
+                analysis = await generate_llm_full_analysis(session, interview.id)
             collector.record_analysis_ms(t.ms)
             # Audit LLM kickoff
             try:
@@ -492,6 +523,52 @@ async def upload_media(token:str, media_in:InterviewMediaUpdate, request: Reques
                     message="Analysis generation started",
                     context=AuditContext(resource_type="interview", resource_id=interview.id)
                 )
+            except Exception:
+                pass
+            # Notify responsible users best-effort
+            try:
+                job = (await session.execute(select(Job).where(Job.id == interview.job_id))).scalar_one_or_none()
+                if job:
+                    recipients: set[str] = set()
+                    # prefer creators when available
+                    cand = (await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))).scalar_one_or_none()
+                    if cand and getattr(cand, "created_by_user_id", None):
+                        creator = (await session.execute(select(User).where(User.id == cand.created_by_user_id))).scalar_one_or_none()
+                        if creator and getattr(creator, "email", None):
+                            recipients.add(creator.email)
+                    # job owner
+                    owner = (await session.execute(select(User).where(User.id == job.user_id))).scalar_one_or_none()
+                    if owner and getattr(owner, "email", None):
+                        recipients.add(owner.email)
+                    # job creator
+                    if getattr(job, "created_by_user_id", None):
+                        jcreator = (await session.execute(select(User).where(User.id == job.created_by_user_id))).scalar_one_or_none()
+                        if jcreator and getattr(jcreator, "email", None):
+                            recipients.add(jcreator.email)
+                    # team members under same tenant
+                    team_rows = await session.execute(select(User).where(User.owner_user_id == job.user_id))
+                    team = team_rows.scalars().all()
+                    for u in team:
+                        if getattr(u, "email", None) and (getattr(u, "role", None) in {"organization_admin", "hr_manager", "recruiter"} or not getattr(u, "role", None)):
+                            recipients.add(u.email)
+                    if recipients:
+                        cand = (await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))).scalar_one_or_none()
+                        cand_name = getattr(cand, "name", None) or f"Aday #{interview.candidate_id}"
+                        job_title = getattr(job, "title", None) or "Pozisyon"
+                        subject = f"Rapor hazır: {cand_name} – {job_title}"
+                        body = (
+                            f"Merhaba,\n\n"
+                            f"{cand_name} için {job_title} mülakat analiz raporu hazırlandı.\n"
+                            f"Raporu panele giriş yaparak görüntüleyebilirsiniz.\n\n"
+                            f"Görüşme ID: {interview.id}\n"
+                            f"Saygılarımızla\n"
+                            f"RecruiterAI"
+                        )
+                        for email in recipients:
+                            try:
+                                await send_email_resend(email, subject, body)
+                            except Exception:
+                                pass
             except Exception:
                 pass
     except Exception:
