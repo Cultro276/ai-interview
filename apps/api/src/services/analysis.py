@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from src.db.models.interview import Interview
+from src.services.nlp import extract_cv_facts
 from src.db.models.job import Job
 
 from src.db.models.conversation import ConversationMessage, InterviewAnalysis
@@ -139,6 +140,23 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
     ).scalar_one_or_none()
 
     # Prepare competency JSON for technical_assessment
+    cv_facts = {}
+    try:
+        # Try to include CV facts like military status for reliability in the report
+        from src.db.models.candidate import Candidate
+        from src.db.models.candidate_profile import CandidateProfile
+        cand = (
+            await session.execute(select(Candidate).join(Interview, Interview.candidate_id == Candidate.id).where(Interview.id == interview_id))
+        ).scalar_one_or_none()
+        if cand:
+            prof = (
+                await session.execute(select(CandidateProfile).where(CandidateProfile.candidate_id == cand.id))
+            ).scalar_one_or_none()
+            if prof and getattr(prof, "resume_text", None):
+                # Optionally extract facts only when text exists (gender-neutral; no display unless required)
+                cv_facts = await extract_cv_facts(prof.resume_text or "")
+    except Exception:
+        cv_facts = {}
     # Build meta stats for UI
     meta = {
         "question_count": len([m for m in messages if m.role.value == "assistant"]),
@@ -178,6 +196,8 @@ async def generate_rule_based_analysis(session: AsyncSession, interview_id: int)
         "avg_inter_question_gap_seconds": avg_q_gap,
     }
     competency_json = {"competencies": {"communication": comm, "technical": tech, "cultural_fit": culture}, "meta": meta}
+    if cv_facts:
+        competency_json["cv_facts"] = cv_facts
 
     if existing:
         existing.overall_score = overall

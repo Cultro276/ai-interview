@@ -26,12 +26,9 @@ import json
 from src.core.config import settings
 from typing import Optional
 from src.core.audit import AuditLogger, AuditEventType, AuditContext
+from src.services.comprehensive_analyzer import ComprehensiveAnalyzer
 
-# Hint pyright that 3rd-party imports are available at runtime
-if TYPE_CHECKING:
-    import fastapi  # noqa: F401
-    import sqlalchemy  # noqa: F401
-    import pydantic  # noqa: F401
+# Note: legacy endpoints for requirements/rubric config were removed
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -122,6 +119,7 @@ async def create_job(
         title=job_in.title,
         description=job_in.description,
         extra_questions=(job_in.extra_questions or None),
+        rubric_json=(job_in.rubric_json or None),
         user_id=get_effective_owner_id(current_user),
         created_by_user_id=current_user.id,
         default_invite_expiry_days=expiry,
@@ -129,6 +127,23 @@ async def create_job(
     session.add(job)
     await session.commit()
     await session.refresh(job)
+    # If no rubric_json provided, infer default weights based on title
+    try:
+        if not job.rubric_json:
+            analyzer = ComprehensiveAnalyzer()
+            weights = analyzer._infer_rubric_weights(job.title or "")
+            crit = [
+                {"label": "Problem Çözme", "weight": float(weights.get("problem", 0.25))},
+                {"label": "Teknik Yeterlilik", "weight": float(weights.get("technical", 0.35))},
+                {"label": "İletişim", "weight": float(weights.get("communication", 0.2))},
+                {"label": "Kültür/İş Uygunluğu", "weight": float(weights.get("culture", 0.2))},
+            ]
+            import json as _json
+            job.rubric_json = _json.dumps({"criteria": crit}, ensure_ascii=False)
+            await session.commit()
+            await session.refresh(job)
+    except Exception:
+        pass
     # Audit
     try:
         audit = AuditLogger()
@@ -159,7 +174,7 @@ async def update_job(
     for field, value in job_in.dict(exclude_unset=True).items():
         if field == "expires_in_days" and value is not None:
             job.default_invite_expiry_days = value
-        elif field in {"title", "description", "extra_questions"}:
+        elif field in {"title", "description", "extra_questions", "rubric_json"}:
             setattr(job, field, value)
     await session.commit()
     await session.refresh(job)

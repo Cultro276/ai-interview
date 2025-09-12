@@ -19,7 +19,7 @@ services:
     env_file:
       - ./apps/api/.env
     environment:
-      - ENCRYPTION_MASTER_KEY=iwWlsYVwbcm9S6CjILJEsDmn8DHkxKvo
+      - OPENAI_TTS_VOICE=${OPENAI_TTS_VOICE:-coral}
     volumes:
       - ./apps/api:/app
     depends_on:
@@ -33,6 +33,10 @@ services:
     command: npm run dev
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_INTERVIEW_STREAMING=true
+      - NEXT_PUBLIC_INTERVIEW_REALTIME=false
+      - NEXT_PUBLIC_OPENAI_REALTIME_URL=https://api.openai.com/v1/realtime
+      - NEXT_PUBLIC_OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
     volumes:
       - ./apps/web:/usr/src/app
       - /usr/src/app/node_modules

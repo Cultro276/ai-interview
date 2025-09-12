@@ -73,7 +73,7 @@ class JobBase(BaseModel):
     description: Optional[str] = None
     extra_questions: Optional[str] = None
     expires_in_days: Optional[int] = Field(default=None, ge=1, le=365, description="Default invite link expiry for this job")
-    # Removed manual requirements/rubric configuration
+    rubric_json: Optional[str] = Field(default=None, description="Optional rubric JSON (criteria+weights)")
 
 
 class JobCreate(JobBase):
@@ -84,7 +84,7 @@ class JobUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
     extra_questions: Optional[str] = None
-    # Removed manual requirements/rubric configuration
+    rubric_json: Optional[str] = None
 
 
 class JobRead(JobBase):

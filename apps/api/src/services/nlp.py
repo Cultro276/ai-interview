@@ -25,6 +25,63 @@ def _best_phone_tr(text_in: str) -> str | None:
 
 
 from src.core.config import settings
+async def extract_cv_facts(resume_text: str) -> Dict[str, Any]:
+    """Extract structured CV facts with strong normalization.
+
+    Returns: { "military_status": "tecilli|muaf|tamamlandi|bilinmiyor", "notes": str }
+    Fallback uses regex heuristics for Turkish CVs.
+    """
+    text = (resume_text or "").strip()
+    if not text:
+        return {"military_status": "bilinmiyor"}
+
+    # Heuristic fallback first to reduce API dependency
+    try:
+        low = text.lower()
+        # common tokens
+        if "asker" in low or "askerlik" in low:
+            if any(k in low for k in ["muaf", "muafiyet", "sağlık nedeniyle muaf", "yoklama kaçağı değil", "yapmaktan muaf"]):
+                return {"military_status": "muaf"}
+            if any(k in low for k in ["tamamlandı", "yapıldı", "yapmistir", "terhis", "bitirdi", "tamamladım", "yaptım"]):
+                return {"military_status": "tamamlandi"}
+            if any(k in low for k in ["tecilli", "tecil", "ertelendi", "erteleme"]):
+                return {"military_status": "tecilli"}
+    except Exception:
+        pass
+
+    if not settings.openai_api_key:
+        return {"military_status": "bilinmiyor"}
+
+    prompt = (
+        "Aşağıdaki özgeçmiş metninden askerlik durumunu çıkar. Sadece JSON döndür.\n"
+        "Şema: {\"military_status\": \"tecilli|muaf|tamamlandi|bilinmiyor\", \"notes\": str|null}.\n"
+        "Kurallar: Metin yoksa veya kesin değilse 'bilinmiyor' yaz. 'tamamlandi' = görev yapıldı/terhis. 'tecilli' = erteli/tecil. 'muaf' = muafiyet. Türkçe döndür.\n\n"
+        f"Özgeçmiş:\n{text[:5000]}"
+    )
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    body = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            import json as _json
+            obj = _json.loads(data["choices"][0]["message"]["content"])
+            ms = (obj or {}).get("military_status")
+            if ms not in {"tecilli", "muaf", "tamamlandi", "bilinmiyor"}:
+                ms = "bilinmiyor"
+            out = {"military_status": ms}
+            if isinstance(obj.get("notes"), str) and obj.get("notes").strip():
+                out["notes"] = obj.get("notes").strip()
+            return out
+    except Exception:
+        return {"military_status": "bilinmiyor"}
+
 
 
 async def extract_soft_skills(text: str, job_desc: str | None = None) -> Dict[str, Any]:
@@ -545,25 +602,9 @@ MÜLAKAT TRANSKRİPTİ:
 # --- Job requirements extraction (normalize spec from Turkish job description) ---
 
 async def extract_requirements_spec(job_desc: str) -> Dict[str, Any]:
-    """Normalize job requirements from a Turkish job description into a structured spec.
+    """Deprecated shim; use services.comprehensive_analyzer.extract_requirements_spec.
 
-    Shape:
-    {
-      "items": [
-        {
-          "id": str,
-          "label": str,
-          "must": bool,
-          "level": "junior|mid|senior|lead",
-          "weight": float (0..1),
-          "keywords": [str],
-          "success_rubric": str,
-          "question_templates": [str]
-        }
-      ]
-    }
-
-    Falls back to a simple keyword-based list if LLM is unavailable.
+    Maintained for compatibility while callers migrate.
     """
     if not (job_desc or "").strip():
         return {"items": []}
@@ -595,39 +636,10 @@ async def extract_requirements_spec(job_desc: str) -> Dict[str, Any]:
             })
         return {"items": items}
 
-    # LLM path
-    import httpx  # local import in function scope
-    import json as _json
-    prompt = (
-        "Aşağıdaki iş ilanından gereksinimleri çıkar ve normalize et. JSON dön.\n"
-        "Şema: {\"items\":[{\"id\":str,\"label\":str,\"must\":bool,\"level\":\"junior|mid|senior|lead\","
-        "\"weight\":0-1,\"keywords\":[str],\"success_rubric\":str,\"question_templates\":[str]}]}\n"
-        f"İlan Metni:\n{job_desc[:5000]}"
-    )
-    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    # Delegate to comprehensive analyzer for LLM path
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post("https://api.openai.com/v1/chat/completions", json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            spec = _json.loads(data["choices"][0]["message"]["content"])
-            # Defensive normalization
-            items = spec.get("items") if isinstance(spec, dict) else None
-            if not isinstance(items, list):
-                return {"items": []}
-            for i, it in enumerate(items):
-                if not isinstance(it, dict):
-                    continue
-                it.setdefault("id", f"req_{i}")
-                it["weight"] = float(it.get("weight", 0.5) or 0.5)
-                kws = it.get("keywords") or []
-                if not isinstance(kws, list) or not kws:
-                    it["keywords"] = [it.get("label", "")]
-                qts = it.get("question_templates") or []
-                if not isinstance(qts, list) or not qts:
-                    it["question_templates"] = [f"{it.get('label','')} ile ilgili somut bir örnek anlatır mısınız?"]
-            return {"items": items}
+        from src.services.comprehensive_analyzer import extract_requirements_spec as _new_extract
+        return await _new_extract(job_desc)
     except Exception:
         return {"items": []}
 # --- CV parsing helpers (bytes -> text) and spotlights ---

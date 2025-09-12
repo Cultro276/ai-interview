@@ -17,7 +17,9 @@ class Job(Base):
     # Optional extra questions entered by the recruiter (newline-separated)
     extra_questions: Mapped[str | None] = mapped_column(Text(), nullable=True)
     default_invite_expiry_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
-    # Removed manual requirements/rubric configuration (now derived dynamically)
+    # Optional rubric configuration stored as JSON string (criteria + weights)
+    rubric_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    # Removed manual requirements configuration (now derived dynamically)
     created_at: Mapped[dt.datetime] = mapped_column(
         default=func.now(), nullable=False, server_default=func.now()
     )

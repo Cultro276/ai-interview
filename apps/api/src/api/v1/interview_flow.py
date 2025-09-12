@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from src.db.session import get_session
 from src.db.models.interview import Interview
 from src.db.models.job import Job
@@ -222,21 +223,57 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         # Ultimate fallback for any position
                         q0 = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucunu kısaca paylaşır mısınız?"
                 
-                # ✅ FIX: Store first question in database to include in transcript
+                # ✅ Store first question in database with correct next sequence number
                 if q0:
                     try:
+                        last_msg = (
+                            await session.execute(
+                                select(ConversationMessage)
+                                .where(ConversationMessage.interview_id == req.interview_id)
+                                .order_by(ConversationMessage.sequence_number.desc())
+                            )
+                        ).scalars().first()
+                        next_seq0 = (last_msg.sequence_number if last_msg else 0) + 1
                         first_msg = ConversationMessage(
                             interview_id=req.interview_id,
                             role=DBMessageRole.ASSISTANT,
                             content=q0,
-                            sequence_number=1,
+                            sequence_number=next_seq0,
                         )
                         session.add(first_msg)
                         await session.commit()
                     except Exception as e:
                         # Handle potential sequence conflicts gracefully
-                        await session.rollback()
-                        print(f"Failed to store first question in DB: {e}")
+                        try:
+                            await session.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            # Retry once with refreshed sequence
+                            last_msg = (
+                                await session.execute(
+                                    select(ConversationMessage)
+                                    .where(ConversationMessage.interview_id == req.interview_id)
+                                    .order_by(ConversationMessage.sequence_number.desc())
+                                )
+                            ).scalars().first()
+                            next_seq0 = (last_msg.sequence_number if last_msg else 0) + 1
+                            session.add(
+                                ConversationMessage(
+                                    interview_id=req.interview_id,
+                                    role=DBMessageRole.ASSISTANT,
+                                    content=q0,
+                                    sequence_number=next_seq0,
+                                )
+                            )
+                            await session.commit()
+                        except Exception:
+                            try:
+                                await session.rollback()
+                            except Exception:
+                                pass
+                            # Best-effort: continue without failing the request
+                            print(f"Failed to store first question in DB: {e}")
                 # Friendly intro with candidate name and job title
                 intro = None
                 try:
@@ -809,16 +846,53 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 
                 if targeted_question:
                     # Return adaptive question directly
-                    next_seq2 = (last.sequence_number if last else 0) + 1
-                    session.add(
-                        ConversationMessage(
-                            interview_id=body.interview_id,
-                            role=DBMessageRole.ASSISTANT,
-                            content=targeted_question,
-                            sequence_number=next_seq2,
+                    last_adapt = (
+                        await session.execute(
+                            select(ConversationMessage)
+                            .where(ConversationMessage.interview_id == body.interview_id)
+                            .order_by(ConversationMessage.sequence_number.desc())
                         )
-                    )
-                    await session.commit()
+                    ).scalars().first()
+                    next_seq2 = (last_adapt.sequence_number if last_adapt else 0) + 1
+                    try:
+                        session.add(
+                            ConversationMessage(
+                                interview_id=body.interview_id,
+                                role=DBMessageRole.ASSISTANT,
+                                content=targeted_question,
+                                sequence_number=next_seq2,
+                            )
+                        )
+                        await session.commit()
+                    except Exception:
+                        # On conflict, rollback and retry once with refreshed sequence
+                        try:
+                            await session.rollback()
+                        except Exception:
+                            pass
+                        last_retry = (
+                            await session.execute(
+                                select(ConversationMessage)
+                                .where(ConversationMessage.interview_id == body.interview_id)
+                                .order_by(ConversationMessage.sequence_number.desc())
+                            )
+                        ).scalars().first()
+                        next_seq_retry = (last_retry.sequence_number if last_retry else 0) + 1
+                        try:
+                            session.add(
+                                ConversationMessage(
+                                    interview_id=body.interview_id,
+                                    role=DBMessageRole.ASSISTANT,
+                                    content=targeted_question,
+                                    sequence_number=next_seq_retry,
+                                )
+                            )
+                            await session.commit()
+                        except Exception:
+                            try:
+                                await session.rollback()
+                            except Exception:
+                                pass
                     return NextQuestionResponse(question=targeted_question, done=False, live=live)
     except Exception as e:
         # Fall back to standard question generation
@@ -861,8 +935,16 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 ).scalars().first()
                 
                 if not existing_msg:
-                    next_seq2 = (last2.sequence_number if last2 else 0) + 1
-                    
+                    # Re-fetch latest last to avoid race with parallel inserts
+                    latest_last = (
+                        await session.execute(
+                            select(ConversationMessage)
+                            .where(ConversationMessage.interview_id == body.interview_id)
+                            .order_by(ConversationMessage.sequence_number.desc())
+                        )
+                    ).scalars().first()
+                    next_seq2 = (latest_last.sequence_number if latest_last else 0) + 1
+
                     # Double-check for sequence conflicts before inserting
                     seq_conflict = (
                         await session.execute(
@@ -873,21 +955,44 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                             )
                         )
                     ).scalars().first()
-                    
-                    if not seq_conflict:
-                        session.add(
-                            ConversationMessage(
-                                interview_id=body.interview_id,
-                                role=DBMessageRole.ASSISTANT,
-                                content=result.question,
-                                sequence_number=next_seq2,
+
+                    try:
+                        if not seq_conflict:
+                            session.add(
+                                ConversationMessage(
+                                    interview_id=body.interview_id,
+                                    role=DBMessageRole.ASSISTANT,
+                                    content=result.question,
+                                    sequence_number=next_seq2,
+                                )
                             )
-                        )
-                        try:
                             await session.commit()
-                        except Exception:
-                            # If there's still a conflict, rollback and continue
+                        else:
+                            # If conflict, retry once with refreshed sequence number
                             await session.rollback()
+                            latest_last = (
+                                await session.execute(
+                                    select(ConversationMessage)
+                                    .where(ConversationMessage.interview_id == body.interview_id)
+                                    .order_by(ConversationMessage.sequence_number.desc())
+                                )
+                            ).scalars().first()
+                            retry_seq = (latest_last.sequence_number if latest_last else 0) + 1
+                            session.add(
+                                ConversationMessage(
+                                    interview_id=body.interview_id,
+                                    role=DBMessageRole.ASSISTANT,
+                                    content=result.question,
+                                    sequence_number=retry_seq,
+                                )
+                            )
+                            await session.commit()
+                    except Exception:
+                        # If there's still a conflict, rollback and continue
+                        try:
+                            await session.rollback()
+                        except Exception:
+                            pass
         except Exception:
             # Best-effort: do not fail the turn if persistence has a conflict
             try:

@@ -20,6 +20,7 @@ export default function DashboardPage() {
   const [weekly, setWeekly] = useState<any>(null);
   const [leaders, setLeaders] = useState<any>({});
   const [selectedPeriod, setSelectedPeriod] = useState<'7d' | '30d' | '90d'>('30d');
+  const [calibration, setCalibration] = useState<any>(null);
 
   // Real metrics - only the essentials
   const enhancedMetrics = useMemo((): KPIData[] => {
@@ -108,6 +109,10 @@ export default function DashboardPage() {
         // Simulate API calls
         await new Promise(resolve => setTimeout(resolve, 1000));
         setLastUpdate(new Date());
+        try {
+          const c = await apiFetch<any>(`/api/v1/conversations/analysis/calibration/summary`);
+          setCalibration(c);
+        } catch {}
       } catch (error) {
         console.error('Error loading data:', error);
       }
@@ -251,6 +256,44 @@ export default function DashboardPage() {
                   <div className="text-sm text-gray-600 dark:text-gray-400">Ortalama Puan</div>
                 </div>
               </div>
+            </EnhancedCardContent>
+          </EnhancedCard>
+        </section>
+
+        {/* Calibration Summary */}
+        <section>
+          <EnhancedCard>
+            <EnhancedCardHeader>
+              <EnhancedCardTitle>Kalibrasyon Özeti (AI Skoru vs Outcome)</EnhancedCardTitle>
+            </EnhancedCardHeader>
+            <EnhancedCardContent>
+              {!calibration ? (
+                <div className="text-sm text-gray-500">Veriler yükleniyor…</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div>
+                    <div className="text-2xl font-bold">{calibration.auc ?? '--'}</div>
+                    <div className="text-sm text-gray-600">AUC</div>
+                    <div className="text-xs text-gray-500 mt-1">Labeled: {calibration.labeled_count} / {calibration.count}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">Pozitif Histogram</div>
+                    <div className="flex gap-1 items-end h-16 mt-1">
+                      {(calibration.hist?.pos || []).map((v:number,i:number)=> (
+                        <div key={i} style={{ height: `${(v||0)*6}px` }} className="w-2 bg-emerald-500" />
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">Negatif Histogram</div>
+                    <div className="flex gap-1 items-end h-16 mt-1">
+                      {(calibration.hist?.neg || []).map((v:number,i:number)=> (
+                        <div key={i} style={{ height: `${(v||0)*6}px` }} className="w-2 bg-rose-500" />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </EnhancedCardContent>
           </EnhancedCard>
         </section>

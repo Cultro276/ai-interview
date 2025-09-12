@@ -60,3 +60,43 @@ export async function apiFetch<T>(
   }
   return res.status === 204 ? ({} as T) : res.json();
 } 
+
+export function sseStream(
+  path: string,
+  onDelta: (data: any) => void,
+  onDone?: () => void,
+  onError?: (e: any) => void,
+) {
+  const baseFromEnv = process.env.NEXT_PUBLIC_API_URL;
+  const baseFromWindow =
+    typeof window !== "undefined"
+      ? `${window.location.protocol}//${window.location.hostname}:8000`
+      : "";
+  const base = (baseFromEnv && baseFromEnv.trim().length > 0 ? baseFromEnv : baseFromWindow).replace(/\/+$/g, "");
+  const fullPath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${base}${fullPath}`;
+
+  const es = new EventSource(url);
+  es.addEventListener("delta", (ev) => {
+    try {
+      onDelta(JSON.parse((ev as MessageEvent).data));
+    } catch {
+      onDelta((ev as MessageEvent).data);
+    }
+  });
+  es.addEventListener("done", () => {
+    try {
+      onDone?.();
+    } finally {
+      es.close();
+    }
+  });
+  es.addEventListener("error", (e) => {
+    try {
+      onError?.(e);
+    } finally {
+      es.close();
+    }
+  });
+  return () => es.close();
+}

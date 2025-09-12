@@ -51,6 +51,218 @@ class ComprehensiveAnalyzer:
     def __init__(self):
         self.llm_client = get_llm_client()
     
+    # --- Heuristic transcript metrics and objective penalties ---
+    def _extract_candidate_utterances(self, transcript: str) -> List[str]:
+        """Extract candidate utterances from transcript built as "Interviewer:"/"Candidate:" lines.
+        Falls back to treating entire transcript as candidate if markers not found.
+        """
+        if not transcript:
+            return []
+        lines = [l.strip() for l in transcript.splitlines() if l.strip()]
+        out: List[str] = []
+        for line in lines:
+            # Turkish and English markers
+            if line.lower().startswith("candidate:") or line.lower().startswith("aday:"):
+                out.append(line.split(":", 1)[1].strip() if ":" in line else line)
+        if not out:
+            # Fallback: try to split paragraphs and assume alternate turns
+            parts = [p.strip() for p in transcript.split("\n\n") if p.strip()]
+            # take every second part as candidate (best-effort)
+            out = [p for i, p in enumerate(parts) if i % 2 == 1]
+        return out
+
+    def _compute_transcript_metrics(self, transcript: str) -> Dict[str, float]:
+        """Compute simple robustness metrics that correlate with poor answers.
+        - avg_answer_len_words
+        - short_answer_ratio (answers <= 6 words)
+        - filler_per_100_words
+        - negative_phrase_count
+        """
+        import re
+        answers = self._extract_candidate_utterances(transcript)
+        if not answers:
+            return {
+                "avg_answer_len_words": 0.0,
+                "short_answer_ratio": 1.0,
+                "filler_per_100_words": 0.0,
+                "negative_phrase_count": 0.0,
+            }
+        # Normalize text
+        total_words = 0
+        short = 0
+        filler_words = ["şey", "hani", "yani", "ıı", "ee", "falan", "işte"]
+        negative_phrases = [
+            "bilmiyorum", "emin değilim", "hiç", "yok", "yapmadım", "deneyimim yok",
+            "hatırlamıyorum", "zorlandım", "beceremedim", "iptal", "başaramadım",
+        ]
+        filler_count = 0
+        neg_count = 0
+        for a in answers:
+            # strip punctuation for counting
+            toks = re.findall(r"\w+", a.lower())
+            wc = len(toks)
+            total_words += wc
+            if wc <= 6:
+                short += 1
+            # filler and negative counts
+            for f in filler_words:
+                filler_count += a.lower().count(f)
+            for n in negative_phrases:
+                neg_count += a.lower().count(n)
+
+        avg_len = float(total_words) / max(1, len(answers))
+        filler_per_100 = (filler_count * 100.0) / max(1, total_words)
+        short_ratio = float(short) / max(1, len(answers))
+        return {
+            "avg_answer_len_words": round(avg_len, 2),
+            "short_answer_ratio": round(short_ratio, 3),
+            "filler_per_100_words": round(filler_per_100, 2),
+            "negative_phrase_count": float(neg_count),
+        }
+
+    def _derive_overall_score(
+        self,
+        hr_data: Dict[str, Any] | None,
+        job_fit: Dict[str, Any] | None,
+        hiring_decision: Dict[str, Any] | None,
+        transcript_metrics: Dict[str, float],
+    ) -> float:
+        """Combine multiple signals into a robust 0-100 overall score with penalties.
+        Strategy:
+        - Base = weighted avg of HR criteria mean, job_fit.overall_fit_score*100, skill_match mean*100.
+        - Penalties for poor transcript metrics (short answers, negative phrases, high filler).
+        - Penalties for unmet high-importance requirements.
+        - Cap score when hiring_decision recommends 'No Hire' or confidence low.
+        """
+        # Base components
+        hr_scores: List[float] = []
+        if isinstance(hr_data, dict):
+            for c in hr_data.get("criteria", []) or []:
+                try:
+                    hr_scores.append(float(c.get("score_0_100", 0.0)))
+                except Exception:
+                    continue
+        hr_mean = sum(hr_scores)/len(hr_scores) if hr_scores else 50.0
+
+        jf = job_fit or {}
+        job_fit_score = float(jf.get("overall_fit_score", 0.5)) * 100.0
+
+        hd = hiring_decision or {}
+        sm = (hd.get("skill_match") or {}) if isinstance(hd, dict) else {}
+        try:
+            skill_vals = [float(sm.get(k, 0.5)) * 100.0 for k in ("technical_fit","soft_skills_fit","cultural_fit","growth_potential")]
+            skill_mean = sum(skill_vals)/len(skill_vals)
+        except Exception:
+            skill_mean = 50.0
+
+        # Weighted base
+        base = 0.4*hr_mean + 0.4*job_fit_score + 0.2*skill_mean
+
+        # Requirement penalties
+        reqs = jf.get("requirements_matrix") if isinstance(jf, dict) else []
+        high_missing = 0
+        partial_high = 0
+        if isinstance(reqs, list):
+            for r in reqs:
+                try:
+                    importance = str(r.get("importance", "medium")).lower()
+                    meets = str(r.get("meets", "neither")).lower()
+                    if importance == "high":
+                        if meets in ("no", "neither"):
+                            high_missing += 1
+                        elif meets == "partial":
+                            partial_high += 1
+                except Exception:
+                    continue
+        penalty = 0.0
+        penalty += high_missing * 12.0  # strong penalty per high-importance miss
+        penalty += partial_high * 6.0
+
+        # Transcript penalties
+        short_ratio = transcript_metrics.get("short_answer_ratio", 0.0)
+        filler_per_100 = transcript_metrics.get("filler_per_100_words", 0.0)
+        neg_count = transcript_metrics.get("negative_phrase_count", 0.0)
+        if short_ratio >= 0.5:
+            penalty += 12.0
+        elif short_ratio >= 0.3:
+            penalty += 6.0
+        if filler_per_100 >= 8.0:
+            penalty += 8.0
+        elif filler_per_100 >= 4.0:
+            penalty += 4.0
+        if neg_count >= 6:
+            penalty += 12.0
+        elif neg_count >= 3:
+            penalty += 6.0
+
+        # Hiring decision gating
+        rec = str(hd.get("hire_recommendation", "")).lower() if isinstance(hd, dict) else ""
+        conf = float(hd.get("decision_confidence", 0.5)) if isinstance(hd, dict) else 0.5
+        if rec == "no hire":
+            base = min(base, 49.0)
+        elif rec == "hold" and conf >= 0.6:
+            base = min(base, 59.0)
+
+        final_score = max(0.0, min(100.0, round(base - penalty, 2)))
+        return final_score
+
+    # --- Rubric mapping (role-based weights) ---
+    def _infer_rubric_weights(self, job_title: str) -> Dict[str, float]:
+        jt = (job_title or "").lower()
+        # keys: problem, technical, communication, culture
+        if any(k in jt for k in ["developer", "yazılım", "engineer", "mühendis"]):
+            return {"problem": 0.25, "technical": 0.45, "communication": 0.15, "culture": 0.15}
+        if any(k in jt for k in ["data", "ml", "ai", "bilim"]):
+            return {"problem": 0.25, "technical": 0.45, "communication": 0.20, "culture": 0.10}
+        if any(k in jt for k in ["product", "ürün", "pm"]):
+            return {"problem": 0.25, "technical": 0.25, "communication": 0.25, "culture": 0.25}
+        if any(k in jt for k in ["sales", "satış", "bdm", "business development"]):
+            return {"problem": 0.15, "technical": 0.20, "communication": 0.35, "culture": 0.30}
+        if any(k in jt for k in ["marketing", "pazarlama", "growth"]):
+            return {"problem": 0.20, "technical": 0.25, "communication": 0.35, "culture": 0.20}
+        if any(k in jt for k in ["finance", "muhasebe", "denetim", "finans"]):
+            return {"problem": 0.30, "technical": 0.35, "communication": 0.20, "culture": 0.15}
+        if any(k in jt for k in ["support", "destek", "müşteri"]):
+            return {"problem": 0.15, "technical": 0.20, "communication": 0.40, "culture": 0.25}
+        if any(k in jt for k in ["cto", "cmo", "ceo", "cfo", "vp", "director", "müdür", "yönetici", "executive"]):
+            return {"problem": 0.30, "technical": 0.20, "communication": 0.25, "culture": 0.25}
+        return {"problem": 0.25, "technical": 0.35, "communication": 0.20, "culture": 0.20}
+
+    def _compute_rubric(self, job_title: str, hr_data: Dict[str, Any] | None, job_fit: Dict[str, Any] | None, hiring_decision: Dict[str, Any] | None) -> Dict[str, Any]:
+        weights = self._infer_rubric_weights(job_title)
+        # Map sources to rubric criteria
+        # problem -> HR "Problem Çözme"
+        # technical -> avg(job_fit.overall_fit_score*100, hiring_decision.skill_match.technical_fit*100)
+        # communication -> HR "İletişim Netliği"
+        # culture -> avg(HR "Takım Çalışması", hiring_decision.skill_match.cultural_fit*100)
+        def _hr(label: str) -> float | None:
+            try:
+                for c in (hr_data or {}).get("criteria", []) or []:
+                    if str(c.get("label", "")).lower().startswith(label.lower()[:5]):
+                        return float(c.get("score_0_100", 0.0))
+            except Exception:
+                return None
+            return None
+        problem = _hr("Problem") or 50.0
+        comm = _hr("İletişim") or 50.0
+        team = _hr("Takım") or 50.0
+        jf_score = float((job_fit or {}).get("overall_fit_score", 0.5)) * 100.0
+        sm = (hiring_decision or {}).get("skill_match", {}) if isinstance(hiring_decision, dict) else {}
+        tech_match = float(sm.get("technical_fit", 0.5)) * 100.0
+        cult_match = float(sm.get("cultural_fit", 0.5)) * 100.0
+        technical = (jf_score + tech_match) / 2.0
+        culture = (team + cult_match) / 2.0
+        criteria = [
+            {"label": "Problem Çözme", "score_0_100": round(problem, 2), "weight": weights["problem"]},
+            {"label": "Teknik Yeterlilik", "score_0_100": round(technical, 2), "weight": weights["technical"]},
+            {"label": "İletişim", "score_0_100": round(comm, 2), "weight": weights["communication"]},
+            {"label": "Kültür/İş Uygunluğu", "score_0_100": round(culture, 2), "weight": weights["culture"]},
+        ]
+        overall = 0.0
+        for c in criteria:
+            overall += float(c["score_0_100"]) * float(c["weight"])
+        return {"criteria": criteria, "overall": round(overall, 2), "weights": weights}
+    
     def _create_hr_criteria_prompt(self, transcript: str) -> str:
         """Create HR criteria analysis prompt"""
         return f"""Sen deneyimli bir HR uzmanısın. Aşağıdaki mülakat transkriptini analiz et ve her kriter için objektif, kanıta dayalı değerlendirme yap.
@@ -350,6 +562,9 @@ Yanıt: {transcript[:4000]}"""
                     templates = item.get("question_templates") or []
                     if not isinstance(templates, list) or not templates:
                         item["question_templates"] = [f"{item.get('label','')} ile ilgili somut bir örnek anlatır mısınız?"]
+                    # Ensure success_rubric exists for UI/export clarity
+                    if not isinstance(item.get("success_rubric"), str) or not item.get("success_rubric"): 
+                        item["success_rubric"] = "Somut örnek, sizin aksiyonlarınız ve ölçülebilir sonuç içermeli."
                 
                 return analysis_type, {"items": items}
             
@@ -390,24 +605,28 @@ Yanıt: {transcript[:4000]}"""
                     # Handle unpacking errors gracefully
                     continue
         
-        # Calculate overall score from HR criteria if available
-        overall_score = None
-        hr_data = analysis_results.get(AnalysisType.HR_CRITERIA.value)
-        if isinstance(hr_data, dict):
-            criteria = hr_data.get("criteria", [])
-            if criteria:
-                try:
-                    scores = [
-                        float(c.get("score_0_100", 0.0)) 
-                        for c in criteria 
-                        if isinstance(c, dict)
-                    ]
-                    if scores:
-                        overall_score = round(sum(scores) / len(scores), 2)
-                except Exception:
-                    pass
+        # Robust overall score combining HR, job-fit, hiring decision and transcript penalties
+        hr_data = analysis_results.get(AnalysisType.HR_CRITERIA.value) if isinstance(analysis_results, dict) else None
+        job_fit = analysis_results.get(AnalysisType.JOB_FIT.value) if isinstance(analysis_results, dict) else None
+        hiring_decision = analysis_results.get(AnalysisType.HIRING_DECISION.value) if isinstance(analysis_results, dict) else None
+        transcript_metrics = self._compute_transcript_metrics(input_data.transcript_text or "")
+        overall_score = self._derive_overall_score(hr_data, job_fit, hiring_decision, transcript_metrics)
         
         # Add metadata
+        # Rubric summary
+        rubric = self._compute_rubric(input_data.job_title, hr_data, job_fit, hiring_decision)
+
+        analysis_results["rubric"] = rubric
+        # Seed initial topics for early coverage from extracted requirements
+        try:
+            req_items = ((analysis_results.get(AnalysisType.JOB_FIT.value) or {}).get("requirements_matrix") or []) if isinstance(analysis_results, dict) else []
+            topics = [it.get("label", "") for it in req_items[:6] if isinstance(it, dict) and it.get("label")]
+            if topics:
+                analysis_results.setdefault("dialog_plan", {})
+                analysis_results["dialog_plan"]["topics"] = topics
+        except Exception:
+            pass
+
         analysis_results["meta"] = {
             "analysis_types": [t.value for t in (input_data.analysis_types or [])],
             "overall_score": overall_score,
@@ -417,7 +636,8 @@ Yanıt: {transcript[:4000]}"""
                 "resume": len(input_data.resume_text)
             },
             "candidate_name": input_data.candidate_name,
-            "job_title": input_data.job_title
+            "job_title": input_data.job_title,
+            "transcript_metrics": transcript_metrics,
         }
         
         return analysis_results

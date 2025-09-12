@@ -1079,18 +1079,64 @@ export default function JobCandidatesPage() {
               Kapsamlı işe uygunluk analizi, yetkinlik değerlendirmesi ve maaş analizi.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex justify-end mb-2 print:hidden">
+          <div className="flex flex-wrap gap-2 justify-end mb-2 print:hidden">
             <Button variant="outline" onClick={() => {
-              // Find candidate ID from the current interview
               const interview = interviews.find(i => i.id === reportInterviewId);
               const candidateId = interview?.candidate_id || 0;
               exportReportPdf(candidateId);
             }}>PDF Olarak Kaydet</Button>
+            <Button variant="outline" onClick={async ()=>{
+              if (!reportInterviewId) return;
+              const decision = prompt("Panel Kararı (Strong Hire/Hire/Hold/No Hire)", "");
+              if (!decision) return;
+              const notes = prompt("Notlar (opsiyonel)", "") || "";
+              const rubricStr = prompt("Panel rubriği JSON (opsiyonel) örn: [{\"label\":\"Teknik\",\"score_0_100\":80,\"weight_0_1\":0.5}]", "");
+              let rubric:any = undefined;
+              try { rubric = rubricStr ? JSON.parse(rubricStr) : undefined; } catch {}
+              try{
+                await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision, notes, rubric }) });
+                const a = await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}`);
+                setReportAnalysis(a);
+              }catch(e:any){ alert(e.message || 'Panel kaydı başarısız'); }
+            }}>Panel Kararı</Button>
+            <Button variant="outline" onClick={async ()=>{
+              if (!reportInterviewId) return;
+              const name = prompt("İş örneği/test adı", "");
+              if (!name) return;
+              const scoreStr = prompt("Skor (0-100)", "0");
+              const score = Number(scoreStr || 0);
+              const weightStr = prompt("Ağırlık (0-1, opsiyonel)", "");
+              const weight = weightStr===""? undefined : Number(weightStr);
+              const notes = prompt("Notlar (opsiyonel)", "") || "";
+              try{
+                await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}/work-sample`, { method: 'POST', body: JSON.stringify({ name, score_0_100: score, weight_0_1: weight, notes }) });
+                const a = await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}`);
+                setReportAnalysis(a);
+              }catch(e:any){ alert(e.message || 'İş örneği kaydı başarısız'); }
+            }}>İş Örneği/Test Ekle</Button>
           </div>
           {reportLoading ? (
             <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
           ) : reportAnalysis ? (
             <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-2">
+              <div className="text-xs text-gray-500 bg-yellow-50 border border-yellow-200 rounded p-2">
+                Not: Bu rapor AI destekli öneriler içerir; nihai karar panel onayıyla verilir. Ses/ton metrikleri sadece yardımcıdır ve toplam skora doğrudan eklenmez.
+              </div>
+              {(() => {
+                try {
+                  const a = reportAnalysis;
+                  const cr = a?.comprehensive_report;
+                  const prof = cr?.content?.profile_facts;
+                  return (
+                    <div className="bg-white p-4 rounded-xl border border-gray-200 flex flex-wrap items-center gap-4">
+                      <div className="text-sm text-gray-700"><strong>Genel Skor:</strong> {Math.round((cr?.scoring?.["Genel Öneri Skoru"] ?? 0) * 100)}/100</div>
+                      {prof?.military_status && (
+                        <div className="text-sm text-gray-700"><strong>Askerlik:</strong> {prof.military_status}</div>
+                      )}
+                    </div>
+                  );
+                } catch { return null; }
+              })()}
               {(() => {
                 const a = reportAnalysis;
                 return (
@@ -1319,6 +1365,104 @@ export default function JobCandidatesPage() {
                         })()}
                       </div>
                     )}
+                    {/* Rubric Card (role-based weighted) */}
+                    {(() => {
+                      try {
+                        const rubric = reportAnalysis?.comprehensive_report?.rubric;
+                        if (!rubric?.criteria?.length) return null;
+                        return (
+                          <div className="bg-white p-6 rounded-xl border border-gray-200">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-4">🧩 Rol Bazlı Rubrik</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {rubric.criteria.map((c:any, idx:number) => (
+                                <div key={idx} className="p-4 rounded-lg border border-gray-200 bg-gray-50">
+                                  <div className="flex items-center justify-between">
+                                    <div className="font-medium text-gray-800">{c.label}</div>
+                                    <div className="text-sm text-gray-600">Ağırlık: {(c.weight*100).toFixed(0)}%</div>
+                                  </div>
+                                  <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
+                                    <div className="bg-brand-600 h-2 rounded-full" style={{ width: `${c.score_0_100}%` }}></div>
+                                  </div>
+                                  <div className="mt-1 text-sm text-gray-700">{c.score_0_100}/100</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-4 text-right text-sm text-gray-700">Rubrik Skoru: <strong>{rubric.overall}/100</strong></div>
+                          </div>
+                        );
+                      } catch { return null; }
+                    })()}
+                    {/* Panel Review */}
+                    {(() => {
+                      try {
+                        const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
+                        const panel = ta?.panel_review;
+                        if (!panel || !panel.decision) return null;
+                        return (
+                          <div className="bg-white p-6 rounded-xl border border-gray-200">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-3">🧑‍⚖️ Panel Kararı</h3>
+                            <div className="flex items-center justify-between">
+                              <div className="text-sm text-gray-700"><strong>Karar:</strong> {panel.decision}</div>
+                              {panel.reviewed_at && (
+                                <div className="text-xs text-gray-500">Tarih: {new Date(panel.reviewed_at).toLocaleString('tr-TR')}</div>
+                              )}
+                            </div>
+                            {panel.notes && <div className="mt-2 text-sm text-gray-700"><strong>Notlar:</strong> {panel.notes}</div>}
+                            {Array.isArray(panel.rubric) && panel.rubric.length > 0 && (
+                              <div className="mt-3">
+                                <div className="text-sm font-medium text-gray-700 mb-1">Panel Rubriği</div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                  {panel.rubric.map((r:any, idx:number)=> (
+                                    <div key={idx} className="p-3 rounded-lg border border-gray-200 bg-gray-50">
+                                      <div className="flex items-center justify-between">
+                                        <div className="font-medium text-gray-800">{r.label}</div>
+                                        {typeof r.weight_0_1 === 'number' && (
+                                          <div className="text-xs text-gray-600">Ağırlık: {(r.weight_0_1*100).toFixed(0)}%</div>
+                                        )}
+                                      </div>
+                                      <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
+                                        <div className="bg-purple-600 h-2 rounded-full" style={{ width: `${r.score_0_100}%` }}></div>
+                                      </div>
+                                      <div className="mt-1 text-xs text-gray-700">{r.score_0_100}/100</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      } catch { return null; }
+                    })()}
+                    {/* Work Samples / Tests */}
+                    {(() => {
+                      try {
+                        const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
+                        const ws = ta?.work_samples;
+                        if (!Array.isArray(ws) || ws.length === 0) return null;
+                        return (
+                          <div className="bg-white p-6 rounded-xl border border-gray-200">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-4">🧪 İş Örneği / Test Sonuçları</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {ws.map((w:any, idx:number) => (
+                                <div key={idx} className="p-4 rounded-lg border border-gray-200 bg-gray-50">
+                                  <div className="flex items-center justify-between">
+                                    <div className="font-medium text-gray-800">{w.name}</div>
+                                    {typeof w.weight_0_1 === 'number' && (
+                                      <div className="text-sm text-gray-600">Ağırlık: {(w.weight_0_1*100).toFixed(0)}%</div>
+                                    )}
+                                  </div>
+                                  <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
+                                    <div className="bg-emerald-600 h-2 rounded-full" style={{ width: `${w.score_0_100}%` }}></div>
+                                  </div>
+                                  <div className="mt-1 text-sm text-gray-700">{w.score_0_100}/100</div>
+                                  {w.notes && <div className="mt-1 text-xs text-gray-600">{w.notes}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      } catch { return null; }
+                    })()}
                     {(() => {
                       try {
                         const ta = a.technical_assessment ? JSON.parse(a.technical_assessment) : null;
@@ -1756,13 +1900,40 @@ export default function JobCandidatesPage() {
             }
           })()}
 
-          {/* Transcript toggle */}
-          {reportInterviewId && (
-            <details className="mt-4">
-              <summary className="cursor-pointer text-sm text-brand-700">Transkripti Göster</summary>
-              <TranscriptBlock interviewId={reportInterviewId} />
-            </details>
-          )}
+          {/* Transcript Metrics Card (objective) */}
+          {(() => {
+            try {
+              const meta = reportAnalysis?.comprehensive_report?.meta?.transcript_metrics;
+              if (!meta) return null;
+              return (
+                <div className="mt-8 bg-white p-6 rounded-xl border border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">🧭 Konuşma Göstergeleri</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm text-gray-800">
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <div className="text-xs text-gray-500 mb-1">Ortalama Cevap Uzunluğu</div>
+                      <div className="text-xl font-bold">{meta.avg_answer_len_words ?? '—'}</div>
+                      <div className="text-xs text-gray-500">kelime</div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <div className="text-xs text-gray-500 mb-1">Kısa Cevap Oranı</div>
+                      <div className={`text-xl font-bold ${meta.short_answer_ratio >= 0.5 ? 'text-rose-600' : meta.short_answer_ratio >= 0.3 ? 'text-amber-600' : 'text-emerald-700'}`}>{Math.round((meta.short_answer_ratio || 0) * 100)}%</div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <div className="text-xs text-gray-500 mb-1">Dolgu Sözcük Yoğunluğu</div>
+                      <div className={`text-xl font-bold ${meta.filler_per_100_words >= 8 ? 'text-rose-600' : meta.filler_per_100_words >= 4 ? 'text-amber-600' : 'text-emerald-700'}`}>{meta.filler_per_100_words ?? '—'}</div>
+                      <div className="text-xs text-gray-500">/100 kelime</div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <div className="text-xs text-gray-500 mb-1">Negatif İfade Sayısı</div>
+                      <div className={`text-xl font-bold ${meta.negative_phrase_count >= 6 ? 'text-rose-600' : meta.negative_phrase_count >= 3 ? 'text-amber-600' : 'text-emerald-700'}`}>{meta.negative_phrase_count ?? '—'}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            } catch {
+              return null;
+            }
+          })()}
         </DialogContent>
       </Dialog>
       {/* Scorecard Modal kaldırıldı */}

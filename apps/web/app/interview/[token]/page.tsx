@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, sseStream } from "@/lib/api";
+import { getEphemeralToken, connectWebRTC } from "@/lib/realtime";
 import { listen } from "@/lib/voice";
 import { Steps, Button } from "@/components/ui";
 import { LiveInsights } from "@/components/interview/LiveInsights";
@@ -58,6 +59,9 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   const elapsedMinutes = useMemo(() => Math.floor(elapsedSec / 60), [elapsedSec]);
   // Accessibility toggles
   const [showCaptions, setShowCaptions] = useState(true);
+  const streamingEnabled = typeof window !== "undefined" && process.env.NEXT_PUBLIC_INTERVIEW_STREAMING === "true";
+  const realtimeEnabled = typeof window !== "undefined" && process.env.NEXT_PUBLIC_INTERVIEW_REALTIME === "true";
+  const webrtcRef = useRef<{ pc: RTCPeerConnection; audioEl: HTMLAudioElement } | null>(null);
   
   // Conversation tracking
   const [interviewId, setInterviewId] = useState<number | null>(null);
@@ -298,9 +302,35 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       sendSignal("focus_lost");
     };
 
-    // Force ElevenLabs when available by adding provider in query body
-    // Always prefer Azure/ElevenLabs (HD) if configured via server
+    // If realtime is enabled, don't speak via TTS; model will speak
+    if (realtimeEnabled) {
+      (async () => {
+        try {
+          // lazily connect
+          if (!webrtcRef.current) {
+            const sess = await getEphemeralToken(interviewId || undefined);
+            const conn = await connectWebRTC(sess.client_secret.value);
+            webrtcRef.current = { pc: conn.pc, audioEl: conn.audioEl };
+            document.body.appendChild(conn.audioEl);
+          }
+        } catch (e) {
+          console.warn("realtime connect failed; fallback to TTS", e);
+          playTTS(question, () => {
+            setPhase("listening");
+            try { audioStartIndexRef.current = audioChunksRef.current.length; } catch {}
+          });
+          return;
+        }
+        setPhase("listening");
+        try { audioStartIndexRef.current = audioChunksRef.current.length; } catch {}
+      })();
+      return;
+    }
+
+    // Legacy TTS flow
     playTTS(question, () => {
+      // stop any lingering TTS sources before moving to listening
+      try { currentTtsSourceRef.current?.stop(0); } catch {}
       setPhase("listening");
       // mark the start index for recent audio chunks to enable Whisper fallback STT per answer
       try { audioStartIndexRef.current = audioChunksRef.current.length; } catch {}
@@ -391,49 +421,148 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
         try {
           if (buffer.join(" ").trim().length < 10) signals.push("very_short_answer");
         } catch {}
-        // Let backend persist user turn and return next question atomically
-        apiFetch<{ question: string | null; done: boolean }>(
-          "/api/v1/interview/next-turn",
-          {
-            method: "POST",
-            body: JSON.stringify({ interview_id: interviewId, token, text: full, signals }),
-          },
-        )
-          .then((res) => {
-            if (res.done) {
-              setPhase("idle");
-              setStatus("finished");
-              // Save completion message
-              saveConversationMessage("system", "Interview completed");
-            } else {
-              let nextQ = sanitizeQuestion(res.question || "");
-              if (!nextQ) {
-                // Treat empty/FINISHED-only responses as completion
+        // Let backend persist user turn and return next question
+        if (streamingEnabled) {
+          try {
+            const q = encodeURIComponent(full);
+            const t = token ? `&token=${encodeURIComponent(token)}` : "";
+            const path = `/api/v1/realtime/interview/stream?interview_id=${interviewId}${t}&text=${q}`;
+            let acc = "";
+            // Keep UI in thinking state while streaming; set question when done to avoid repeated TTS
+            const stop = sseStream(
+              path,
+              (data: any) => {
+                const tok = typeof data === "string" ? data : (data?.token ?? "");
+                if (tok) acc += tok;
+              },
+              () => {
+                const nextQ = sanitizeQuestion(acc);
+                if (!nextQ) {
+                  setPhase("idle");
+                  setStatus("finished");
+                  saveConversationMessage("system", "Interview completed");
+                  return;
+                }
+                // stop previous TTS before starting next
+                try { currentTtsSourceRef.current?.stop(0); } catch {}
+                setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
+                setQuestion(nextQ);
+                setPhase("speaking");
+              },
+              (err) => {
+                console.warn("SSE error, falling back", err);
+                // Fallback to POST flow
+                apiFetch<{ question: string | null; done: boolean }>(
+                  "/api/v1/interview/next-turn",
+                  {
+                    method: "POST",
+                    body: JSON.stringify({ interview_id: interviewId, token, text: full, signals }),
+                  },
+                )
+                  .then((res) => {
+                    if (res.done) {
+                      setPhase("idle");
+                      setStatus("finished");
+                      saveConversationMessage("system", "Interview completed");
+                    } else {
+                      const nextQ = sanitizeQuestion(res.question || "");
+                      if (!nextQ) {
+                        setPhase("idle");
+                        setStatus("finished");
+                        saveConversationMessage("system", "Interview completed");
+                        return;
+                      }
+                      // stop previous TTS before starting next
+                      try { currentTtsSourceRef.current?.stop(0); } catch {}
+                      setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
+                      setQuestion(nextQ);
+                      setPhase("speaking");
+                    }
+                  })
+                  .catch((e) => {
+                    console.error("AI error", e);
+                    const errorMessage = "Maalesef bir hata oluştu. Lütfen daha sonra yeniden deneyin.";
+                    setQuestion(errorMessage);
+                    setPhase("speaking");
+                    saveConversationMessage("system", `Error occurred: ${e.message}`);
+                  });
+              }
+            );
+            // Auto-cancel safety after 30s
+            setTimeout(() => { try { (stop as any)(); } catch {} }, 30000);
+          } catch (err: any) {
+            console.warn("SSE init failed, falling back", err);
+            apiFetch<{ question: string | null; done: boolean }>(
+              "/api/v1/interview/next-turn",
+              {
+                method: "POST",
+                body: JSON.stringify({ interview_id: interviewId, token, text: full, signals }),
+              },
+            )
+              .then((res) => {
+                if (res.done) {
+                  setPhase("idle");
+                  setStatus("finished");
+                  saveConversationMessage("system", "Interview completed");
+                } else {
+                  const nextQ = sanitizeQuestion(res.question || "");
+                  if (!nextQ) {
+                    setPhase("idle");
+                    setStatus("finished");
+                    saveConversationMessage("system", "Interview completed");
+                    return;
+                  }
+                  // stop previous TTS before starting next
+                  try { currentTtsSourceRef.current?.stop(0); } catch {}
+                  setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
+                  setQuestion(nextQ);
+                  setPhase("speaking");
+                }
+              })
+              .catch((e) => {
+                console.error("AI error", e);
+                const errorMessage = "Maalesef bir hata oluştu. Lütfen daha sonra yeniden deneyin.";
+                setQuestion(errorMessage);
+                setPhase("speaking");
+                saveConversationMessage("system", `Error occurred: ${e.message}`);
+              });
+          }
+        } else {
+          apiFetch<{ question: string | null; done: boolean }>(
+            "/api/v1/interview/next-turn",
+            {
+              method: "POST",
+              body: JSON.stringify({ interview_id: interviewId, token, text: full, signals }),
+            },
+          )
+            .then((res) => {
+              if (res.done) {
                 setPhase("idle");
                 setStatus("finished");
                 saveConversationMessage("system", "Interview completed");
-                return;
-              }
-              // Avoid duplicate consecutive questions
-              setHistory((h) => {
-                const last = h[h.length - 1];
-                if (last && last.role === "assistant" && last.text.trim() === nextQ) {
-                  return h;
+              } else {
+                let nextQ = sanitizeQuestion(res.question || "");
+                if (!nextQ) {
+                  setPhase("idle");
+                  setStatus("finished");
+                  saveConversationMessage("system", "Interview completed");
+                  return;
                 }
+                // stop previous TTS before starting next
+                try { currentTtsSourceRef.current?.stop(0); } catch {}
+                setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
                 setQuestion(nextQ);
                 setPhase("speaking");
-                return [...h, { role: "assistant", text: nextQ }];
-              });
-            }
-          })
-          .catch((err) => {
-            console.error("AI error", err);
-            const errorMessage = "Maalesef bir hata oluştu. Lütfen daha sonra yeniden deneyin.";
-            setQuestion(errorMessage);
-            setPhase("speaking");
-            // Save error message
-            saveConversationMessage("system", `Error occurred: ${err.message}`);
-          });
+              }
+            })
+            .catch((err) => {
+              console.error("AI error", err);
+              const errorMessage = "Maalesef bir hata oluştu. Lütfen daha sonra yeniden deneyin.";
+              setQuestion(errorMessage);
+              setPhase("speaking");
+              saveConversationMessage("system", `Error occurred: ${err.message}`);
+            });
+        }
       };
 
       const listenStart = Date.now();
@@ -960,6 +1089,25 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                           <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
                           <span className="text-white text-xs font-medium">REC</span>
                         </div>
+                        {/* Listening/Speaking indicator */}
+                        <div className="absolute top-3 left-3">
+                          {phase === "listening" ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                              <span className="w-2 h-2 bg-emerald-600 rounded-full animate-ping"></span>
+                              Dinliyorum…
+                            </span>
+                          ) : phase === "speaking" ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
+                              <span className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></span>
+                              Soruyu soruyorum…
+                            </span>
+                          ) : phase === "thinking" ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
+                              <span className="w-2 h-2 bg-amber-600 rounded-full animate-bounce"></span>
+                              Düşünüyorum…
+                            </span>
+                          ) : null}
+                        </div>
                         {/* Label */}
                         <div className="absolute bottom-3 left-3 bg-black bg-opacity-60 px-2 py-1 rounded text-white text-sm">
                           Siz
@@ -977,7 +1125,12 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                           <div className={cn(
                             "mb-2",
                             isMobile ? "text-4xl mb-2" : "text-6xl mb-4"
-                          )}>🤖</div>
+                          )}>
+                            <img src="/HR-AVATAR.png" alt="HR Avatar" className={cn(
+                              "mx-auto rounded-full shadow-md border border-white/50",
+                              isMobile ? "w-24 h-24" : "w-32 h-32"
+                            )} />
+                          </div>
                           <h3 className={cn(
                             "font-medium text-gray-800 mb-2",
                             isMobile ? "text-base" : "text-lg"
@@ -987,17 +1140,8 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                           <div className={cn(
                             "px-3 py-1 rounded-full font-medium",
                             isMobile ? "text-xs" : "text-sm",
-                            {
-                              "bg-green-100 text-green-800": phase === "listening",
-                              "bg-blue-100 text-blue-800": phase === "speaking",
-                              "bg-yellow-100 text-yellow-800": phase === "thinking",
-                              "bg-gray-100 text-gray-600": phase === "idle",
-                            }
+                            "bg-transparent text-transparent"
                           )}>
-                            {phase === "speaking" && "Konuşuyor..."}
-                            {phase === "listening" && "Dinliyor..."}
-                            {phase === "thinking" && "Düşünüyor..."}
-                            {phase === "idle" && "Beklemede"}
                           </div>
                         </div>
                       </div>
@@ -1039,36 +1183,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
               </div>
             )}
 
-            {/* Status */}
-            <div className="text-center">
-              <div className={cn(
-                "inline-flex items-center space-x-2 rounded-full font-medium",
-                isMobile ? "px-3 py-2 text-xs" : "px-4 py-2 text-sm",
-                {
-                  "bg-green-100 text-green-800": phase === "listening",
-                  "bg-blue-100 text-blue-800": phase === "speaking",
-                  "bg-yellow-100 text-yellow-800": phase === "thinking",
-                  "bg-gray-100 text-gray-600": phase === "idle",
-                }
-              )}>
-                <div className={cn(
-                  "rounded-full",
-                  isMobile ? "w-1.5 h-1.5" : "w-2 h-2",
-                  {
-                    "bg-green-500 animate-pulse": phase === "listening",
-                    "bg-blue-500 animate-pulse": phase === "speaking",
-                    "bg-yellow-500 animate-pulse": phase === "thinking",
-                    "bg-gray-400": phase === "idle",
-                  }
-                )}></div>
-                <span>
-                  {phase === "speaking" && "Soru soruluyor…"}
-                  {phase === "listening" && "Cevabınız dinleniyor…"}
-                  {phase === "thinking" && "Yanıtınız işleniyor…"}
-                  {phase === "idle" && "Görüşme yakında başlayacak…"}
-                </span>
-              </div>
-            </div>
+            {/* Status removed to keep natural conversation UI */}
           </div>
         </main>
       </div>

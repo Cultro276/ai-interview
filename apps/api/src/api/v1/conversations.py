@@ -28,6 +28,8 @@ from slowapi import Limiter
 from src.core.config import settings
 from datetime import datetime, timezone, timedelta
 from datetime import datetime, timezone
+from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -219,6 +221,287 @@ async def get_conversation(
         .order_by(ConversationMessage.sequence_number)
     )
     return result.scalars().all()
+
+
+# ---- External Scores: Work-sample / Panel Review / Outcome ----
+
+
+class WorkSampleIn(BaseModel):
+    name: str
+    score_0_100: float
+    weight_0_1: float | None = None
+    notes: str | None = None
+
+
+@router.post("/analysis/{interview_id}/work-sample")
+async def add_work_sample(
+    interview_id: int,
+    payload: WorkSampleIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    # Ownership
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    interview = await session.execute(
+        select(Interview)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
+    )
+    interview = interview.scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Ensure analysis exists
+    analysis = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    ).scalar_one_or_none()
+    if not analysis:
+        analysis = await generate_llm_full_analysis(session, interview_id)
+
+    # Merge into technical_assessment JSON
+    import json as _json
+    blob = {}
+    try:
+        if analysis.technical_assessment:
+            blob = _json.loads(analysis.technical_assessment)
+    except Exception:
+        blob = {}
+    arr = blob.get("work_samples")
+    if not isinstance(arr, list):
+        arr = []
+    arr.append({
+        "name": payload.name,
+        "score_0_100": float(payload.score_0_100),
+        "weight_0_1": float(payload.weight_0_1) if payload.weight_0_1 is not None else None,
+        "notes": payload.notes or "",
+    })
+    blob["work_samples"] = arr[-50:]
+    analysis.technical_assessment = _json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    await session.refresh(analysis)
+    return {"ok": True, "count": len(blob["work_samples"]) }
+
+
+class PanelRubricItem(BaseModel):
+    label: str
+    score_0_100: float
+    weight_0_1: float | None = None
+
+
+class PanelReviewIn(BaseModel):
+    decision: str  # Strong Hire|Hire|Hold|No Hire
+    notes: str | None = None
+    rubric: List[PanelRubricItem] | None = None
+
+
+@router.post("/analysis/{interview_id}/panel")
+async def set_panel_review(
+    interview_id: int,
+    payload: PanelReviewIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    interview = await session.execute(
+        select(Interview)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
+    )
+    if not interview.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    analysis = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    ).scalar_one_or_none()
+    if not analysis:
+        analysis = await generate_llm_full_analysis(session, interview_id)
+
+    import json as _json
+    blob = {}
+    try:
+        if analysis.technical_assessment:
+            blob = _json.loads(analysis.technical_assessment)
+    except Exception:
+        blob = {}
+    panel = {
+        "decision": payload.decision,
+        "notes": payload.notes or "",
+        "rubric": [r.dict() for r in (payload.rubric or [])],
+        "reviewed_at": datetime.now().isoformat(),
+    }
+    blob["panel_review"] = panel
+    analysis.technical_assessment = _json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    await session.refresh(analysis)
+    return {"ok": True}
+
+
+# ---- Outcome tracking ----
+
+
+class OutcomeIn(BaseModel):
+    outcome: str  # hired|offer|no-offer
+    outcome_date: Optional[str] = None  # ISO date string
+    perf_30d: Optional[str] = None  # low|avg|high
+    perf_90d: Optional[str] = None  # low|avg|high
+
+
+@router.post("/analysis/{interview_id}/outcome")
+async def set_outcome(
+    interview_id: int,
+    payload: OutcomeIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    interview = await session.execute(
+        select(Interview)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Interview.id == interview_id, Job.user_id == owner_id)
+    )
+    if not interview.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    analysis = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    ).scalar_one_or_none()
+    if not analysis:
+        analysis = await generate_llm_full_analysis(session, interview_id)
+
+    import json as _json
+    blob = {}
+    try:
+        if analysis.technical_assessment:
+            blob = _json.loads(analysis.technical_assessment)
+    except Exception:
+        blob = {}
+    blob["outcome_tracking"] = {
+        "outcome": payload.outcome,
+        "outcome_date": payload.outcome_date,
+        "perf_30d": payload.perf_30d,
+        "perf_90d": payload.perf_90d,
+    }
+    analysis.technical_assessment = _json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    await session.refresh(analysis)
+    return {"ok": True}
+
+
+# ---- Calibration summary (AUC/ROC, histograms, FP/FN) ----
+
+
+@router.get("/analysis/calibration/summary")
+async def get_calibration_summary(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Return basic calibration metrics for overall scores vs outcomes.
+
+    Outcome mapping: hired|offer -> 1 (positive), no-offer -> 0 (negative).
+    Uses InterviewAnalysis.overall_score (0-100). Returns:
+      { count, labeled_count, auc, roc: [{t, tpr, fpr}],
+        hist: {pos:[int], neg:[int]}, fp: [{interview_id, score}], fn: [...] }
+    """
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+
+    # Fetch analyses under tenant
+    rows = await session.execute(
+        select(InterviewAnalysis, Interview)
+        .join(Interview, InterviewAnalysis.interview_id == Interview.id)
+        .join(Job, Interview.job_id == Job.id)
+        .where(Job.user_id == owner_id)
+    )
+    pairs: list[tuple[int, float]] = []  # (label, score)
+    ids: list[int] = []
+    all_scores: list[float] = []
+    import json as _json
+    for ana, iv in rows.all():
+        try:
+            score = float(getattr(ana, "overall_score", None) or 0.0)
+        except Exception:
+            score = 0.0
+        all_scores.append(score)
+        label = None
+        try:
+            blob = _json.loads(ana.technical_assessment or "{}")
+            out = blob.get("outcome_tracking") or {}
+            oc = (out.get("outcome") or "").lower()
+            if oc in {"hired", "offer"}:
+                label = 1
+            elif oc in {"no-offer", "no_offer", "no offer", "rejected"}:
+                label = 0
+        except Exception:
+            label = None
+        if label is not None:
+            pairs.append((label, score))
+            ids.append(iv.id)
+
+    count = len(all_scores)
+    labeled = len(pairs)
+    if labeled < 2 or not any(l == 1 for l, _ in pairs) or not any(l == 0 for l, _ in pairs):
+        return {
+            "count": count,
+            "labeled_count": labeled,
+            "auc": None,
+            "roc": [],
+            "hist": {"pos": [], "neg": []},
+            "fp": [],
+            "fn": [],
+        }
+
+    # Build ROC
+    # thresholds from 0..100 step 5
+    thresholds = [float(t) for t in range(0, 101, 5)]
+    roc = []
+    pos_total = sum(1 for l, _ in pairs if l == 1)
+    neg_total = sum(1 for l, _ in pairs if l == 0)
+    for t in thresholds:
+        tp = sum(1 for l, s in pairs if s >= t and l == 1)
+        fp_ = sum(1 for l, s in pairs if s >= t and l == 0)
+        fn = sum(1 for l, s in pairs if s < t and l == 1)
+        tn = sum(1 for l, s in pairs if s < t and l == 0)
+        tpr = (tp / pos_total) if pos_total else 0.0
+        fpr = (fp_ / neg_total) if neg_total else 0.0
+        roc.append({"t": t, "tpr": round(tpr, 4), "fpr": round(fpr, 4)})
+
+    # AUC via trapezoidal rule over (fpr, tpr) sorted asc by fpr
+    roc_sorted = sorted(roc, key=lambda x: x["fpr"])  # type: ignore[index]
+    auc = 0.0
+    for i in range(1, len(roc_sorted)):
+        x0, y0 = roc_sorted[i - 1]["fpr"], roc_sorted[i - 1]["tpr"]
+        x1, y1 = roc_sorted[i]["fpr"], roc_sorted[i]["tpr"]
+        auc += (x1 - x0) * (y0 + y1) / 2.0
+    auc = round(auc, 4)
+
+    # Histograms (10 bins)
+    def _hist(vals: list[float]) -> list[int]:
+        bins = [0] * 10
+        for v in vals:
+            idx = int(min(9, max(0, v // 10)))
+            bins[idx] += 1
+        return bins
+    pos_scores = [s for l, s in pairs if l == 1]
+    neg_scores = [s for l, s in pairs if l == 0]
+    hist = {"pos": _hist(pos_scores), "neg": _hist(neg_scores)}
+
+    # FP/FN lists (top 10 by confidence)
+    joined = list(zip(ids, [l for l, _ in pairs], [s for _, s in pairs]))
+    fps = sorted([(iv_id, s) for iv_id, l, s in joined if l == 0], key=lambda x: -x[1])[:10]
+    fns = sorted([(iv_id, s) for iv_id, l, s in joined if l == 1], key=lambda x: x[1])[:10]
+
+    return {
+        "count": count,
+        "labeled_count": labeled,
+        "auc": auc,
+        "roc": roc_sorted,
+        "hist": hist,
+        "fp": [{"interview_id": i, "score": round(s, 2)} for i, s in fps],
+        "fn": [{"interview_id": i, "score": round(s, 2)} for i, s in fns],
+    }
 
 
 # ---- Interview Analysis ----

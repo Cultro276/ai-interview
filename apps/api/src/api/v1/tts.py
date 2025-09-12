@@ -68,7 +68,7 @@ async def tts_speak(req: TTSRequest):
 
             async def _generate():
                 payload = {
-                    "model": "gpt-4o-mini-tts",
+                    "model": "tts-1",
                     "voice": voice,
                     "input": req.text,
                 }

@@ -114,41 +114,9 @@ export default function JobsPage() {
                     <Button variant="outline" size="sm">Adayları Görüntüle</Button>
                   </Link>
                   {/* Editor deprecated; hide link */}
-                  <Dialog>
-                    <DialogTrigger asChild>
-                      <Button variant="ghost" size="sm">Düzenle</Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogTitle id={`edit-job-title-${job.id}`}>İşi Düzenle</DialogTitle>
-                      <DialogDescription id={`edit-job-desc-${job.id}`}>
-                        Başlığı ve açıklamayı güncelleyin, ardından kaydedin.
-                      </DialogDescription>
-                      <form className="space-y-3" onSubmit={async (e)=>{
-                        e.preventDefault();
-                        const form = e.target as HTMLFormElement;
-                        const title = (form.elements.namedItem('title') as HTMLInputElement).value;
-                        const description = (form.elements.namedItem('description') as HTMLTextAreaElement).value;
-                        try {
-                          await apiFetch(`/api/v1/jobs/${job.id}`, { method: 'PUT', body: JSON.stringify({ title, description }) });
-                          await refreshData();
-                        } catch (err) {
-                          toastError((err as any)?.message || 'Update failed');
-                        }
-                      }}>
-                        <div>
-                          <label htmlFor={`title-${job.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Başlık</label>
-                          <input id={`title-${job.id}`} name="title" defaultValue={job.title} className="w-full px-3 py-2 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600" />
-                        </div>
-                        <div>
-                          <label htmlFor={`description-${job.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Açıklama</label>
-                          <textarea id={`description-${job.id}`} name="description" defaultValue={job.description} rows={6} className="w-full px-3 py-2 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600" />
-                        </div>
-                        <div className="flex justify-end">
-                          <Button type="submit">Kaydet</Button>
-                        </div>
-                      </form>
-                    </DialogContent>
-                  </Dialog>
+                  <Link href={`/jobs/${job.id}/editor`} aria-label={`${job.title} ilanın rubriğini düzenle`}>
+                    <Button variant="ghost" size="sm">Düzenle</Button>
+                  </Link>
                   <Dialog>
                     <DialogTrigger asChild>
                       <Button variant="ghost" size="sm" aria-label="İlanı sil">✕</Button>

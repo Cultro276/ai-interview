@@ -57,7 +57,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   const cacheKey = typeof window !== 'undefined' && user ? `dashboardData:${user.id}` : null;
   const notifiedKey = typeof window !== 'undefined' && user ? `notifiedAnalyses:${user.id}` : null;
+  const viewedKey = typeof window !== 'undefined' && user ? `viewedAnalyses:${user.id}` : null;
   const notifiedRef = useRef<Set<number>>(new Set());
+  const viewedRef = useRef<Set<number>>(new Set());
 
   const loadData = async () => {
     try {
@@ -185,14 +187,21 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     setDataLoaded(false);
   }, [user?.id, token]);
 
-  // Load previously notified analysis ids from sessionStorage
+  // Load previously notified/viewed analysis ids (persist across sessions using localStorage)
   useEffect(() => {
     if (typeof window === 'undefined' || !notifiedKey) return;
     try {
-      const raw = sessionStorage.getItem(notifiedKey);
+      const raw = localStorage.getItem(notifiedKey);
       if (raw) {
         const arr: number[] = JSON.parse(raw);
         notifiedRef.current = new Set(Array.isArray(arr) ? arr : []);
+      }
+    } catch {}
+    try {
+      const raw2 = viewedKey ? localStorage.getItem(viewedKey) : null;
+      if (raw2) {
+        const arr2: number[] = JSON.parse(raw2);
+        viewedRef.current = new Set(Array.isArray(arr2) ? arr2 : []);
       }
     } catch {}
   }, [notifiedKey]);
@@ -222,29 +231,30 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Detect newly completed interviews, ensure analysis exists, then notify once
+  // Detect newly completed interviews, ensure analysis exists, then notify once (aggregated)
   useEffect(() => {
     if (!dataLoaded || !interviews?.length) return;
     const completed = interviews.filter(iv => iv.status === 'completed');
-    completed.forEach(async (iv) => {
-      if (notifiedRef.current.has(iv.id)) return;
-      try {
-        // Ensure analysis exists (backend returns existing or generates if missing)
-        await apiFetch(`/api/v1/conversations/analysis/${iv.id}`);
-        const cand = candidates.find(c => c.id === iv.candidate_id);
-        const name = cand?.name || `Aday #${iv.candidate_id}`;
-        const title = "Rapor hazır";
-        const body = `${name} için analiz raporu tamamlandı.`;
-        const url = `/jobs/${iv.job_id}/candidates`;
-        tryShowNotification(title, body, url);
-        notifiedRef.current.add(iv.id);
-        if (typeof window !== 'undefined' && notifiedKey) {
-          try { sessionStorage.setItem(notifiedKey, JSON.stringify(Array.from(notifiedRef.current))); } catch {}
-        }
-      } catch {
-        // ignore and try next cycle
+    (async () => {
+      const readyIds: number[] = [];
+      for (const iv of completed) {
+        if (notifiedRef.current.has(iv.id) || viewedRef.current.has(iv.id)) continue;
+        try {
+          await apiFetch(`/api/v1/conversations/analysis/${iv.id}`);
+          readyIds.push(iv.id);
+        } catch {}
       }
-    });
+      if (readyIds.length > 0) {
+        const title = `${readyIds.length} rapor hazır`;
+        const body = `Görüntülenmemiş ${readyIds.length} aday raporu hazır.`;
+        const url = `/jobs/${interviews[0].job_id}/candidates`;
+        tryShowNotification(title, body, url);
+        readyIds.forEach(id => notifiedRef.current.add(id));
+        if (typeof window !== 'undefined' && notifiedKey) {
+          try { localStorage.setItem(notifiedKey, JSON.stringify(Array.from(notifiedRef.current))); } catch {}
+        }
+      }
+    })();
   }, [interviews, candidates, dataLoaded, notifiedKey]);
 
   return (

@@ -59,6 +59,29 @@ class InterviewReportGenerator:
         job_fit = analysis.get("job_fit", {})
         ai_opinion = analysis.get("ai_opinion", {})
         multipass = analysis.get("multipass_analysis", {})
+        ta = analysis.get("technical_assessment", {})
+        if isinstance(ta, str):
+            try:
+                import json
+                ta = json.loads(ta)
+            except Exception:
+                ta = {}
+        cv_facts = ta.get("cv_facts", {})
+        # Only show military status when explicitly relevant to the role/requirements
+        show_military = False
+        try:
+            reqs = job_fit.get("requirements_matrix", []) if isinstance(job_fit, dict) else []
+            if isinstance(reqs, list):
+                for r in reqs:
+                    try:
+                        label = (r.get("label", "") or "").lower()
+                        if "asker" in label:  # asker/askerlik/tecilli
+                            show_military = True
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            show_military = False
         
         return {
             "executive_overview": {
@@ -67,6 +90,11 @@ class InterviewReportGenerator:
                 "key_verdict": self._create_verdict_statement(ai_opinion),
                 "risk_level": self._assess_risk_level(ai_opinion.get("risk_factors", []))
             },
+            **({
+                "profile_facts": {
+                    "military_status": cv_facts.get("military_status", "bilinmiyor"),
+                }
+            } if show_military and cv_facts.get("military_status") not in (None, "bilinmiyor") else {}),
             "competency_scores": {
                 "technical_fit": job_fit.get("overall_fit_score", 0.5),
                 "behavioral_strength": self._calculate_behavioral_average(hr_criteria),
@@ -91,6 +119,15 @@ class InterviewReportGenerator:
         job_fit = analysis.get("job_fit", {})
         multipass = analysis.get("multipass_analysis", {})
         technical_analysis = multipass.get("technical", {})
+        # Sort requirements: high importance first
+        reqs = job_fit.get("requirements_matrix", [])
+        try:
+            def _imp_val(v: str) -> int:
+                low = (v or "").lower()
+                return 2 if low == "high" else 1 if low == "medium" else 0
+            reqs_sorted = sorted(reqs, key=lambda r: _imp_val(r.get("importance", "medium")), reverse=True)
+        except Exception:
+            reqs_sorted = reqs
         
         return {
             "technical_assessment": {
@@ -99,7 +136,7 @@ class InterviewReportGenerator:
                 "architecture_understanding": technical_analysis.get("architecture_understanding", 0.5),
                 "technology_depth": technical_analysis.get("technology_depth", 0.5)
             },
-            "requirement_matrix": job_fit.get("requirements_matrix", []),
+            "requirement_matrix": reqs_sorted,
             "technical_evidence": {
                 "strong_areas": technical_analysis.get("standout_skills", []),
                 "gap_areas": technical_analysis.get("technical_gaps", []),
@@ -389,6 +426,10 @@ class InterviewReportGenerator:
         job_fit = ta.get("job_fit", {})
         requirements_matrix = job_fit.get("requirements_matrix", [])
         
+        # Include panel review and work samples if available
+        panel = ta.get("panel_review") or {}
+        work_samples = ta.get("work_samples") or []
+
         # Convert requirements to evidence items
         evidence_items = []
         for req in requirements_matrix:
@@ -428,12 +469,28 @@ class InterviewReportGenerator:
                     "supporting_quotes": [strength],
                     "behavioral_indicators": ["Positive performance indicator"]
                 })
-        
+        # Add panel decision and work samples sections
+        panel_section = {
+            "decision": panel.get("decision"),
+            "notes": panel.get("notes"),
+            "rubric": panel.get("rubric") or []
+        }
+        work_samples_section = [
+            {
+                "name": ws.get("name"),
+                "score_0_100": ws.get("score_0_100"),
+                "weight_0_1": ws.get("weight_0_1"),
+                "notes": ws.get("notes")
+            } for ws in work_samples if isinstance(ws, dict)
+        ]
+
         return {
             "evidence_items": evidence_items,
             "behavioral_patterns": behavioral_patterns,
             "competency_evidence": competency_evidence,
             "transcript": analysis.get("transcript", ""),
+            "panel_review": panel_section,
+            "work_samples": work_samples_section,
             "summary_stats": {
                 "total_evidence_items": len(evidence_items),
                 "verified_claims": len([e for e in evidence_items if e["verification_status"] == "verified"]),
@@ -605,6 +662,7 @@ def export_to_markdown(report: Dict[str, Any]) -> str:
     content = report.get("content", {})
     scoring = report.get("scoring", {})
     recommendations = report.get("recommendations", {})
+    viz = report.get("visualization_data", {})
     
     md = f"""# Interview Report
 
@@ -613,6 +671,8 @@ def export_to_markdown(report: Dict[str, Any]) -> str:
 - **Position**: {metadata.get('position')}
 - **Interview Date**: {metadata.get('interview_date')}
 - **Report Generated**: {metadata.get('report_generated')}
+
+> Not: Bu rapor AI destekli öneriler içerir; nihai işe alım kararı panel onayıyla verilir. Ses/ton metrikleri sadece yardımcı amaçlıdır ve toplam skora doğrudan eklenmez.
 
 ## Executive Summary
 **Recommendation**: {content.get('executive_overview', {}).get('recommendation', 'N/A')}
@@ -644,6 +704,31 @@ def export_to_markdown(report: Dict[str, Any]) -> str:
         md += f"\n### {category.replace('_', ' ').title()}\n"
         for item in items:
             md += f"- {item}\n"
+
+    # Panel decision and work samples sections if present
+    panel = viz.get('evidence_based', {}).get('panel_review') if isinstance(viz, dict) else None
+    ws = viz.get('evidence_based', {}).get('work_samples') if isinstance(viz, dict) else None
+    if panel and panel.get('decision'):
+        md += "\n## Panel Decision\n"
+        md += f"- Decision: {panel.get('decision')}\n"
+        if panel.get('notes'):
+            md += f"- Notes: {panel.get('notes')}\n"
+        if isinstance(panel.get('rubric'), list) and panel['rubric']:
+            md += "\n### Panel Rubric\n"
+            for r in panel['rubric']:
+                md += f"- {r.get('label')}: {r.get('score_0_100')}/100"
+                if isinstance(r.get('weight_0_1'), (int, float)):
+                    md += f" (weight {(r['weight_0_1']*100):.0f}%)"
+                md += "\n"
+    if isinstance(ws, list) and ws:
+        md += "\n## Work Samples / Tests\n"
+        for w in ws:
+            md += f"- {w.get('name')}: {w.get('score_0_100')}/100"
+            if isinstance(w.get('weight_0_1'), (int, float)):
+                md += f" (weight {(w['weight_0_1']*100):.0f}%)"
+            if w.get('notes'):
+                md += f" – {w.get('notes')}"
+            md += "\n"
     
     return md
 
