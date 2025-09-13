@@ -121,6 +121,42 @@ class Settings:
     def mail_from_name(self) -> str | None:
         return os.getenv("MAIL_FROM_NAME")
 
+    # OAuth: Google Calendar / Zoom
+    @property
+    def google_client_id(self) -> str | None:
+        return os.getenv("GOOGLE_CLIENT_ID")
+
+    @property
+    def google_client_secret(self) -> str | None:
+        return os.getenv("GOOGLE_CLIENT_SECRET")
+
+    @property
+    def google_redirect_uri(self) -> str | None:
+        return os.getenv("GOOGLE_REDIRECT_URI")
+
+    @property
+    def zoom_client_id(self) -> str | None:
+        return os.getenv("ZOOM_CLIENT_ID")
+
+    @property
+    def zoom_client_secret(self) -> str | None:
+        return os.getenv("ZOOM_CLIENT_SECRET")
+
+    @property
+    def zoom_redirect_uri(self) -> str | None:
+        return os.getenv("ZOOM_REDIRECT_URI")
+
+    # External base URL for building absolute links in emails
+    @property
+    def external_base_url(self) -> str:
+        return os.getenv("API_EXTERNAL_BASE_URL", "http://localhost:8000")
+
+    # Public web base URL for candidate-facing links
+    @property
+    def web_external_base_url(self) -> str | None:
+        val = os.getenv("WEB_EXTERNAL_BASE_URL", "").strip()
+        return val or None
+
     # Security & Secrets
     @property
     def environment(self) -> str:

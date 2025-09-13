@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Request
+import sys, os as _os
+sys.path.append(str(_os.path.dirname(__file__)))
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 

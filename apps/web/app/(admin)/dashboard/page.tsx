@@ -245,13 +245,32 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-                    {interviews.length > 0 ? "--" : "0"}dk
+                    {(() => {
+                      const completed = interviews.filter(i => i.status === "completed");
+                      if (!completed.length) return "--";
+                      const avg = Math.round(completed.reduce((acc, it) => {
+                        if (it.completed_at && it.created_at) {
+                          const ms = new Date(it.completed_at).getTime() - new Date(it.created_at).getTime();
+                          return acc + (ms / 60000);
+                        }
+                        return acc;
+                      }, 0) / completed.length);
+                      return `${avg}`;
+                    })()}dk
                   </div>
                   <div className="text-sm text-gray-600 dark:text-gray-400">Ortalama Süre</div>
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
-                    {interviews.length > 0 ? "--" : "0"}/5
+                    {(() => {
+                      const scores = interviews
+                        .map((i: any) => (typeof (i as any).overall_score === 'number' ? Number((i as any).overall_score) : null))
+                        .filter((v: any) => typeof v === 'number') as number[];
+                      if (!scores.length) return "--";
+                      const avg100 = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+                      const avg5 = Math.round((avg100 / 20) * 10) / 10; // one decimal
+                      return `${avg5}`;
+                    })()}/5
                   </div>
                   <div className="text-sm text-gray-600 dark:text-gray-400">Ortalama Puan</div>
                 </div>

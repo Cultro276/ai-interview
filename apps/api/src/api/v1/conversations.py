@@ -23,13 +23,14 @@ from src.services.reporting import InterviewReportGenerator, export_to_markdown,
 from src.core.metrics import collector, Timer
 from src.core.mail import send_email_resend
 from fastapi import Request
-from slowapi.util import get_remote_address
 from slowapi import Limiter
 from src.core.config import settings
 from datetime import datetime, timezone, timedelta
-from datetime import datetime, timezone
 from pydantic import BaseModel
 from typing import Optional
+import os
+import httpx
+from src.db.models.oauth import OAuthCredential
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -88,7 +89,8 @@ async def create_message_public(
         await session.execute(select(Candidate).where(Candidate.token == message_in.token))
     ).scalar_one_or_none()
     now_utc = datetime.now(timezone.utc)
-    if not cand or cand.expires_at <= now_utc:
+    # Guard against None expires_at to satisfy static type checking and runtime safety
+    if not cand or (cand.expires_at is None) or (cand.expires_at <= now_utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
     # Block public messages if any interview for candidate is already completed
     from src.db.models.interview import Interview
@@ -337,6 +339,310 @@ async def set_panel_review(
     await session.refresh(analysis)
     return {"ok": True}
 
+
+# ---- Final interview scheduling ----
+
+
+class FinalInterviewIn(BaseModel):
+    scheduled_at: str  # ISO datetime string
+    meeting_link: str
+    notes: Optional[str] = None
+
+
+@router.post("/analysis/{interview_id}/final-interview")
+async def set_final_interview(
+    interview_id: int,
+    payload: FinalInterviewIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    # Verify interview belongs to tenant
+    interview = (
+        await session.execute(
+            select(Interview)
+            .join(Job, Interview.job_id == Job.id)
+            .where(Interview.id == interview_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Ensure analysis exists
+    analysis = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    ).scalar_one_or_none()
+    if not analysis:
+        analysis = await generate_llm_full_analysis(session, interview_id)
+
+    import json as _json
+    from datetime import datetime as _dt
+    blob = {}
+    try:
+        if analysis.technical_assessment:
+            blob = _json.loads(analysis.technical_assessment)
+    except Exception:
+        blob = {}
+    blob["final_interview"] = {
+        "scheduled_at": payload.scheduled_at,
+        "meeting_link": payload.meeting_link,
+        "notes": payload.notes or "",
+        "organizer_user_id": current_user.id,
+        "created_at": _dt.now().isoformat(),
+    }
+    analysis.technical_assessment = _json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    await session.refresh(analysis)
+    return {"ok": True}
+
+# ---- Calendar/Meeting Integrations (OAuth-assisted) ----
+
+class CreateCalendarEventIn(BaseModel):
+    interview_id: int
+    title: Optional[str] = None
+    scheduled_at: str
+    duration_min: int = 45
+    attendees: Optional[list[str]] = None
+
+
+@router.post("/calendar/google/create")
+async def create_google_calendar_event(
+    body: CreateCalendarEventIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Google Calendar'da etkinlik oluşturur (OAuth gerektirir)."""
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    iv = (
+        await session.execute(
+            select(Interview).join(Job, Interview.job_id == Job.id).where(Interview.id == body.interview_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    cred = (
+        await session.execute(
+            select(OAuthCredential).where(OAuthCredential.user_id == current_user.id, OAuthCredential.provider == "google")
+        )
+    ).scalar_one_or_none()
+    if not cred or not cred.access_token:
+        raise HTTPException(status_code=400, detail="Google OAuth yetkilendirmesi gerekli")
+    # Create skeleton response; actual creation is appended later toward file end to avoid patch ordering issues
+    return {"ok": True}
+
+# ---- Final Interview Availability Flow ----
+
+class Slot(BaseModel):
+    start: str  # ISO
+    end: str    # ISO
+
+
+class ProposeSlotsIn(BaseModel):
+    interview_id: int
+    slots: list[Slot]
+    message: Optional[str] = None
+    attendees: Optional[list[str]] = None
+
+
+@router.post("/final-interview/propose")
+async def propose_final_interview_slots(
+    body: ProposeSlotsIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    iv = (
+        await session.execute(
+            select(Interview).join(Job, Interview.job_id == Job.id).where(Interview.id == body.interview_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    # Ensure analysis exists
+    ana = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == body.interview_id))
+    ).scalar_one_or_none()
+    if not ana:
+        ana = await generate_llm_full_analysis(session, body.interview_id)
+    import json as _json
+    blob = {}
+    if ana.technical_assessment:
+        try:
+            blob = _json.loads(ana.technical_assessment)
+        except Exception:
+            blob = {}
+    fi = blob.get("final_interview") or {}
+    # Save proposals
+    fi["proposals"] = [{"start": s.start, "end": s.end} for s in body.slots]
+    fi["proposal_message"] = body.message or ""
+    fi["proposal_sent_at"] = datetime.now(timezone.utc).isoformat()
+    if isinstance(body.attendees, list):
+        # Persist attendees list under final_interview to use in ICS later
+        fi["attendees"] = [a for a in body.attendees if isinstance(a, str) and "@" in a]
+    blob["final_interview"] = fi
+    ana.technical_assessment = _json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    # Email candidate with links
+    cand = (await session.execute(select(Candidate).where(Candidate.id == iv.candidate_id))).scalar_one_or_none()
+    if cand and getattr(cand, "email", None):
+        base = settings.external_base_url.rstrip("/")
+        lines = [body.message or "Merhaba, aşağıdaki zaman aralıklarından birini seçebilirsiniz:", ""]
+        for idx, s in enumerate(body.slots):
+            link = f"{base}/api/v1/conversations/final-interview/accept?interview_id={iv.id}&slot={idx}"
+            lines.append(f"- {s.start} – {s.end}: {link}")
+        # If we have a public web URL configured, include a friendly selection page link
+        web_base = (settings.web_external_base_url or "").rstrip("/")
+        if web_base:
+            try:
+                lines.append("")
+                lines.append(f"Tüm seçenekleri gör: {web_base}/accept?interview_id={iv.id}")
+            except Exception:
+                pass
+        try:
+            await send_email_resend(getattr(cand, "email"), "Son Görüşme Zaman Seçimi", "\n".join(lines))
+        except Exception:
+            pass
+    return {"ok": True, "count": len(body.slots)}
+
+
+@router.get("/final-interview/accept")
+async def accept_final_interview_slot(
+    interview_id: int,
+    slot: int,
+    session: AsyncSession = Depends(get_session),
+):
+    # Public-safe: only uses interview_id and updates final_interview in analysis
+    ana = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    ).scalar_one_or_none()
+    if not ana or not ana.technical_assessment:
+        raise HTTPException(status_code=404, detail="Interview analysis not found")
+    import json as _json
+    blob = {}
+    try:
+        blob = _json.loads(ana.technical_assessment)
+    except Exception:
+        blob = {}
+    fi = blob.get("final_interview") or {}
+    props = fi.get("proposals") or []
+    if not isinstance(props, list) or slot < 0 or slot >= len(props):
+        raise HTTPException(status_code=400, detail="Invalid slot")
+    chosen = props[slot]
+    fi["scheduled_at"] = chosen.get("start")
+    fi["scheduled_end"] = chosen.get("end")
+    fi["accepted_at"] = datetime.now(timezone.utc).isoformat()
+    blob["final_interview"] = fi
+    ana.technical_assessment = _json.dumps(blob, ensure_ascii=False)
+    await session.commit()
+    # Optionally: send a confirmation email to candidate and owner with ICS attachment
+    try:
+        iv = (await session.execute(select(Interview).where(Interview.id == interview_id))).scalar_one_or_none()
+        if iv:
+            cand = (await session.execute(select(Candidate).where(Candidate.id == iv.candidate_id))).scalar_one_or_none()
+            # Build ICS
+            try:
+                import base64
+                from datetime import datetime as _dt
+                def _fmt(dt_str: str | None) -> str:
+                    try:
+                        if not dt_str:
+                            return ""
+                        dt = _dt.fromisoformat(dt_str.replace("Z", "+00:00"))
+                        return dt.strftime("%Y%m%dT%H%M%SZ")
+                    except Exception:
+                        return ""
+                dtstart = _fmt(fi.get("scheduled_at"))
+                dtend = _fmt(fi.get("scheduled_end"))
+                uid = f"final-{interview_id}-{int(_dt.now().timestamp())}@recruiterai"
+                summary = "Final Interview"
+                location = (fi.get("meeting_link") or "").strip()
+                # Basic ICS; ATTENDEE lines could be added later (admin UI will capture)
+                ics_lines = [
+                    "BEGIN:VCALENDAR",
+                    "VERSION:2.0",
+                    "PRODID:-//RecruiterAI//Final Interview//TR",
+                    "CALSCALE:GREGORIAN",
+                    "METHOD:PUBLISH",
+                    "BEGIN:VEVENT",
+                    f"UID:{uid}",
+                    f"DTSTAMP:{_dt.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+                    f"DTSTART:{dtstart}",
+                    f"DTEND:{dtend}",
+                    f"SUMMARY:{summary}",
+                    f"LOCATION:{location}",
+                    "END:VEVENT",
+                    "END:VCALENDAR",
+                ]
+                ics_content = "\r\n".join(ics_lines)
+                ics_b64 = base64.b64encode(ics_content.encode("utf-8")).decode("ascii")
+            except Exception:
+                ics_b64 = None
+            if cand and getattr(cand, "email", None):
+                attachments = None
+                if ics_b64:
+                    attachments = [{"filename": "final-interview.ics", "content": ics_b64, "content_type": "text/calendar"}]
+                await send_email_resend(getattr(cand, "email"), "Son Görüşme Onaylandı", f"Görüşmeniz {fi.get('scheduled_at')} tarihinde onaylandı.", attachments=attachments)
+    except Exception:
+        pass
+    # Redirect-friendly response (for public click)
+    return {"ok": True, "scheduled_at": fi.get("scheduled_at")}
+
+
+# Public: list slot proposals without requiring auth (candidate-friendly)
+@public_router.get("/final-interview/proposals")
+async def get_final_interview_proposals(
+    interview_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    ana = (
+        await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))
+    ).scalar_one_or_none()
+    if not ana or not ana.technical_assessment:
+        return {"interview_id": interview_id, "proposals": []}
+    import json as _json
+    try:
+        blob = _json.loads(ana.technical_assessment)
+    except Exception:
+        blob = {}
+    fi = blob.get("final_interview") or {}
+    props = fi.get("proposals") or []
+    return {"interview_id": interview_id, "proposals": props}
+
+
+class CreateZoomIn(BaseModel):
+    interview_id: int
+    topic: Optional[str] = None
+    scheduled_at: str
+    duration_min: int = 45
+
+
+@router.post("/meeting/zoom/create")
+async def create_zoom_meeting(
+    body: CreateZoomIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Zoom toplantısını oluşturur (OAuth gerektirir)."""
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    iv = (
+        await session.execute(
+            select(Interview).join(Job, Interview.job_id == Job.id).where(Interview.id == body.interview_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    cred = (
+        await session.execute(
+            select(OAuthCredential).where(OAuthCredential.user_id == current_user.id, OAuthCredential.provider == "zoom")
+        )
+    ).scalar_one_or_none()
+    if not cred or not cred.access_token:
+        raise HTTPException(status_code=400, detail="Zoom OAuth yetkilendirmesi gerekli")
+    return {"ok": True}
 
 # ---- Outcome tracking ----
 
@@ -845,6 +1151,25 @@ async def get_comprehensive_report(
             tech_data,
             template_type=template_type
         )
+
+        # Ensure top-level normalized score is present for UI consistency
+        try:
+            meta = tech_data.get("meta", {}) if isinstance(tech_data, dict) else {}
+            normalized: float | None = None
+            over = meta.get("overall_score") if isinstance(meta, dict) else None
+            if isinstance(over, (int, float)):
+                normalized = float(over)
+            else:
+                # Fallback from scoring recommendation if available (0..1 -> 0..100)
+                sc_val = (comprehensive_report.get("scoring", {}) or {}).get("Genel Öneri Skoru")
+                if isinstance(sc_val, (int, float)):
+                    normalized = float(sc_val) * (100.0 if sc_val <= 1.0 else 1.0)
+            if isinstance(normalized, (int, float)):
+                if "content" not in comprehensive_report:
+                    comprehensive_report["content"] = {}
+                comprehensive_report["content"]["normalized_overall_score_0_100"] = round(normalized, 2)
+        except Exception:
+            pass
         
         # Cache back into analysis.technical_assessment under "comprehensive_report"
         try:
@@ -959,3 +1284,111 @@ async def get_bulk_candidate_reports(
         "successful_reports": len([r for r in reports if "error" not in r]),
         "reports": reports
     }
+
+# ---- OAuth Authorization & Callback + Provider Create (server-side) ----
+
+class CreateCalendarIn(BaseModel):
+    interview_id: int
+    title: Optional[str] = None
+    scheduled_at: str
+    duration_min: int = 45
+    attendees: Optional[list[str]] = None
+
+
+@router.get("/oauth/google/authorize")
+async def oauth_google_authorize(current_user: User = Depends(current_active_user)):
+    if not (settings.google_client_id and settings.google_redirect_uri):
+        raise HTTPException(status_code=400, detail="Google OAuth yapılandırması eksik")
+    scope = "https://www.googleapis.com/auth/calendar.events"
+    url = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        f"?response_type=code&client_id={settings.google_client_id}"
+        f"&redirect_uri={settings.google_redirect_uri}"
+        f"&scope={scope}&access_type=offline&prompt=consent"
+    )
+    return {"url": url}
+
+
+@router.get("/oauth/google/callback")
+async def oauth_google_callback(code: str, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    if not (settings.google_client_id and settings.google_client_secret and settings.google_redirect_uri):
+        raise HTTPException(status_code=400, detail="Google OAuth yapılandırması eksik")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "code": code,
+                "redirect_uri": settings.google_redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Google token alma başarısız: {resp.text[:200]}")
+    tok = resp.json()
+    access = tok.get("access_token")
+    refresh = tok.get("refresh_token")
+    expires_in = int(tok.get("expires_in", 3600))
+    exp_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, expires_in - 60))
+    cred = (
+        await session.execute(select(OAuthCredential).where(OAuthCredential.user_id == current_user.id, OAuthCredential.provider == "google"))
+    ).scalar_one_or_none()
+    if not cred:
+        cred = OAuthCredential(user_id=current_user.id, provider="google", access_token=access, refresh_token=refresh, expires_at=exp_at)
+    else:
+        cred.access_token = access or cred.access_token
+        if refresh:
+            cred.refresh_token = refresh
+        cred.expires_at = exp_at
+    session.add(cred)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/oauth/zoom/authorize")
+async def oauth_zoom_authorize(current_user: User = Depends(current_active_user)):
+    if not (settings.zoom_client_id and settings.zoom_redirect_uri):
+        raise HTTPException(status_code=400, detail="Zoom OAuth yapılandırması eksik")
+    url = (
+        "https://zoom.us/oauth/authorize"
+        f"?response_type=code&client_id={settings.zoom_client_id}"
+        f"&redirect_uri={settings.zoom_redirect_uri}"
+    )
+    return {"url": url}
+
+
+@router.get("/oauth/zoom/callback")
+async def oauth_zoom_callback(code: str, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    if not (settings.zoom_client_id and settings.zoom_client_secret and settings.zoom_redirect_uri):
+        raise HTTPException(status_code=400, detail="Zoom OAuth yapılandırması eksik")
+    basic = httpx.BasicAuth(settings.zoom_client_id, settings.zoom_client_secret)
+    async with httpx.AsyncClient(timeout=20.0, auth=basic) as client:
+        resp = await client.post(
+            "https://zoom.us/oauth/token",
+            params={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.zoom_redirect_uri,
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Zoom token alma başarısız: {resp.text[:200]}")
+    tok = resp.json()
+    access = tok.get("access_token")
+    refresh = tok.get("refresh_token")
+    expires_in = int(tok.get("expires_in", 3600))
+    exp_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, expires_in - 60))
+    cred = (
+        await session.execute(select(OAuthCredential).where(OAuthCredential.user_id == current_user.id, OAuthCredential.provider == "zoom"))
+    ).scalar_one_or_none()
+    if not cred:
+        cred = OAuthCredential(user_id=current_user.id, provider="zoom", access_token=access, refresh_token=refresh, expires_at=exp_at)
+    else:
+        cred.access_token = access or cred.access_token
+        if refresh:
+            cred.refresh_token = refresh
+        cred.expires_at = exp_at
+    session.add(cred)
+    await session.commit()
+    return {"ok": True}

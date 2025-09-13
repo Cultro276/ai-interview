@@ -60,6 +60,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const viewedKey = typeof window !== 'undefined' && user ? `viewedAnalyses:${user.id}` : null;
   const notifiedRef = useRef<Set<number>>(new Set());
   const viewedRef = useRef<Set<number>>(new Set());
+  const [notificationStateLoaded, setNotificationStateLoaded] = useState(false);
 
   const loadData = async () => {
     try {
@@ -204,7 +205,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         viewedRef.current = new Set(Array.isArray(arr2) ? arr2 : []);
       }
     } catch {}
-  }, [notifiedKey]);
+    // Mark as ready so notification effect won't run before restoration completes
+    setNotificationStateLoaded(true);
+  }, [notifiedKey, viewedKey]);
 
   // Attempt to show a browser notification (graceful no-op if blocked)
   const tryShowNotification = (title: string, body: string, url?: string) => {
@@ -233,7 +236,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   // Detect newly completed interviews, ensure analysis exists, then notify once (aggregated)
   useEffect(() => {
-    if (!dataLoaded || !interviews?.length) return;
+    if (!dataLoaded || !interviews?.length || !notificationStateLoaded) return;
     const completed = interviews.filter(iv => iv.status === 'completed');
     (async () => {
       const readyIds: number[] = [];
@@ -255,7 +258,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         }
       }
     })();
-  }, [interviews, candidates, dataLoaded, notifiedKey]);
+  }, [interviews, candidates, dataLoaded, notifiedKey, notificationStateLoaded]);
 
   return (
     <DashboardContext.Provider

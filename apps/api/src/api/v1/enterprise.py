@@ -12,9 +12,18 @@ from src.core.rbac import rbac_manager, Permission, AccessContext, ResourceType
 from src.core.audit import audit_logger, AuditEventType, AuditContext, AuditSeverity
 from src.auth import current_active_user
 from src.db.models.user import User
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from src.db.session import get_session
 
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
+@router.get("/members")
+async def list_org_members(session: AsyncSession = Depends(get_session), user: User = Depends(current_active_user)):
+    owner_id = user.owner_user_id or user.id
+    rows = await session.execute(select(User).where((User.id == owner_id) | (User.owner_user_id == owner_id)))
+    users = rows.scalars().all()
+    return [{"id": u.id, "email": getattr(u, "email", None), "first_name": getattr(u, "first_name", None), "last_name": getattr(u, "last_name", None)} for u in users]
 
 
 # Health Check Endpoints

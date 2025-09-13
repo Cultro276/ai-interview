@@ -871,6 +871,7 @@ def extract_known_technologies_from_resume(resume_text: str, max_items: int = 24
     if not resume_text:
         return out
     low = resume_text.lower()
+    seen: set[str] = set()
     for tok in sorted(_TECH_TOKENS):
         if tok in low:
             label = tok
@@ -878,9 +879,23 @@ def extract_known_technologies_from_resume(resume_text: str, max_items: int = 24
                 label = "Next.js"
             elif tok == "spring boot":
                 label = "Spring Boot"
-            out.append(label)
-            if len(out) >= max_items:
-                break
+            # Canonicalize common casing for tests/UI
+            elif tok == "python":
+                label = "Python"
+            elif tok == "react":
+                label = "React"
+            elif tok == "node":
+                label = "Node"
+            elif tok == "docker":
+                label = "Docker"
+            elif tok == "aws":
+                label = "AWS"
+            low_key = label.lower()
+            if low_key not in seen:
+                seen.add(low_key)
+                out.append(label)
+                if len(out) >= max_items:
+                    break
     return out
 
 

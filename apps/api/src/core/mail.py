@@ -3,10 +3,11 @@ from __future__ import annotations
 import httpx
 
 import logging
+from typing import List, Dict, Any, Optional
 from src.core.config import settings
 
 
-async def send_email_resend(to_email: str, subject: str, body_text: str) -> None:
+async def send_email_resend(to_email: str, subject: str, body_text: str, attachments: Optional[List[Dict[str, Any]]] = None) -> None:
     """Send an email via Resend if configured; otherwise print a mock log.
 
     Non-blocking errors are swallowed to avoid breaking user flows.
@@ -25,6 +26,27 @@ async def send_email_resend(to_email: str, subject: str, body_text: str) -> None
                 "subject": subject,
                 "text": body_text,
             }
+            # Resend attachments: list of { filename, content (base64), content_type? }
+            if attachments:
+                safe_atts: list[dict] = []
+                for att in attachments:
+                    if not isinstance(att, dict):
+                        continue
+                    fn = att.get("filename") or att.get("fileName")
+                    content = att.get("content")
+                    if not fn or not content:
+                        continue
+                    entry = {
+                        "filename": str(fn),
+                        "content": str(content),
+                    }
+                    # Optional content type (Resend tolerates absence)
+                    ct = att.get("content_type") or att.get("type")
+                    if ct:
+                        entry["content_type"] = str(ct)
+                    safe_atts.append(entry)
+                if safe_atts:
+                    payload["attachments"] = safe_atts
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             resp = await client.post("https://api.resend.com/emails", json=payload, headers=headers)
             if resp.status_code >= 400:

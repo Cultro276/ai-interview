@@ -5,3 +5,4 @@ from .user import User  # noqa: F401
 from .conversation import ConversationMessage, InterviewAnalysis  # noqa: F401
 from .candidate_profile import CandidateProfile  # noqa: F401 
 from .consent import CandidateConsent  # noqa: F401
+from .oauth import OAuthCredential  # noqa: F401

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from enum import Enum
 
 from pydantic import BaseModel, Field, EmailStr
@@ -150,6 +150,8 @@ class InterviewRead(BaseModel):
     prepared_first_question: Optional[str] = None
     company_name: Optional[str] = None
     overall_score: Optional[float] = None
+    panel_decision: Optional[str] = None
+    final_interview: Optional[Dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 

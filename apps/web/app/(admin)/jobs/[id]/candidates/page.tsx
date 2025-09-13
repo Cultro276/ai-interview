@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { 
   Button,
@@ -32,6 +33,7 @@ export default function JobCandidatesPage() {
   const params = useParams();
   const jobId = Number(params?.id);
   const { candidates, interviews, loading, refreshData } = useDashboard();
+  const { user } = useAuth();
   const { success, error: toastError, info } = useToast();
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -56,6 +58,7 @@ export default function JobCandidatesPage() {
   const jobCandidates = useMemo(() => candidates.filter((c) => jobCandidateIds.includes(c.id)), [candidates, jobCandidateIds]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "completed" | "pending">("all");
+  const [approvalFilter, setApprovalFilter] = useState<'all' | 'approved'>('all');
   const [scoreBand, setScoreBand] = useState<'all' | '70+' | '50-69' | '<50'>('all');
   const [hasCvOnly, setHasCvOnly] = useState(false);
   const [hasMediaOnly, setHasMediaOnly] = useState(false);
@@ -167,6 +170,13 @@ export default function JobCandidatesPage() {
     });
     return (candidateId: number) => map.get(candidateId) || null;
   }, [jobInterviews]);
+  const getPanelDecision = (interview: any | null): string | null => {
+    try {
+      const ta = interview?.technical_assessment ? JSON.parse(interview.technical_assessment) : null;
+      const pr = ta?.panel_review;
+      return typeof pr?.decision === 'string' ? pr.decision : null;
+    } catch { return null; }
+  };
   const formatDuration = (startIso?: string, endIso?: string) => {
     if (!startIso || !endIso) return "—";
     const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
@@ -255,6 +265,18 @@ export default function JobCandidatesPage() {
     try {
       // 1) Try to fetch existing (will generate if yok)
       let data = await apiFetch<any>(`/api/v1/conversations/analysis/${intId}`);
+      // mark as viewed to suppress future duplicate notifications for this analysis
+      try {
+        const key = user?.id ? `viewedAnalyses:${user.id}` : null;
+        if (key) {
+          const raw = localStorage.getItem(key);
+          const arr: number[] = raw ? JSON.parse(raw) : [];
+          if (!arr.includes(intId)) {
+            arr.push(intId);
+            localStorage.setItem(key, JSON.stringify(arr));
+          }
+        }
+      } catch {}
       // 2) If not ready, trigger recompute and poll until analysis ready or timeout
       const model0 = (data?.model_used || "").toLowerCase();
       const isReady0 = model0.includes("llm-full") || model0.includes("comprehensive") || model0.includes("premium");
@@ -281,6 +303,139 @@ export default function JobCandidatesPage() {
       toastError(e.message || "Rapor yüklenemedi");
     } finally {
       setReportLoading(false);
+    }
+  };
+
+  const approveCandidate = async (interviewId: number, decision: 'Strong Hire' | 'Hire' | 'Hold' | 'No Hire') => {
+    try {
+      await apiFetch(`/api/v1/conversations/analysis/${interviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision }) });
+      await refreshData();
+      info('Panel kararı kaydedildi');
+    } catch (e: any) {
+      toastError(e.message || 'Panel kararı kaydedilemedi');
+    }
+  };
+
+  // --- Final Interview Scheduling Modal ---
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleInterviewId, setScheduleInterviewId] = useState<number | null>(null);
+  const [scheduleDate, setScheduleDate] = useState<string>('');
+  const [scheduleTime, setScheduleTime] = useState<string>('');
+  const [scheduleDuration, setScheduleDuration] = useState<number>(45);
+  const [scheduleProvider, setScheduleProvider] = useState<'custom'|'google'|'zoom'>('custom');
+  const [scheduleParticipants, setScheduleParticipants] = useState<string>('');
+  const [scheduleNotes, setScheduleNotes] = useState<string>('');
+  const [scheduleLink, setScheduleLink] = useState<string>('');
+
+  // --- Slot Proposal Modal (multi-slot + attendees) ---
+  const [proposeOpen, setProposeOpen] = useState(false);
+  const [proposeInterviewId, setProposeInterviewId] = useState<number | null>(null);
+  const [proposeSlots, setProposeSlots] = useState<{ start: string; end: string }[]>([]);
+  const [proposeMsg, setProposeMsg] = useState<string>("Merhaba, aşağıdaki zamanlardan birini seçebilirsiniz.");
+  const [proposeAttendees, setProposeAttendees] = useState<string>("");
+
+  const openPropose = (interviewId?: number | null) => {
+    setProposeInterviewId(interviewId || null);
+    const base = new Date(Date.now() + 2 * 3600 * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const d = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+    const t = (dt: Date) => `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    const start1 = new Date(base);
+    const end1 = new Date(base.getTime() + 45 * 60000);
+    const start2 = new Date(base.getTime() + 24 * 3600 * 1000);
+    const end2 = new Date(start2.getTime() + 45 * 60000);
+    setProposeSlots([
+      { start: `${d(start1)}T${t(start1)}`, end: `${d(end1)}T${t(end1)}` },
+      { start: `${d(start2)}T${t(start2)}`, end: `${d(end2)}T${t(end2)}` },
+    ]);
+    setProposeMsg("Merhaba, aşağıdaki zamanlardan birini seçebilirsiniz.");
+    setProposeAttendees("");
+    setProposeOpen(true);
+  };
+
+  const submitPropose = async () => {
+    try {
+      if (!proposeInterviewId) throw new Error('Geçersiz mülakat');
+      const norm = (s: string) => new Date(s).toISOString();
+      const payload = {
+        interview_id: proposeInterviewId,
+        message: proposeMsg,
+        slots: proposeSlots.map(s => ({ start: norm(s.start), end: norm(s.end) })),
+        attendees: proposeAttendees.split(',').map(s=>s.trim()).filter(Boolean),
+      };
+      await apiFetch(`/api/v1/conversations/final-interview/propose`, { method: 'POST', body: JSON.stringify(payload) });
+      setProposeOpen(false);
+      info('Slot önerileri adaya gönderildi');
+    } catch (e: any) {
+      toastError(e.message || 'Öneri gönderilemedi');
+    }
+  };
+
+  const openSchedule = (interviewId?: number | null) => {
+    setScheduleInterviewId(interviewId || null);
+    const now = new Date(Date.now() + 3600 * 1000);
+    setScheduleDate(now.toISOString().slice(0,10));
+    setScheduleTime(now.toTimeString().slice(0,5));
+    setScheduleDuration(45);
+    setScheduleProvider('custom');
+    setScheduleParticipants('');
+    setScheduleNotes('');
+    setScheduleLink('');
+    setScheduleOpen(true);
+  };
+
+  const submitSchedule = async () => {
+    try {
+      if (!scheduleInterviewId) throw new Error('Geçersiz mülakat');
+      if (!scheduleDate || !scheduleTime) throw new Error('Tarih ve saat gerekli');
+      const iso = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+      let link = scheduleLink.trim();
+      if (!link) {
+        if (scheduleProvider === 'google') link = 'https://meet.google.com/new';
+        else if (scheduleProvider === 'zoom') link = 'https://zoom.us/meeting/schedule';
+      }
+      await apiFetch(`/api/v1/conversations/analysis/${scheduleInterviewId}/final-interview`, { method: 'POST', body: JSON.stringify({ scheduled_at: iso, meeting_link: link, notes: scheduleNotes }) });
+      // ICS üretimi (seçilen süreyle)
+      try {
+        const start = new Date(iso);
+        const end = new Date(start.getTime() + Math.max(15, scheduleDuration) * 60000);
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const fmt = (d: Date) => `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+        const uid = `final-${scheduleInterviewId}-${Date.now()}@recruiterai`;
+        const attendees = (scheduleParticipants || '').split(',').map(s=>s.trim()).filter(Boolean);
+        const ics = [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'PRODID:-//RecruiterAI//Final Interview//TR',
+          'CALSCALE:GREGORIAN',
+          'METHOD:PUBLISH',
+          'BEGIN:VEVENT',
+          `UID:${uid}`,
+          `DTSTAMP:${fmt(new Date())}`,
+          `DTSTART:${fmt(start)}`,
+          `DTEND:${fmt(end)}`,
+          'SUMMARY:Final Interview',
+          `DESCRIPTION:${link}${scheduleNotes ? '\n' + scheduleNotes : ''}${scheduleParticipants ? '\nKatılımcılar: ' + scheduleParticipants : ''}`,
+          `LOCATION:${link}`,
+          ...attendees.map(a => `ATTENDEE;CN=${a};ROLE=REQ-PARTICIPANT:mailto:${a}`),
+          'END:VEVENT',
+          'END:VCALENDAR'
+        ].join('\r\n');
+        const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'final-interview.ics';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch {}
+      try { if (link) await navigator.clipboard.writeText(link); } catch {}
+      setScheduleOpen(false);
+      info('Son görüşme planlandı (ICS indirildi, link kopyalandı)');
+    } catch (e: any) {
+      toastError(e.message || 'Planlama başarısız');
     }
   };
 
@@ -949,6 +1104,13 @@ export default function JobCandidatesPage() {
                 <option value="duration_asc">Süre (en kısa)</option>
               </select>
             </label>
+            <label className="text-sm text-gray-600 flex items-center gap-2">
+              Onay:
+              <select value={approvalFilter} onChange={(e) => setApprovalFilter(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
+                <option value="all">Tümü</option>
+                <option value="approved">Onay Verilenler</option>
+              </select>
+            </label>
           </div>
         </div>
 
@@ -975,6 +1137,12 @@ export default function JobCandidatesPage() {
           </thead>
           <tbody className="bg-white dark:bg-neutral-900 divide-y divide-gray-200 dark:divide-neutral-800">
             {filteredSortedCandidates
+              .filter(c => {
+                if (approvalFilter === 'all') return true;
+                const it: any = findLatestInterview(c.id);
+                const decision = getPanelDecision(it);
+                return decision === 'Hire' || decision === 'Strong Hire';
+              })
               .slice((pageNum-1)*10, (pageNum-1)*10 + 10)
               .map((c) => (
               <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-neutral-800">
@@ -1022,6 +1190,32 @@ export default function JobCandidatesPage() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 flex items-center gap-3">
                   <Button variant="ghost" onClick={() => openReportForCandidate(c.id)} className="p-0 h-auto">Rapor</Button>
+                  {(() => {
+                    const it: any = findLatestInterview(c.id);
+                    const decision = getPanelDecision(it);
+                    const canSchedule = decision === 'Hire' || decision === 'Strong Hire';
+                    return (
+                      <>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" className="h-7">Onay Ver</Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent>
+                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'Strong Hire')}>Kesinlikle Al (Strong Hire)</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'Hire')}>Al (Hire)</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'Hold')}>Kararsız (Hold)</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'No Hire')}>Alma (No Hire)</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        <Button variant={canSchedule ? 'primary' : 'outline'} disabled={!canSchedule} className="h-7" onClick={() => openSchedule(it?.id)}>
+                          Son Görüşme Planla
+                        </Button>
+                        <Button variant={canSchedule ? 'outline' : 'outline'} disabled={!canSchedule} className="h-7" onClick={() => openPropose(it?.id)}>
+                          Slot Öner
+                        </Button>
+                      </>
+                    );
+                  })()}
                   {/* Delete candidate with confirm */}
                   <Dialog>
                     <DialogTrigger asChild>
@@ -1087,14 +1281,11 @@ export default function JobCandidatesPage() {
             }}>PDF Olarak Kaydet</Button>
             <Button variant="outline" onClick={async ()=>{
               if (!reportInterviewId) return;
-              const decision = prompt("Panel Kararı (Strong Hire/Hire/Hold/No Hire)", "");
+              const decision = prompt("Panel Kararı (Kesinlikle Al/Al/Kararsız/Alma)", "");
               if (!decision) return;
               const notes = prompt("Notlar (opsiyonel)", "") || "";
-              const rubricStr = prompt("Panel rubriği JSON (opsiyonel) örn: [{\"label\":\"Teknik\",\"score_0_100\":80,\"weight_0_1\":0.5}]", "");
-              let rubric:any = undefined;
-              try { rubric = rubricStr ? JSON.parse(rubricStr) : undefined; } catch {}
               try{
-                await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision, notes, rubric }) });
+                await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision, notes }) });
                 const a = await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}`);
                 setReportAnalysis(a);
               }catch(e:any){ alert(e.message || 'Panel kaydı başarısız'); }
@@ -1129,7 +1320,13 @@ export default function JobCandidatesPage() {
                   const prof = cr?.content?.profile_facts;
                   return (
                     <div className="bg-white p-4 rounded-xl border border-gray-200 flex flex-wrap items-center gap-4">
-                      <div className="text-sm text-gray-700"><strong>Genel Skor:</strong> {Math.round((cr?.scoring?.["Genel Öneri Skoru"] ?? 0) * 100)}/100</div>
+                      <div className="text-sm text-gray-700"><strong>Genel Skor:</strong> {(() => {
+                        const normalized = cr?.content?.normalized_overall_score_0_100;
+                        if (typeof normalized === 'number') return Math.round(normalized);
+                        const rec = cr?.scoring?.["Genel Öneri Skoru"];
+                        if (typeof rec === 'number') return Math.round(rec * (rec <= 1 ? 100 : 1));
+                        return '—';
+                      })()}/100</div>
                       {prof?.military_status && (
                         <div className="text-sm text-gray-700"><strong>Askerlik:</strong> {prof.military_status}</div>
                       )}
@@ -1934,6 +2131,125 @@ export default function JobCandidatesPage() {
               return null;
             }
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Schedule Modal */}
+      <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Son Görüşme Planla</DialogTitle>
+            <DialogDescription>Tarih, saat, süre ve sağlayıcıyı seçin.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Tarih</label>
+                <input type="date" className="w-full border rounded px-2 py-1" value={scheduleDate} onChange={(e)=>setScheduleDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Saat</label>
+                <input type="time" className="w-full border rounded px-2 py-1" value={scheduleTime} onChange={(e)=>setScheduleTime(e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Süre (dk)</label>
+                <input type="number" min={15} className="w-full border rounded px-2 py-1" value={scheduleDuration} onChange={(e)=>setScheduleDuration(Number(e.target.value||45))} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Sağlayıcı</label>
+                <select className="w-full border rounded px-2 py-1" value={scheduleProvider} onChange={(e)=>setScheduleProvider(e.target.value as any)}>
+                  <option value="custom">Özel Link</option>
+                  <option value="google">Google Meet</option>
+                  <option value="zoom">Zoom</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Toplantı Linki</label>
+              <input type="url" placeholder="https://" className="w-full border rounded px-2 py-1" value={scheduleLink} onChange={(e)=>setScheduleLink(e.target.value)} />
+              <div className="text-[11px] text-gray-500 mt-1">Sağlayıcı seçerseniz boş bırakabilirsiniz. Link otomatik önerilir.</div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Katılımcılar (virgülle)</label>
+              <input type="text" className="w-full border rounded px-2 py-1" value={scheduleParticipants} onChange={(e)=>setScheduleParticipants(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Not</label>
+              <textarea className="w-full border rounded px-2 py-1" rows={3} value={scheduleNotes} onChange={(e)=>setScheduleNotes(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            {scheduleProvider !== 'custom' && (
+              <Button
+                variant="secondary"
+                onClick={async ()=>{
+                  try {
+                    if (!scheduleInterviewId) return;
+                    const iso = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+                    if (scheduleProvider === 'google') {
+                      await apiFetch(`/api/v1/conversations/calendar/google/create`, { method: 'POST', body: JSON.stringify({ interview_id: scheduleInterviewId, title: 'Final Interview', scheduled_at: iso, duration_min: scheduleDuration, attendees: scheduleParticipants.split(',').map(s=>s.trim()).filter(Boolean) }) });
+                      window.open('https://calendar.google.com/calendar/u/0/r/eventedit', '_blank');
+                    } else if (scheduleProvider === 'zoom') {
+                      await apiFetch(`/api/v1/conversations/meeting/zoom/create`, { method: 'POST', body: JSON.stringify({ interview_id: scheduleInterviewId, topic: 'Final Interview', scheduled_at: iso, duration_min: scheduleDuration }) });
+                      window.open('https://zoom.us/meeting/schedule', '_blank');
+                    }
+                  } catch (e:any) { toastError(e.message || 'Oluşturma başarısız'); }
+                }}
+              >Toplantı Oluştur</Button>
+            )}
+            <DialogClose asChild>
+              <Button variant="outline">İptal</Button>
+            </DialogClose>
+            <Button onClick={submitSchedule}>Planla ve .ics Oluştur</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Slot Öner Modal */}
+      <Dialog open={proposeOpen} onOpenChange={setProposeOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Slot Öner</DialogTitle>
+            <DialogDescription>Adaya birden çok zaman aralığı gönderin.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="text-xs text-gray-600">Zaman Aralıkları</div>
+              {proposeSlots.map((s, idx) => (
+                <div key={idx} className="grid grid-cols-2 gap-3">
+                  <input type="datetime-local" className="w-full border rounded px-2 py-1" value={s.start} onChange={(e)=>{
+                    const v = e.target.value; setProposeSlots(arr=> arr.map((it,i)=> i===idx?{...it, start:v}:it));
+                  }} />
+                  <div className="flex gap-2">
+                    <input type="datetime-local" className="w-full border rounded px-2 py-1" value={s.end} onChange={(e)=>{
+                      const v = e.target.value; setProposeSlots(arr=> arr.map((it,i)=> i===idx?{...it, end:v}:it));
+                    }} />
+                    <Button variant="ghost" onClick={()=> setProposeSlots(arr => arr.filter((_,i)=> i!==idx))}>Sil</Button>
+                  </div>
+                </div>
+              ))}
+              <div>
+                <Button variant="outline" onClick={()=> setProposeSlots(arr => [...arr, { start: '', end: '' }])}>+ Aralık Ekle</Button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Mesaj</label>
+              <textarea className="w-full border rounded px-2 py-1" rows={3} value={proposeMsg} onChange={(e)=> setProposeMsg(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Katılımcılar (virgülle e-postalar)</label>
+              <input className="w-full border rounded px-2 py-1" value={proposeAttendees} onChange={(e)=> setProposeAttendees(e.target.value)} />
+              <div className="text-[11px] text-gray-500 mt-1">Bu adresler .ics ATTENDEE olarak eklenecektir.</div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <DialogClose asChild>
+              <Button variant="outline">İptal</Button>
+            </DialogClose>
+            <Button onClick={submitPropose}>Adaya Öner</Button>
+          </div>
         </DialogContent>
       </Dialog>
       {/* Scorecard Modal kaldırıldı */}
