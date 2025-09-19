@@ -18,8 +18,7 @@ from .internal import router as internal_router
 from .enterprise import router as enterprise_router
 from .premium_interviews import router as premium_router
 from .realtime import router as realtime_router
-from slowapi.util import get_remote_address
-from slowapi import Limiter
+from .gdpr import router as gdpr_router
 from fastapi import Request
 
 router = APIRouter(tags=["utils"])
@@ -49,3 +48,4 @@ router.include_router(internal_router)
 router.include_router(enterprise_router)
 router.include_router(premium_router)
 router.include_router(realtime_router)
+router.include_router(gdpr_router)

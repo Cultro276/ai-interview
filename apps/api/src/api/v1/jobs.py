@@ -355,6 +355,21 @@ async def bulk_upload_candidates(
                     cand = None  # type: ignore[assignment]
                 if not cand:
                     raise
+
+            # Enforce per-job uniqueness: same email or phone must not be linked twice to the same job
+            try:
+                dup_exists = (
+                    await session.execute(
+                        select(Interview).where(Interview.job_id == job.id, Interview.candidate_id == cand.id)
+                    )
+                ).first()
+                if dup_exists:
+                    # Skip creating another interview for the same person under this job
+                    # Continue to next file without error
+                    await session.rollback()
+                    continue
+            except Exception:
+                pass
             
             # Move file to clean path if S3 is available: resumes/job-{job_id}/{name-slug}.{ext}
             if s3_available and resume_url:
@@ -502,6 +517,17 @@ async def create_candidate_for_job(
         if not found:
             raise
         candidate = found
+
+    # Enforce per-job uniqueness: prevent duplicate candidate-job link
+    try:
+        exists_link = (
+            await session.execute(select(Interview).where(Interview.job_id == job.id, Interview.candidate_id == candidate.id))
+        ).first()
+        if exists_link:
+            await session.commit()
+            return candidate
+    except Exception:
+        pass
 
     # Link to job via Interview
     interview = Interview(job_id=job.id, candidate_id=candidate.id, status="pending")

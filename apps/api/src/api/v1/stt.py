@@ -65,16 +65,24 @@ async def stt_stream(websocket: WebSocket, interview_id: int):
                 await websocket.send_text(msg)
             return
 
-        # Build Azure Speech recognizer with compressed webm/opus stream
+        # Build Azure Speech recognizer with compressed webm/opus stream and auto language detection
         speech_config = speechsdk.SpeechConfig(subscription=settings.azure_speech_key, region=settings.azure_speech_region)
-        speech_config.speech_recognition_language = "tr-TR"
+        langs = ["tr-TR", "en-US", "ar-SA"]
+        try:
+            auto_cfg = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(langs)
+        except Exception:
+            auto_cfg = None
         # Use audio classes via the speechsdk namespace to avoid submodule import issues
         stream_format = speechsdk.audio.AudioStreamFormat(
             compressed_stream_format=speechsdk.audio.AudioStreamContainerFormat.WEBM_OPUS
         )
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format)
         audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
-        recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+        if auto_cfg is not None:
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, auto_detect_source_language_config=auto_cfg, audio_config=audio_config)
+        else:
+            speech_config.speech_recognition_language = "tr-TR"
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
 
         loop = asyncio.get_running_loop()
         outbound: asyncio.Queue[str] = asyncio.Queue()

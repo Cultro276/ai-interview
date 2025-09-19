@@ -1,8 +1,10 @@
 "use client";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { DashboardProvider } from "@/context/DashboardContext";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { productName } from "@/lib/brand";
@@ -13,6 +15,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const isLogin = pathname === "/login";
   const [allowed, setAllowed] = useState<boolean>(isLogin);
+  const [queryClient] = useState(() => new QueryClient());
 
   useEffect(() => {
     // Allow the login page to render without token
@@ -42,36 +45,40 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </main>
         </div>
       ) : (
-        <DashboardProvider>
-          <div className="min-h-screen bg-gray-50 dark:bg-neutral-950">
-            <nav className="bg-white dark:bg-neutral-900 shadow-sm border-b border-neutral-200 dark:border-neutral-800">
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="flex justify-between h-16">
-                  <div className="flex items-center">
-                    <h1 className="text-xl font-bold text-gray-900 dark:text-neutral-100">{productName} Yönetim</h1>
-                  </div>
-                  <div className="flex items-center space-x-4">
-                    <Link href="/dashboard" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                      Panel
-                    </Link>
-                    <Link href="/jobs" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                      İlanlar
-                    </Link>
-                    <TeamLink />
-                    <ThemeToggle />
+        <QueryClientProvider client={queryClient}>
+          <DashboardProvider>
+            <div className="min-h-screen bg-gray-50 dark:bg-neutral-950">
+              <nav className="bg-white dark:bg-neutral-900 shadow-sm border-b border-neutral-200 dark:border-neutral-800">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                  <div className="flex justify-between h-16">
+                    <div className="flex items-center">
+                      <h1 className="text-xl font-bold text-gray-900 dark:text-neutral-100">{productName} Yönetim</h1>
+                    </div>
+                    <div className="flex items-center space-x-4">
+                      <Link href="/dashboard" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+                        Panel
+                      </Link>
+                      <Link href="/jobs" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+                        İlanlar
+                      </Link>
+                      <TeamLink />
+                      <ThemeToggle />
+                    </div>
                   </div>
                 </div>
-              </div>
-            </nav>
-            <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-              <div className="bg-white dark:bg-neutral-900 rounded-lg shadow border border-neutral-200 dark:border-neutral-800">
-                <div className="p-6">
-                  {children}
+              </nav>
+              <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                <div className="bg-white dark:bg-neutral-900 rounded-lg shadow border border-neutral-200 dark:border-neutral-800">
+                  <div className="p-6">
+                    <ErrorBoundary>
+                      {children}
+                    </ErrorBoundary>
+                  </div>
                 </div>
-              </div>
-            </main>
-          </div>
-        </DashboardProvider>
+              </main>
+            </div>
+          </DashboardProvider>
+        </QueryClientProvider>
       )}
     </AuthProvider>
   );

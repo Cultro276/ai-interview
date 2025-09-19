@@ -12,7 +12,18 @@ import { cn } from "@/components/ui/utils";
 function InterviewPageContent({ params }: { params: { token: string } }) {
   const { token } = params;
   const [isMobile, setIsMobile] = useState(false);
-  const forceWhisper = typeof window !== "undefined" && process.env.NEXT_PUBLIC_FORCE_WHISPER === "true";
+  const readEnv = (k: string): string | undefined => {
+    try {
+      const v = (globalThis as any)?.process?.env?.[k];
+      return typeof v === "string" ? v : undefined;
+    } catch { return undefined; }
+  };
+  const getApiBase = (): string => {
+    const fromEnv = readEnv("NEXT_PUBLIC_API_URL");
+    const fromWindow = typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:8000` : "";
+    return (fromEnv && fromEnv.trim().length > 0 ? fromEnv : fromWindow).replace(/\/+$/g, "");
+  };
+  const forceWhisper = typeof window !== "undefined" && readEnv("NEXT_PUBLIC_FORCE_WHISPER") === "true";
 
   // Simple responsive detection - fix tablet/desktop breakpoints
   useEffect(() => {
@@ -56,12 +67,34 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   const [history, setHistory] = useState<{ role: "assistant" | "user"; text: string }[]>([]);
   const askedCount = useMemo(() => history.filter(t => t.role === "assistant").length, [history]);
   const [elapsedSec, setElapsedSec] = useState(0);
+  // Pause feature removed per product spec to keep natural flow
+  const [paused, setPaused] = useState(false);
   const elapsedMinutes = useMemo(() => Math.floor(elapsedSec / 60), [elapsedSec]);
   // Accessibility toggles
   const [showCaptions, setShowCaptions] = useState(true);
-  const streamingEnabled = typeof window !== "undefined" && process.env.NEXT_PUBLIC_INTERVIEW_STREAMING === "true";
-  const realtimeEnabled = typeof window !== "undefined" && process.env.NEXT_PUBLIC_INTERVIEW_REALTIME === "true";
-  const webrtcRef = useRef<{ pc: RTCPeerConnection; audioEl: HTMLAudioElement } | null>(null);
+  const streamingEnabled = typeof window !== "undefined" && readEnv("NEXT_PUBLIC_INTERVIEW_STREAMING") === "true";
+  const realtimeEnabled = typeof window !== "undefined" && readEnv("NEXT_PUBLIC_INTERVIEW_REALTIME") === "true";
+  const webrtcRef = useRef<{ pc: RTCPeerConnection; audioEl: HTMLAudioElement; dc?: RTCDataChannel } | null>(null);
+  
+  // Parse scenario from question (if backend prepended "Durum: <scenario>\n<question>")
+  const parsedQuestion = useMemo(() => {
+    try {
+      const q = (question || "").trim();
+      const prefix = "Durum:";
+      if (q.startsWith(prefix)) {
+        const nl = q.indexOf("\n");
+        if (nl > -1) {
+          return {
+            scenario: q.slice(prefix.length, nl).trim(),
+            prompt: q.slice(nl + 1).trim(),
+          };
+        }
+      }
+      return { scenario: null as string | null, prompt: q || null };
+    } catch {
+      return { scenario: null as string | null, prompt: question };
+    }
+  }, [question]);
   
   // Conversation tracking
   const [interviewId, setInterviewId] = useState<number | null>(null);
@@ -83,6 +116,11 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   const micGainRef = useRef<GainNode | null>(null);
   const ttsGainRef = useRef<GainNode | null>(null);
   const currentTtsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const vadRafRef = useRef<number | null>(null);
+  const bargeTriggeredRef = useRef<boolean>(false);
+  const phaseRef = useRef<"idle" | "speaking" | "listening" | "thinking">("idle");
+  const pausedRef = useRef<boolean>(false);
   // Block public message posts after completion to avoid 400s
   const canPostPublicRef = useRef<boolean>(true);
 
@@ -92,13 +130,33 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       if (audioCtxRef.current.state === "suspended") {
         try { await audioCtxRef.current.resume(); } catch {}
       }
-      const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+      // Guard: cancel any previous TTS before starting a new one
+      try { currentTtsSourceRef.current?.stop(0); } catch {}
+      const base = getApiBase();
+      // Prefer provider from env; fall back chain handled server-side. Request mp3.
       const res = await fetch(`${base}/api/v1/tts/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "audio/mpeg" },
-        body: JSON.stringify({ text, lang: "tr", provider: process.env.NEXT_PUBLIC_TTS_PROVIDER || undefined }),
+        body: JSON.stringify({ text, lang: "tr", provider: readEnv("NEXT_PUBLIC_TTS_PROVIDER") || undefined }),
       });
-      if (!res.ok) throw new Error(`TTS failed: ${res.status}`);
+      if (!res.ok) {
+        // Soft fallback: try gTTS explicitly once to avoid 422s or provider timeouts
+        const res2 = await fetch(`${base}/api/v1/tts/speak`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "audio/mpeg" },
+          body: JSON.stringify({ text, lang: "tr", provider: "gtts" }),
+        });
+        if (!res2.ok) throw new Error(`TTS failed: ${res.status}`);
+        const buf2 = await res2.arrayBuffer();
+        const audioBuffer2 = await audioCtxRef.current.decodeAudioData(buf2);
+        const src2 = audioCtxRef.current.createBufferSource();
+        src2.buffer = audioBuffer2;
+        if (ttsGainRef.current) { src2.connect(ttsGainRef.current); src2.connect(audioCtxRef.current.destination); } else { src2.connect(audioCtxRef.current.destination); }
+        src2.onended = () => onEnded?.();
+        currentTtsSourceRef.current = src2;
+        src2.start(0);
+        return;
+      }
       const buf = await res.arrayBuffer();
       const audioBuffer = await audioCtxRef.current.decodeAudioData(buf);
       const src = audioCtxRef.current.createBufferSource();
@@ -125,7 +183,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     if (!interviewId || !canPostPublicRef.current) return;
     try {
       sequenceNumberRef.current += 1;
-      const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+      const base = getApiBase();
       await fetch(`${base}/api/v1/conversations/messages-public`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -153,9 +211,9 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       preparedFirstQuestionRef.current = (interview as any).prepared_first_question || null;
       sequenceNumberRef.current = 0;
       // Save system message to indicate interview started (guard against double post)
-      if (!initPostedRef.current) {
+      if (!initPostedRef.current && interview.id) {
         const systemMessage = `Interview started at ${new Date().toISOString()}`;
-        const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+        const base = getApiBase();
         await fetch(`${base}/api/v1/conversations/messages-public`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -212,6 +270,27 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     }
   }, [status, stream]);
 
+  // Test hooks (non-prod): allow E2E to simulate turns without real STT/SSE
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+        (window as any).__interviewTestHooks = {
+          setQuestionText: (q: string) => {
+            const text = String(q || "").trim();
+            if (!text) return;
+            setQuestion(text);
+            setHistory((h) => [...h, { role: "assistant", text }]);
+            beginSpeaking();
+          },
+          finish: () => {
+            setPhase("idle");
+            setStatus("finished");
+          },
+        };
+      }
+    } catch {}
+  }, []);
+
   // Note: upload handled in the unified effect below
 
   // Query permission states once we reach test step
@@ -222,6 +301,36 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   }, [status]);
 
   const sanitizeQuestion = (q: string) => (q || "").replace(/\bFINISHED\b/gi, "").trim();
+  const beginSpeaking = () => {
+    bargeTriggeredRef.current = false;
+    setPhase("speaking");
+  };
+
+  const handleTogglePause = () => {
+    const willPause = !pausedRef.current;
+    setPaused(willPause);
+    pausedRef.current = willPause;
+    if (willPause) {
+      // Stop any current speech and cancel realtime generation
+      try { currentTtsSourceRef.current?.stop(0); } catch {}
+      try {
+        const dc = webrtcRef.current?.dc;
+        if (dc && dc.readyState === "open") {
+          dc.send(JSON.stringify({ type: "response.cancel" }));
+        }
+      } catch {}
+      setPhase("idle");
+    } else {
+      // Resume: if we have a question and not in realtime mode, speak it again
+      if (!realtimeEnabled && question) {
+        beginSpeaking();
+        playTTS(question, () => {
+          setPhase("listening");
+          try { audioStartIndexRef.current = audioChunksRef.current.length; } catch {}
+        });
+      }
+    }
+  };
 
   // Schedule first question: use prepared question if available; otherwise fetch
   useEffect(() => {
@@ -239,7 +348,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
         }
         setQuestion(q);
         setHistory((h) => [...h, { role: "assistant", text: q }]);
-        setPhase("speaking");
+        beginSpeaking();
         firstQuestionIssuedRef.current = true;
         return;
       }
@@ -262,14 +371,14 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
           }
           setQuestion(firstQuestion);
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
-          setPhase("speaking");
+          beginSpeaking();
           firstQuestionIssuedRef.current = true;
         })
         .catch(() => {
           const firstQuestion = "Merhaba, kendinizi tanıtır mısınız?";
           setQuestion(firstQuestion);
           setHistory((h) => [...h, { role: "assistant", text: firstQuestion }]);
-          setPhase("speaking");
+          beginSpeaking();
           firstQuestionIssuedRef.current = true;
         });
     }, 1500);
@@ -279,13 +388,16 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
   // Speak current question and then listen for answer
   useEffect(() => {
     if (status !== "interview" || question === null) return;
+    if (pausedRef.current) { setPhase("idle"); return; }
 
     let rec: any = null;
+    // Debounce/serialize TTS playback to avoid overlapping voices
+    let cancelled = false;
 
     // Anti-cheat: tab visibility / focus loss events (best-effort)
     const sendSignal = async (kind: string, meta?: string) => {
       try {
-        const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+        const base = getApiBase();
         await fetch(`${base}/api/v1/signals/public`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -304,13 +416,14 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
 
     // If realtime is enabled, don't speak via TTS; model will speak
     if (realtimeEnabled) {
+      if (pausedRef.current) return;
       (async () => {
         try {
           // lazily connect
           if (!webrtcRef.current) {
-            const sess = await getEphemeralToken(interviewId || undefined);
+            const sess = await getEphemeralToken(interviewId || undefined, token);
             const conn = await connectWebRTC(sess.client_secret.value);
-            webrtcRef.current = { pc: conn.pc, audioEl: conn.audioEl };
+            webrtcRef.current = { pc: conn.pc, audioEl: conn.audioEl, dc: (conn as any).dc };
             document.body.appendChild(conn.audioEl);
           }
         } catch (e) {
@@ -394,7 +507,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
               const fd = new FormData();
               const ext = type.includes("mp4") ? "mp4" : type.includes("ogg") ? "ogg" : type.includes("webm") ? "webm" : type.includes("wav") ? "wav" : "bin";
               fd.append("file", clip, `answer.${ext}`);
-              const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+              const base = getApiBase();
               const resp = await fetch(`${base}/api/v1/stt/transcribe-file?interview_id=${interviewId}`, { method: "POST", body: fd });
               if (resp.ok) {
                 const data = await resp.json();
@@ -447,7 +560,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                 try { currentTtsSourceRef.current?.stop(0); } catch {}
                 setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
                 setQuestion(nextQ);
-                setPhase("speaking");
+                beginSpeaking();
               },
               (err) => {
                 console.warn("SSE error, falling back", err);
@@ -476,7 +589,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                       try { currentTtsSourceRef.current?.stop(0); } catch {}
                       setHistory((h) => [...h, { role: "assistant", text: nextQ }]);
                       setQuestion(nextQ);
-                      setPhase("speaking");
+                      beginSpeaking();
                     }
                   })
                   .catch((e) => {
@@ -630,6 +743,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     return () => {
       if (rec && rec.stop) rec.stop();
       try { currentTtsSourceRef.current?.stop(0); } catch {}
+      cancelled = true;
       try { document.removeEventListener("visibilitychange", handleVisibilityChange); } catch (e) {}
       try { window.removeEventListener("blur", handleWindowBlur); } catch (e) {}
       // Clean up timers if needed
@@ -637,6 +751,9 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       if (typeof (window as any).hardStopTimer !== "undefined" && (window as any).hardStopTimer) clearTimeout((window as any).hardStopTimer);
     };
   }, [status, question, interviewId, token, stream, saveConversationMessage, forceWhisper, history]);
+
+  // Keep a live ref of phase for VAD loop
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
 
   // Lightweight timer (no user interaction)
   useEffect(() => {
@@ -711,6 +828,48 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
       if (dest) {
         micSource.connect(compressor).connect(micGain).connect(dest);
       }
+      // VAD analyser on mic path
+      try {
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyserRef.current = analyser;
+        micGain.connect(analyser);
+        const data = new Uint8Array(analyser.fftSize);
+        const detect = () => {
+          try {
+            analyser.getByteTimeDomainData(data);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+              const v = (data[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / data.length);
+            const speakingLikely = rms > 0.06; // tuned threshold
+            // Duck AI TTS during user speech
+            if (ttsGainRef.current) {
+              const target = speakingLikely ? 0.25 : 0.85;
+              const current = ttsGainRef.current.gain.value;
+              const next = current + Math.sign(target - current) * Math.min(0.15, Math.abs(target - current));
+              ttsGainRef.current.gain.value = Math.max(0.0, Math.min(1.0, next));
+            }
+            // Barge-in: if user starts while AI is speaking
+            if (!bargeTriggeredRef.current && speakingLikely && phaseRef.current === "speaking") {
+              bargeTriggeredRef.current = true;
+              try { currentTtsSourceRef.current?.stop(0); } catch {}
+              try {
+                const dc = webrtcRef.current?.dc;
+                if (dc && (dc as any).readyState === "open") {
+                  dc.send(JSON.stringify({ type: "response.cancel" }));
+                }
+              } catch {}
+              setPhase("listening");
+              try { audioStartIndexRef.current = audioChunksRef.current.length; } catch {}
+            }
+          } catch {}
+          vadRafRef.current = requestAnimationFrame(detect);
+        };
+        vadRafRef.current = requestAnimationFrame(detect);
+      } catch {}
       
       // TTS pipeline (only if mixing available) with better balance
       if (dest) {
@@ -795,6 +954,10 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
     } catch (e) {
       console.error("MediaRecorder error:", e);
     }
+    return () => {
+      try { if (vadRafRef.current) cancelAnimationFrame(vadRafRef.current); } catch {}
+      try { analyserRef.current?.disconnect(); } catch {}
+    };
   }, [status, stream]);
 
   // Upload media when interview finishes (must be declared before any early returns)
@@ -1027,6 +1190,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
               <div className="text-gray-600">
                 Soru: {askedCount} | Süre: {Math.floor(elapsedSec/60).toString().padStart(2,'0')}:{(elapsedSec%60).toString().padStart(2,'0')}
               </div>
+              {/* Duraklat kaldırıldı */}
               <button
                 onClick={() => {
                   setTimeout(() => {
@@ -1089,25 +1253,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                           <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
                           <span className="text-white text-xs font-medium">REC</span>
                         </div>
-                        {/* Listening/Speaking indicator */}
-                        <div className="absolute top-3 left-3">
-                          {phase === "listening" ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
-                              <span className="w-2 h-2 bg-emerald-600 rounded-full animate-ping"></span>
-                              Dinliyorum…
-                            </span>
-                          ) : phase === "speaking" ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
-                              <span className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></span>
-                              Soruyu soruyorum…
-                            </span>
-                          ) : phase === "thinking" ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
-                              <span className="w-2 h-2 bg-amber-600 rounded-full animate-bounce"></span>
-                              Düşünüyorum…
-                            </span>
-                          ) : null}
-                        </div>
+                        {/* Listening/Speaking indicator moved to AI panel */}
                         {/* Label */}
                         <div className="absolute bottom-3 left-3 bg-black bg-opacity-60 px-2 py-1 rounded text-white text-sm">
                           Siz
@@ -1121,7 +1267,26 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                         "bg-gradient-to-br from-blue-100 to-purple-100 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center",
                         isMobile ? "aspect-square" : "aspect-video"
                       )}>
-                        <div className="text-center">
+                        <div className="text-center relative w-full h-full flex flex-col items-center justify-center">
+                          {/* AI status badges */}
+                          <div className="absolute top-3 left-3">
+                            {phase === "listening" ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                                <span className="w-2 h-2 bg-emerald-600 rounded-full animate-ping"></span>
+                                Dinliyorum…
+                              </span>
+                            ) : phase === "speaking" ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
+                                <span className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></span>
+                                Soruyu soruyorum…
+                              </span>
+                            ) : phase === "thinking" ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
+                                <span className="w-2 h-2 bg-amber-600 rounded-full animate-bounce"></span>
+                                Düşünüyorum…
+                              </span>
+                            ) : null}
+                          </div>
                           <div className={cn(
                             "mb-2",
                             isMobile ? "text-4xl mb-2" : "text-6xl mb-4"
@@ -1151,8 +1316,20 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
               </div>
             </div>
 
+            {/* Pre-question notice */}
+            {!question && (
+              <div className={cn(isMobile ? "mb-3" : "mb-6")}> 
+                <div className={cn(
+                  "bg-blue-50 border border-blue-200 text-blue-900 rounded-xl",
+                  isMobile ? "p-3" : "p-4"
+                )}>
+                  Görüşme birazdan başlayacaktır. Lütfen hazır olun.
+                </div>
+              </div>
+            )}
+
             {/* Question Section */}
-            {question && showCaptions && (
+            {parsedQuestion.prompt && showCaptions && (
               <div className={cn(isMobile ? "mb-3" : "mb-6")}>
                 <div className={cn(
                   "bg-white rounded-xl shadow-sm border border-gray-200",
@@ -1169,6 +1346,15 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                       )}>❓</span>
                     </div>
                     <div className="flex-1">
+                      {parsedQuestion.scenario && (
+                        <div className={cn(
+                          "mb-2 rounded-md border text-xs",
+                          "border-amber-200 bg-amber-50 text-amber-900",
+                          isMobile ? "px-2 py-1" : "px-3 py-1.5"
+                        )}>
+                          <span className="font-medium">Durum:</span> {parsedQuestion.scenario}
+                        </div>
+                      )}
                       <h3 className={cn(
                         "font-medium text-gray-500 mb-2",
                         isMobile ? "text-xs" : "text-sm"
@@ -1176,7 +1362,7 @@ function InterviewPageContent({ params }: { params: { token: string } }) {
                       <p className={cn(
                         "text-gray-900 leading-relaxed",
                         isMobile ? "text-base" : "text-lg"
-                      )}>{question}</p>
+                      )}>{parsedQuestion.prompt}</p>
                     </div>
                   </div>
                 </div>

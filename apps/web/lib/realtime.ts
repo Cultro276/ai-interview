@@ -1,15 +1,17 @@
+import { getApiBaseUrl, getOpenAIRealtimeBaseUrl, getOpenAIRealtimeModel } from "@/lib/config";
+
 export type RealtimeSession = {
   client_secret: { value: string; expires_at: number };
   model: string;
   voice?: string;
 };
 
-export async function getEphemeralToken(interviewId?: number, model?: string, voice?: string) {
-  const base = (process.env.NEXT_PUBLIC_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`).replace(/\/+$/g, "");
+export async function getEphemeralToken(interviewId?: number, token?: string, model?: string, voice?: string) {
+  const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/v1/realtime/ephemeral`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ interview_id: interviewId, model, voice }),
+    body: JSON.stringify({ interview_id: interviewId, token, model, voice }),
   });
   if (!res.ok) throw new Error(`ephemeral ${res.status}`);
   return (await res.json()) as RealtimeSession;
@@ -37,8 +39,8 @@ export async function connectWebRTC(ephemeralKey: string) {
   const offer = await pc.createOffer({ offerToReceiveAudio: true });
   await pc.setLocalDescription(offer);
 
-  const base = (process.env.NEXT_PUBLIC_OPENAI_REALTIME_URL || "https://api.openai.com/v1/realtime").replace(/\/+$/g, "");
-  const model = process.env.NEXT_PUBLIC_OPENAI_REALTIME_MODEL || "gpt-4o-realtime-preview";
+  const base = getOpenAIRealtimeBaseUrl();
+  const model = getOpenAIRealtimeModel();
   const url = `${base}?model=${encodeURIComponent(model)}`;
   const sdpRes = await fetch(url, {
     method: "POST",

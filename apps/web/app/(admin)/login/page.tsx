@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [remember, setRemember] = useState(true);
 
   const submit = async () => {
     setLoading(true);
@@ -23,7 +24,7 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
       });
-      login(data.access_token);
+      login(data.access_token, remember);
       router.push("/dashboard"); // Redirect to dashboard
     } catch (e: any) {
       setError(e.message);
@@ -101,6 +102,8 @@ export default function LoginPage() {
                   name="remember-me"
                   type="checkbox"
                   className="h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 dark:border-neutral-700 rounded"
+                  checked={remember}
+                  onChange={(e)=> setRemember(e.target.checked)}
                 />
                 <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900 dark:text-neutral-200">
                   Beni hatırla

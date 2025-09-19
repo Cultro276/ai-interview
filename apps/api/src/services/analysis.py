@@ -370,6 +370,62 @@ async def generate_comprehensive_interview_analysis(session: AsyncSession, inter
         if isinstance(job_fit, dict):
             summary = str(job_fit.get("job_fit_summary", ""))[:2000]
 
+    # If job has a rubric override, recompute rubric overall weights accordingly
+    try:
+        if context.job_id:
+            from src.db.models.job import Job as _Job
+            j = (
+                await session.execute(select(_Job).where(_Job.id == context.job_id))
+            ).scalar_one_or_none()
+            import json as _json
+            if j:
+                rubric_json = getattr(j, "rubric_json", None)
+                if isinstance(rubric_json, str) and rubric_json.strip():
+                    try:
+                        cfg = _json.loads(rubric_json)
+                    except Exception:
+                        cfg = {}
+                    items = cfg.get("criteria") if isinstance(cfg, dict) else None
+                    if isinstance(items, list) and items:
+                        # Map labels to buckets
+                        label_map = {"problem": ["problem"], "technical": ["teknik"], "communication": ["iletişim"], "culture": ["kültür"]}
+                        weights_override = {"problem": 0.25, "technical": 0.35, "communication": 0.2, "culture": 0.2}
+                        total = 0.0
+                        for it in items:
+                            try:
+                                lab = str(it.get("label", "")).lower()
+                                w = float(it.get("weight", 0.0) or 0.0)
+                                if any(k in lab for k in label_map["problem"]):
+                                    weights_override["problem"] = w
+                                elif any(k in lab for k in label_map["technical"]):
+                                    weights_override["technical"] = w
+                                elif any(k in lab for k in label_map["communication"]):
+                                    weights_override["communication"] = w
+                                elif any(k in lab for k in label_map["culture"]):
+                                    weights_override["culture"] = w
+                                total += w
+                            except Exception:
+                                continue
+                        # Normalize
+                        if total and total > 0:
+                            for k in list(weights_override.keys()):
+                                weights_override[k] = float(weights_override[k]) / float(total)
+                        # Recompute rubric using override and attach
+                        from src.services.comprehensive_analyzer import ComprehensiveAnalyzer
+                        _hr = analysis_results.get("hr_criteria", {}) if isinstance(analysis_results, dict) else {}
+                        _jf = analysis_results.get("job_fit", {}) if isinstance(analysis_results, dict) else {}
+                        _hd = analysis_results.get("hiring_decision", {}) if isinstance(analysis_results, dict) else {}
+                        _rub = ComprehensiveAnalyzer()._compute_rubric(context.job_title, _hr, _jf, _hd, weights_override=weights_override)
+                        analysis_results["rubric"] = _rub
+                        # If rubric overall exists, optionally align overall_score meta
+                        try:
+                            if isinstance(analysis_results.get("meta"), dict):
+                                analysis_results["meta"]["overall_score_rubric"] = _rub.get("overall")
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
     # Upsert analysis record
     existing = (
         await session.execute(
@@ -470,6 +526,7 @@ async def precompute_dialog_plan(session: AsyncSession, interview_id: int) -> di
     job_desc = (getattr(job, "description", None) or "").strip()
 
     resume_text = ""
+    cand = None
     try:
         cand = (
             await session.execute(_select(Candidate).where(Candidate.id == interview.candidate_id))
@@ -516,34 +573,173 @@ async def precompute_dialog_plan(session: AsyncSession, interview_id: int) -> di
     if topics:
         first_seed = f"Öncelikle {topics[0]} ile ilgili somut bir örneğinizi STAR (Durum, Görev, Eylem, Sonuç) çerçevesinde paylaşır mısınız?"
 
+    # Build a 10-question pool guided by TR market context (best-effort)
+    question_pool: list[dict] = []
+    try:
+        from src.services.llm_client import generate_json as _gen_json
+        prompt = (
+            "Aşağıdaki iş ilanı ve özgeçmiş bilgilerine göre Türk iş piyasası beklentilerini de dikkate alarak "
+            "10-15 açık uçlu mülâkat sorusu üret. Sorular doğal, ölçülebilir sonuç (STAR) çıkarmaya yönelik olsun.\n\n"
+            "KATEGORİLER: Tanışma, Teknik, Davranışsal, Kültürel, Liderlik.\n"
+            "Her madde için JSON nesnesi döndür:\n"
+            "{\"question\":str, \"section\":str, \"type\":\"situational|behavioral|technical|culture_fit|leadership\", \"difficulty\":\"low|medium|high\", \"scenario\":str, \"constraints\":[str], \"skills\":[str], \"tags\":[str], \"follow_ups\":[str]}\n"
+            "Kurallar: Sorular soyut olmasın; her zaman kısa, gerçekçi bir durum (scenario) içersin. Senaryo kısıt/aktarılabilir metrik (SLA, bütçe, süre, ekip boyutu, müşteri etkisi) içersin.\n"
+            "Her ana soruya 3-5 kısa follow-up ekle (boşlukları kapatacak, STAR'ı tamamlayacak).\n\n"
+            "İş İlanı:\n" + (job_desc or "-")[:5000] + "\n\n"
+            "Özgeçmiş (metin):\n" + (resume_text or "-")[:5000] + "\n\n"
+            "Not: Sorular adayı rahatlatan doğal bir tonda olsun; teknik jargonu abartma."
+        )
+        pool_obj = await _gen_json(prompt, temperature=0.25)
+        # Accept either {items:[...]}, or a direct list
+        items_obj = []
+        try:
+            if isinstance(pool_obj, dict) and isinstance(pool_obj.get("items"), list):
+                items_obj = pool_obj.get("items")  # type: ignore[assignment]
+            elif isinstance(pool_obj, list):
+                items_obj = pool_obj  # type: ignore[assignment]
+        except Exception:
+            items_obj = []
+        if not isinstance(items_obj, list):
+            items_obj = []
+        # Normalize
+        for it in items_obj:
+            if not isinstance(it, dict):
+                continue
+            q = str(it.get("question", "")).strip()
+            if not q:
+                continue
+            section = str(it.get("section", "")).strip() or "Genel"
+            qtype = str(it.get("type", "")).strip() or ""
+            diff = str(it.get("difficulty", "")).strip().lower() or "medium"
+            scenario = str(it.get("scenario", "")).strip()
+            constraints = [str(c).strip() for c in (it.get("constraints") or []) if str(c).strip()]
+            skills = [str(s).strip() for s in (it.get("skills") or []) if str(s).strip()]
+            tags = [str(s).strip() for s in (it.get("tags") or []) if str(s).strip()]
+            fups_raw = it.get("follow_ups") or []
+            follow_ups = [str(f).strip() for f in fups_raw if isinstance(f, (str,)) and str(f).strip()]
+            # Fallback follow-ups enforcing STAR completion
+            if not follow_ups:
+                follow_ups = [
+                    "Bu örnekte durum ve bağlam neydi?",
+                    "Göreviniz tam olarak neydi?",
+                    "Hangi eylemleri adım adım uyguladınız?",
+                    "Elde edilen ölçülebilir sonuç neydi?",
+                ]
+            question_pool.append({
+                "question": q,
+                "section": section,
+                "type": qtype,
+                "difficulty": diff,
+                "scenario": scenario,
+                "constraints": constraints,
+                "skills": skills,
+                "tags": tags,
+                "follow_ups": follow_ups,
+            })
+    except Exception:
+        question_pool = []
+
+    # Fallback question pool from requirements if LLM failed
+    if not question_pool:
+        try:
+            req_items = (req_spec.get("items") or []) if isinstance(req_spec, dict) else []
+            for it in req_items[:10]:
+                label = str(it.get("label", "")).strip()
+                if not label:
+                    continue
+                q = f"{label} ile ilgili somut bir örneğinizi STAR (Durum, Görev, Eylem, Sonuç) çerçevesinde anlatır mısınız?"
+                section = "Teknik Yeterlilik"
+                question_pool.append({
+                    "question": q,
+                    "section": section,
+                    "type": "technical",
+                    "difficulty": "medium",
+                    "scenario": f"{label} ile ilgili bir çalışmada production ortamında müşteri etkisi yüksek bir problem ortaya çıkıyor; sınırlı zaman (48 saat) ve 2 kişilik ekiple çözmeniz bekleniyor.",
+                    "constraints": ["48 saat", "2 kişilik ekip", "müşteri etkisi yüksek"],
+                    "skills": [label],
+                    "tags": ["requirements"],
+                    "follow_ups": [
+                        "Durumu ve bağlamı kısaca açıklar mısınız?",
+                        "Göreviniz ve sorumluluklarınız nelerdi?",
+                        "Hangi adımları uyguladınız?",
+                        "Ölçülebilir sonuç neydi?",
+                    ],
+                })
+        except Exception:
+            question_pool = []
+
+    # Ensure we have between 10 and 15 items (truncate/pad)
+    if len(question_pool) > 15:
+        question_pool = question_pool[:15]
+    while len(question_pool) < 10:
+        question_pool.append({
+            "question": "Son rolünüzde ölçülebilir katkı sağladığınız bir örneği STAR formatında paylaşır mısınız?",
+            "section": "Deneyim & Projeler",
+            "skills": [],
+            "tags": ["fallback"]
+        })
+
     plan = {
         "topics": topics,
         "resume_spotlights": spotlights,
         "targeted_questions": targeted,
         "first_question_seed": first_seed,
+        "question_pool": question_pool,
+        # Fixed closing questions to ensure consistent wrap-up
+        "closing_pool": [
+            {
+                "question": "Görüşmeyi kapatmadan önce bize sormak istediğiniz bir şey var mı?",
+                "section": "Kapanış",
+                "skills": [],
+                "tags": ["closing"],
+            },
+            {
+                "question": "Bu pozisyonda ilk 90 günde hangi etkiyi yaratmayı hedeflersiniz?",
+                "section": "Kapanış",
+                "skills": [],
+                "tags": ["closing"],
+            },
+            {
+                "question": "Sürecin sonraki adımlarına dair bir beklentiniz var mı?",
+                "section": "Kapanış",
+                "skills": [],
+                "tags": ["closing"],
+            },
+        ],
+        "sections": [
+            "Isınma & Tanışma",
+            "Teknik Yeterlilik",
+            "Deneyim & Projeler",
+            "Kültürel Uyum & Soft Skills",
+        ],
     }
 
     await merge_enrichment_into_analysis(session, interview_id, {"dialog_plan": plan, "requirements_spec": req_spec})
     # Also prepare a concrete first question and store on Interview
     try:
-        from src.core.gemini import generate_question_robust
-        # Internal keywords only to avoid disclosure
-        ctx = "Job Description:\n" + (job_desc or "")
-        if resume_text:
-            try:
-                from src.services.dialog import extract_keywords as _ek
-                kws = _ek(resume_text)
-                if kws:
-                    ctx += "\n\nInternal Resume Keywords: " + ", ".join(kws[:30])
-            except Exception:
-                pass
-        res = await generate_question_robust([], ctx, max_questions=7)
-        _qval = res.get("question")
-        q = _qval.strip() if isinstance(_qval, str) else ""
-        # Sanitize: remove any CV/job disclosure
-        bad = ["cv", "özgeçmiş", "ilan", "iş tanımı", "linkedin", "http://", "https://"]
-        if any(b in q.lower() for b in bad) or not q:
-            q = first_seed or "Kendinizi ve son iş deneyiminizi kısaca anlatır mısınız?"
+        # Force the first question per product spec with personalized greeting
+        # Build candidate first name
+        first_name = None
+        try:
+            if cand and getattr(cand, "name", None):
+                first_name = str(cand.name).strip().split()[0]
+        except Exception:
+            first_name = None
+        # Build company name from job owner
+        company_name = None
+        try:
+            from src.db.models.user import User
+            if job:
+                user = (
+                    await session.execute(_select(User).where(User.id == job.user_id))
+                ).scalar_one_or_none()
+                if user and getattr(user, "company_name", None):
+                    company_name = str(user.company_name).strip()
+        except Exception:
+            company_name = None
+        greet = f"Merhaba {first_name}" if first_name else "Merhaba"
+        intro = f", ben {company_name} sirketinden Ece." if company_name else ", ben Ece."
+        q = f"{greet} hosgeldiniz{intro} Mulakatimiza baslamadan once kendinizi tanitir misiniz?"
         iv = (
             await session.execute(_select(Interview).where(Interview.id == interview_id))
         ).scalar_one_or_none()

@@ -81,6 +81,23 @@ class Settings:
     def azure_speech_region(self) -> str | None:
         return os.getenv("AZURE_SPEECH_REGION")
 
+    # STT provider selection
+    @property
+    def stt_provider(self) -> str:
+        return os.getenv("STT_PROVIDER", "auto").lower()
+
+    @property
+    def enable_serverless_whisper(self) -> bool:
+        return os.getenv("ENABLE_SERVERLESS_WHISPER", "false").lower() in {"1", "true", "yes"}
+
+    @property
+    def local_stt_queue(self) -> bool:
+        return os.getenv("LOCAL_STT_QUEUE", "false").lower() in {"1", "true", "yes"}
+
+    @property
+    def stt_queue_name(self) -> str:
+        return os.getenv("STT_QUEUE_NAME", "stt:jobs")
+
     # ElevenLabs
     @property
     def elevenlabs_api_key(self) -> str | None:
@@ -107,6 +124,12 @@ class Settings:
     @property
     def sqs_queue_url(self) -> str | None:
         return os.getenv("SQS_QUEUE_URL")
+
+    # Redis
+    @property
+    def redis_url(self) -> str | None:
+        val = os.getenv("REDIS_URL", "").strip()
+        return val or None
 
     # Mail (Resend)
     @property
@@ -161,6 +184,17 @@ class Settings:
     @property
     def environment(self) -> str:
         return os.getenv("ENVIRONMENT", "development")
+
+    # CORS origins (comma-separated). If empty, defaults are used in main.py
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        raw = os.getenv("ALLOWED_ORIGINS", "").strip()
+        if not raw:
+            return []
+        try:
+            return [o.strip() for o in raw.split(",") if o.strip()]
+        except Exception:
+            return []
 
     @property
     def debug(self) -> bool:

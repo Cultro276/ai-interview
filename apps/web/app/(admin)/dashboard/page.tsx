@@ -1,18 +1,27 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
+import dynamic from "next/dynamic";
 import { useDashboard } from "@/context/DashboardContext";
+import { useDashboardStore, shallowCompare } from "@/lib/hooks/useDashboardStore";
 import { AdvancedKPICard, KPIGrid, KPIData } from '@/components/analytics/AdvancedKPICard';
 import { RealTimeAnalytics } from '@/components/analytics/RealTimeAnalytics';
 import { ExportSystem, QuickExportButtons } from '@/components/analytics/ExportSystem';
 import { ResponsiveGrid, MobileChartContainer, MobileDashboard, EnhancedCard, EnhancedCardContent, EnhancedCardHeader, EnhancedCardTitle, EnhancedButton } from '@/components/ui';
 import { ThemeToggle } from '@/components/theme/ThemeToggle';
-import { TrendChart, BarChart, ConversionFunnel, DonutChart, MetricCard, Heatmap } from "@/components/ui/utils/Charts";
+// Büyük grafik kütüphanesini başlangıç paketinden ayırmak için dinamik yükleme
+const TrendChart = dynamic(() => import("@/components/ui/utils/Charts").then(m => m.TrendChart), { ssr: false });
+const DonutChart = dynamic(() => import("@/components/ui/utils/Charts").then(m => m.DonutChart), { ssr: false });
 import { apiFetch } from "@/lib/api";
 import { Users, TimerReset, CheckCircle2, Briefcase, MessageSquare, TrendingUp, Target, Award, Clock } from "lucide-react";
 
 export default function DashboardPage() {
-  const { candidates, jobs, interviews, loading, refreshData } = useDashboard();
+  const { refreshData } = useDashboard();
+  // Store selectorlar: sadece kullanılan dilimlere abone olur, shallow ile re-render azaltılır
+  const candidates = useDashboardStore(s => s.candidates, shallowCompare);
+  const jobs = useDashboardStore(s => s.jobs, shallowCompare);
+  const interviews = useDashboardStore(s => s.interviews, shallowCompare);
+  const loading = useDashboardStore(s => s.loading);
   
   // State for enhanced features
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
@@ -102,25 +111,17 @@ export default function DashboardPage() {
     };
   }, [interviews]);
 
-  // Data loading effect
+  // Data loading effect (calibration kaldırıldı)
   useEffect(() => {
     const loadData = async () => {
       try {
-        // Simulate API calls
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 800));
         setLastUpdate(new Date());
-        try {
-          const c = await apiFetch<any>(`/api/v1/conversations/analysis/calibration/summary`);
-          setCalibration(c);
-        } catch {}
       } catch (error) {
         console.error('Error loading data:', error);
       }
     };
-
     loadData();
-    
-    // Auto-refresh every 5 minutes if live
     if (isLive) {
       const interval = setInterval(loadData, 5 * 60 * 1000);
       return () => clearInterval(interval);
@@ -246,15 +247,18 @@ export default function DashboardPage() {
                 <div>
                   <div className="text-2xl font-bold text-green-600 dark:text-green-400">
                     {(() => {
+                      // Ortalama süreyi sadece tek medya kaydı varsa (video ya da audio) veya her ikisi de varsa
+                      // created_at -> completed_at farkından hesapla; böylece audio+video *çift sayılmaz*.
                       const completed = interviews.filter(i => i.status === "completed");
                       if (!completed.length) return "--";
-                      const avg = Math.round(completed.reduce((acc, it) => {
+                      const minutes = completed.map(it => {
                         if (it.completed_at && it.created_at) {
                           const ms = new Date(it.completed_at).getTime() - new Date(it.created_at).getTime();
-                          return acc + (ms / 60000);
+                          return Math.max(0, ms / 60000);
                         }
-                        return acc;
-                      }, 0) / completed.length);
+                        return 0;
+                      });
+                      const avg = Math.round(minutes.reduce((a,b)=>a+b,0) / Math.max(1, minutes.length));
                       return `${avg}`;
                     })()}dk
                   </div>
@@ -279,43 +283,7 @@ export default function DashboardPage() {
           </EnhancedCard>
         </section>
 
-        {/* Calibration Summary */}
-        <section>
-          <EnhancedCard>
-            <EnhancedCardHeader>
-              <EnhancedCardTitle>Kalibrasyon Özeti (AI Skoru vs Outcome)</EnhancedCardTitle>
-            </EnhancedCardHeader>
-            <EnhancedCardContent>
-              {!calibration ? (
-                <div className="text-sm text-gray-500">Veriler yükleniyor…</div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div>
-                    <div className="text-2xl font-bold">{calibration.auc ?? '--'}</div>
-                    <div className="text-sm text-gray-600">AUC</div>
-                    <div className="text-xs text-gray-500 mt-1">Labeled: {calibration.labeled_count} / {calibration.count}</div>
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium">Pozitif Histogram</div>
-                    <div className="flex gap-1 items-end h-16 mt-1">
-                      {(calibration.hist?.pos || []).map((v:number,i:number)=> (
-                        <div key={i} style={{ height: `${(v||0)*6}px` }} className="w-2 bg-emerald-500" />
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium">Negatif Histogram</div>
-                    <div className="flex gap-1 items-end h-16 mt-1">
-                      {(calibration.hist?.neg || []).map((v:number,i:number)=> (
-                        <div key={i} style={{ height: `${(v||0)*6}px` }} className="w-2 bg-rose-500" />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </EnhancedCardContent>
-          </EnhancedCard>
-        </section>
+        {/* Calibration card removed as per request */}
       </div>
     </MobileDashboard>
   );

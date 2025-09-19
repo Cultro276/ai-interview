@@ -1,10 +1,14 @@
 // Avoid importing next/router in App Router; redirect via window
+import { getApiBaseUrl } from "@/lib/config";
 
 export async function apiFetch<T>(
   url: string,
   options: RequestInit & { skipRedirectOn401?: boolean } = {},
 ): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  // Read token from sessionStorage first (non-remembered sessions), then localStorage
+  const token = typeof window !== "undefined"
+    ? (sessionStorage.getItem("token") || localStorage.getItem("token"))
+    : null;
   const foundersSecret = typeof window !== "undefined" ? localStorage.getItem("founders_secret") : null;
   // Allow caller to opt out of JSON content-type via options.headers
   const headers: Record<string, string> = {
@@ -18,13 +22,8 @@ export async function apiFetch<T>(
     headers["x-internal-secret"] = foundersSecret;
   }
 
-  // Resolve API base URL with solid fallback for all environments
-  const baseFromEnv = process.env.NEXT_PUBLIC_API_URL;
-  const baseFromWindow =
-    typeof window !== "undefined"
-      ? `${window.location.protocol}//${window.location.hostname}:8000`
-      : "";
-  const base = (baseFromEnv && baseFromEnv.trim().length > 0 ? baseFromEnv : baseFromWindow).replace(/\/+$/g, "");
+  // Resolve API base URL via centralized config
+  const base = getApiBaseUrl();
   const path = url.startsWith("/") ? url : `/${url}`;
   const fullUrl = `${base}${path}`;
 

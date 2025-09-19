@@ -9,7 +9,7 @@ from src.db.models.user import User
 from src.db.models.job import Job
 from src.db.models.interview import Interview
 from src.db.models.candidate import Candidate
-from src.db.models.conversation import ConversationMessage
+from src.db.models.conversation import ConversationMessage, InterviewAnalysis
 from src.db.models.candidate import Candidate
 from src.db.session import get_session
 from src.api.v1.schemas import InterviewCreate, InterviewRead, InterviewStatusUpdate, InterviewMediaUpdate
@@ -215,15 +215,19 @@ async def list_interviews(
 ):
     # Only show interviews for jobs that belong to the tenant owner
     owner_id = get_effective_owner_id(current_user)
+
+    # Single round-trip with LEFT OUTER JOIN to analysis to avoid per-row queries
     result = await session.execute(
-        select(Interview, User)
+        select(Interview, User, InterviewAnalysis)
         .join(Job, Interview.job_id == Job.id)
         .join(User, User.id == Job.user_id)
+        .outerjoin(InterviewAnalysis, InterviewAnalysis.interview_id == Interview.id)
         .where(Job.user_id == owner_id)
     )
     rows = result.all()
+
     out: List[InterviewRead] = []
-    for iv, user in rows:
+    for iv, user, ana in rows:
         try:
             iv_dict = {
                 "id": iv.id,
@@ -238,31 +242,31 @@ async def list_interviews(
                 "prepared_first_question": iv.prepared_first_question,
                 "company_name": getattr(user, "company_name", None),
             }
-            # Try to include latest overall_score and panel/final interview if analysis exists
+
+            # Inline analysis fields when available
             try:
-                from sqlalchemy import select as _select
-                from src.db.models.conversation import InterviewAnalysis
-                row = await session.execute(_select(InterviewAnalysis).where(InterviewAnalysis.interview_id == iv.id))
-                ana = row.scalar_one_or_none()
-                over = getattr(ana, "overall_score", None)
+                over = getattr(ana, "overall_score", None) if ana else None
                 if isinstance(over, (int, float)):
                     iv_dict["overall_score"] = float(over)
-                # Panel decision & final interview (from technical_assessment JSON)
-                try:
+                if ana and getattr(ana, "technical_assessment", None):
                     import json as _json
-                    blob = _json.loads(getattr(ana, "technical_assessment", None) or "{}")
-                    pd = (blob.get("panel_review") or {}).get("decision")
-                    if isinstance(pd, str):
-                        iv_dict["panel_decision"] = pd
-                    fi = blob.get("final_interview")
-                    if isinstance(fi, dict):
-                        iv_dict["final_interview"] = fi
-                except Exception:
-                    pass
+                    try:
+                        blob = _json.loads(ana.technical_assessment or "{}")
+                        if isinstance(blob, dict):
+                            pd = (blob.get("panel_review") or {}).get("decision")
+                            if isinstance(pd, str):
+                                iv_dict["panel_decision"] = pd
+                            fi = blob.get("final_interview")
+                            if isinstance(fi, dict):
+                                iv_dict["final_interview"] = fi
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
             out.append(InterviewRead(**iv_dict))
         except Exception:
+            # Skip corrupted rows non-fatally
             continue
     return out
 

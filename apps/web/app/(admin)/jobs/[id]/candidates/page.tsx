@@ -148,6 +148,7 @@ export default function JobCandidatesPage() {
   const [reportAnalysis, setReportAnalysis] = useState<any | null>(null);
   const [reportInterviewId, setReportInterviewId] = useState<number | null>(null);
   const [reportStatus, setReportStatus] = useState<string>("");
+  const [useNewReportUI, setUseNewReportUI] = useState(true);
   // Invite link modal state
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
@@ -172,10 +173,31 @@ export default function JobCandidatesPage() {
   }, [jobInterviews]);
   const getPanelDecision = (interview: any | null): string | null => {
     try {
+      if (!interview) return null;
+      // Prefer normalized field returned by API
+      if (typeof interview.panel_decision === 'string' && interview.panel_decision) {
+        return interview.panel_decision as string;
+      }
+      // Fallback: parse packed technical_assessment JSON if present
       const ta = interview?.technical_assessment ? JSON.parse(interview.technical_assessment) : null;
       const pr = ta?.panel_review;
       return typeof pr?.decision === 'string' ? pr.decision : null;
     } catch { return null; }
+  };
+
+  const isLikedDecision = (decision: string | null | undefined): boolean => {
+    const v = (decision || "").toLowerCase();
+    if (!v) return false;
+    // Only treat explicit approvals as liked. Exclude placeholders like "mock" or undefined autos.
+    const liked = [
+      "strong hire",
+      "hire",
+      "işe al",
+      "ise al",
+      "kesinlikle işe al",
+      "kesinlikle al",
+    ].some((k) => v === k || v.includes(k));
+    return liked;
   };
   const formatDuration = (startIso?: string, endIso?: string) => {
     if (!startIso || !endIso) return "—";
@@ -308,8 +330,11 @@ export default function JobCandidatesPage() {
 
   const approveCandidate = async (interviewId: number, decision: 'Strong Hire' | 'Hire' | 'Hold' | 'No Hire') => {
     try {
-      await apiFetch(`/api/v1/conversations/analysis/${interviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision }) });
+      await apiFetch(`/api/v1/conversations/analysis/${interviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision, notes: '' }) });
       await refreshData();
+      // Enable actions for the approved interview
+      setReportInterviewId(interviewId);
+      setScheduleInterviewId(interviewId);
       info('Panel kararı kaydedildi');
     } catch (e: any) {
       toastError(e.message || 'Panel kararı kaydedilemedi');
@@ -322,7 +347,6 @@ export default function JobCandidatesPage() {
   const [scheduleDate, setScheduleDate] = useState<string>('');
   const [scheduleTime, setScheduleTime] = useState<string>('');
   const [scheduleDuration, setScheduleDuration] = useState<number>(45);
-  const [scheduleProvider, setScheduleProvider] = useState<'custom'|'google'|'zoom'>('custom');
   const [scheduleParticipants, setScheduleParticipants] = useState<string>('');
   const [scheduleNotes, setScheduleNotes] = useState<string>('');
   const [scheduleLink, setScheduleLink] = useState<string>('');
@@ -377,7 +401,6 @@ export default function JobCandidatesPage() {
     setScheduleDate(now.toISOString().slice(0,10));
     setScheduleTime(now.toTimeString().slice(0,5));
     setScheduleDuration(45);
-    setScheduleProvider('custom');
     setScheduleParticipants('');
     setScheduleNotes('');
     setScheduleLink('');
@@ -390,10 +413,7 @@ export default function JobCandidatesPage() {
       if (!scheduleDate || !scheduleTime) throw new Error('Tarih ve saat gerekli');
       const iso = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
       let link = scheduleLink.trim();
-      if (!link) {
-        if (scheduleProvider === 'google') link = 'https://meet.google.com/new';
-        else if (scheduleProvider === 'zoom') link = 'https://zoom.us/meeting/schedule';
-      }
+      if (!link) { link = 'https://meet.google.com/new'; }
       await apiFetch(`/api/v1/conversations/analysis/${scheduleInterviewId}/final-interview`, { method: 'POST', body: JSON.stringify({ scheduled_at: iso, meeting_link: link, notes: scheduleNotes }) });
       // ICS üretimi (seçilen süreyle)
       try {
@@ -475,7 +495,7 @@ export default function JobCandidatesPage() {
       }
       
       // Use the ExportSystem to generate proper PDF with actual data
-      const response = await apiFetch(`/api/v1/conversations/reports/${interview.id}/export/pdf?template_type=executive_summary`);
+      const response = await apiFetch(`/api/v1/conversations/reports/${interview.id}/export/pdf?template_type=turkish_hr`);
       
       if (response && (response as any).content) {
         // Create a proper PDF document with the report data
@@ -556,19 +576,7 @@ export default function JobCandidatesPage() {
                 </div>
               ` : ''}
               
-              ${reportData.scoring ? `
-                <div class="section">
-                  <div class="section-title">Puanlama Özeti</div>
-                  <div class="score-grid">
-                    ${Object.entries(reportData.scoring).map(([key, value]) => `
-                      <div class="score-item">
-                        <strong>${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</strong><br>
-                        ${typeof value === 'number' ? Math.round(value * 100) + '%' : value}
-                      </div>
-                    `).join('')}
-                  </div>
-                </div>
-              ` : ''}
+              
               
               ${reportData.content?.key_findings ? `
                 <div class="section">
@@ -1105,10 +1113,10 @@ export default function JobCandidatesPage() {
               </select>
             </label>
             <label className="text-sm text-gray-600 flex items-center gap-2">
-              Onay:
+              Beğeni:
               <select value={approvalFilter} onChange={(e) => setApprovalFilter(e.target.value as any)} className="border rounded px-2 py-1 text-sm">
                 <option value="all">Tümü</option>
-                <option value="approved">Onay Verilenler</option>
+                <option value="approved">Beğenilenler</option>
               </select>
             </label>
           </div>
@@ -1141,7 +1149,7 @@ export default function JobCandidatesPage() {
                 if (approvalFilter === 'all') return true;
                 const it: any = findLatestInterview(c.id);
                 const decision = getPanelDecision(it);
-                return decision === 'Hire' || decision === 'Strong Hire';
+                return isLikedDecision(decision);
               })
               .slice((pageNum-1)*10, (pageNum-1)*10 + 10)
               .map((c) => (
@@ -1193,26 +1201,21 @@ export default function JobCandidatesPage() {
                   {(() => {
                     const it: any = findLatestInterview(c.id);
                     const decision = getPanelDecision(it);
-                    const canSchedule = decision === 'Hire' || decision === 'Strong Hire';
+                    const liked = isLikedDecision(decision);
+                    const canSchedule = liked;
                     return (
                       <>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" className="h-7">Onay Ver</Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent>
-                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'Strong Hire')}>Kesinlikle Al (Strong Hire)</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'Hire')}>Al (Hire)</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'Hold')}>Kararsız (Hold)</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => approveCandidate(it?.id, 'No Hire')}>Alma (No Hire)</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        {/* Beğen tuşu */}
+                        <Button
+                          variant={liked ? 'primary' : 'outline'}
+                          className={`h-7 ${liked ? '' : ''}`}
+                          onClick={() => approveCandidate(it?.id, liked ? 'Hold' : 'Hire')}
+                          title={liked ? 'Beğeniyi kaldır' : 'Beğen'}
+                        >{liked ? '★ Beğenildi' : '☆ Beğen'}</Button>
                         <Button variant={canSchedule ? 'primary' : 'outline'} disabled={!canSchedule} className="h-7" onClick={() => openSchedule(it?.id)}>
                           Son Görüşme Planla
                         </Button>
-                        <Button variant={canSchedule ? 'outline' : 'outline'} disabled={!canSchedule} className="h-7" onClick={() => openPropose(it?.id)}>
-                          Slot Öner
-                        </Button>
+                        {/* Slot öneri butonu kaldırıldı; planlama içine entegre edildi */}
                       </>
                     );
                   })()}
@@ -1237,7 +1240,8 @@ export default function JobCandidatesPage() {
                             try {
                               const currentTop = window.scrollY || 0;
                               try { sessionStorage.setItem(lastScrollKey, String(currentTop)); } catch {}
-                              await apiFetch(`/api/v1/candidates/${c.id}`, { method: 'DELETE' });
+                              // DELETE candidate; handle CORS/500 gracefully
+                              await apiFetch(`/api/v1/candidates/${c.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
                               await refreshData();
                             } catch (err) {
                               toastError((err as any)?.message || 'Silme başarısız');
@@ -1279,40 +1283,29 @@ export default function JobCandidatesPage() {
               const candidateId = interview?.candidate_id || 0;
               exportReportPdf(candidateId);
             }}>PDF Olarak Kaydet</Button>
-            <Button variant="outline" onClick={async ()=>{
-              if (!reportInterviewId) return;
-              const decision = prompt("Panel Kararı (Kesinlikle Al/Al/Kararsız/Alma)", "");
-              if (!decision) return;
-              const notes = prompt("Notlar (opsiyonel)", "") || "";
-              try{
-                await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}/panel`, { method: 'POST', body: JSON.stringify({ decision, notes }) });
-                const a = await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}`);
-                setReportAnalysis(a);
-              }catch(e:any){ alert(e.message || 'Panel kaydı başarısız'); }
-            }}>Panel Kararı</Button>
-            <Button variant="outline" onClick={async ()=>{
-              if (!reportInterviewId) return;
-              const name = prompt("İş örneği/test adı", "");
-              if (!name) return;
-              const scoreStr = prompt("Skor (0-100)", "0");
-              const score = Number(scoreStr || 0);
-              const weightStr = prompt("Ağırlık (0-1, opsiyonel)", "");
-              const weight = weightStr===""? undefined : Number(weightStr);
-              const notes = prompt("Notlar (opsiyonel)", "") || "";
-              try{
-                await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}/work-sample`, { method: 'POST', body: JSON.stringify({ name, score_0_100: score, weight_0_1: weight, notes }) });
-                const a = await apiFetch(`/api/v1/conversations/analysis/${reportInterviewId}`);
-                setReportAnalysis(a);
-              }catch(e:any){ alert(e.message || 'İş örneği kaydı başarısız'); }
-            }}>İş Örneği/Test Ekle</Button>
+            {/* Panel Kararı ve İş Örneği/Test Ekle kaldırıldı */}
           </div>
           {reportLoading ? (
             <div className="py-6 text-sm text-gray-500">Yükleniyor…</div>
           ) : reportAnalysis ? (
             <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-2">
-              <div className="text-xs text-gray-500 bg-yellow-50 border border-yellow-200 rounded p-2">
-                Not: Bu rapor AI destekli öneriler içerir; nihai karar panel onayıyla verilir. Ses/ton metrikleri sadece yardımcıdır ve toplam skora doğrudan eklenmez.
-              </div>
+              {useNewReportUI ? (
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold">Örnek Aday Mülakat Raporu</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div><strong>Pozisyon:</strong> {(reportAnalysis?.job_title)||""}</div>
+                    <div><strong>Aday:</strong> {(reportAnalysis?.candidate_name)||""}</div>
+                  </div>
+                  <div>
+                    <h4 className="font-medium">1. Genel Aday Özeti</h4>
+                    <p className="text-sm text-gray-700">{(reportAnalysis?.summary)||""}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500 bg-yellow-50 border border-yellow-200 rounded p-2">
+                  Not: Bu rapor AI destekli öneriler içerir; nihai karar panel onayıyla verilir. Ses/ton metrikleri sadece yardımcıdır ve toplam skora doğrudan eklenmez.
+                </div>
+              )}
               {(() => {
                 try {
                   const a = reportAnalysis;
@@ -2157,14 +2150,7 @@ export default function JobCandidatesPage() {
                 <label className="block text-xs text-gray-600 mb-1">Süre (dk)</label>
                 <input type="number" min={15} className="w-full border rounded px-2 py-1" value={scheduleDuration} onChange={(e)=>setScheduleDuration(Number(e.target.value||45))} />
               </div>
-              <div>
-                <label className="block text-xs text-gray-600 mb-1">Sağlayıcı</label>
-                <select className="w-full border rounded px-2 py-1" value={scheduleProvider} onChange={(e)=>setScheduleProvider(e.target.value as any)}>
-                  <option value="custom">Özel Link</option>
-                  <option value="google">Google Meet</option>
-                  <option value="zoom">Zoom</option>
-                </select>
-              </div>
+              <div />
             </div>
             <div>
               <label className="block text-xs text-gray-600 mb-1">Toplantı Linki</label>
@@ -2181,77 +2167,25 @@ export default function JobCandidatesPage() {
             </div>
           </div>
           <div className="flex justify-end gap-2 mt-4">
-            {scheduleProvider !== 'custom' && (
-              <Button
-                variant="secondary"
-                onClick={async ()=>{
-                  try {
-                    if (!scheduleInterviewId) return;
-                    const iso = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
-                    if (scheduleProvider === 'google') {
-                      await apiFetch(`/api/v1/conversations/calendar/google/create`, { method: 'POST', body: JSON.stringify({ interview_id: scheduleInterviewId, title: 'Final Interview', scheduled_at: iso, duration_min: scheduleDuration, attendees: scheduleParticipants.split(',').map(s=>s.trim()).filter(Boolean) }) });
-                      window.open('https://calendar.google.com/calendar/u/0/r/eventedit', '_blank');
-                    } else if (scheduleProvider === 'zoom') {
-                      await apiFetch(`/api/v1/conversations/meeting/zoom/create`, { method: 'POST', body: JSON.stringify({ interview_id: scheduleInterviewId, topic: 'Final Interview', scheduled_at: iso, duration_min: scheduleDuration }) });
-                      window.open('https://zoom.us/meeting/schedule', '_blank');
-                    }
-                  } catch (e:any) { toastError(e.message || 'Oluşturma başarısız'); }
-                }}
-              >Toplantı Oluştur</Button>
-            )}
+            <Button
+              variant="secondary"
+              onClick={async ()=>{
+                try {
+                  if (!scheduleInterviewId) return;
+                  const iso = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+                  await apiFetch(`/api/v1/conversations/calendar/google/create`, { method: 'POST', body: JSON.stringify({ interview_id: scheduleInterviewId, title: 'Final Interview', scheduled_at: iso, duration_min: scheduleDuration, attendees: scheduleParticipants.split(',').map(s=>s.trim()).filter(Boolean) }) });
+                  window.open('https://calendar.google.com/calendar/u/0/r/eventedit', '_blank');
+                } catch (e:any) { toastError(e.message || 'Oluşturma başarısız'); }
+              }}
+            >Google Meet Oluştur</Button>
             <DialogClose asChild>
               <Button variant="outline">İptal</Button>
             </DialogClose>
-            <Button onClick={submitSchedule}>Planla ve .ics Oluştur</Button>
+            <Button onClick={submitSchedule}>Planla</Button>
           </div>
         </DialogContent>
       </Dialog>
       
-      {/* Slot Öner Modal */}
-      <Dialog open={proposeOpen} onOpenChange={setProposeOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Slot Öner</DialogTitle>
-            <DialogDescription>Adaya birden çok zaman aralığı gönderin.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <div className="text-xs text-gray-600">Zaman Aralıkları</div>
-              {proposeSlots.map((s, idx) => (
-                <div key={idx} className="grid grid-cols-2 gap-3">
-                  <input type="datetime-local" className="w-full border rounded px-2 py-1" value={s.start} onChange={(e)=>{
-                    const v = e.target.value; setProposeSlots(arr=> arr.map((it,i)=> i===idx?{...it, start:v}:it));
-                  }} />
-                  <div className="flex gap-2">
-                    <input type="datetime-local" className="w-full border rounded px-2 py-1" value={s.end} onChange={(e)=>{
-                      const v = e.target.value; setProposeSlots(arr=> arr.map((it,i)=> i===idx?{...it, end:v}:it));
-                    }} />
-                    <Button variant="ghost" onClick={()=> setProposeSlots(arr => arr.filter((_,i)=> i!==idx))}>Sil</Button>
-                  </div>
-                </div>
-              ))}
-              <div>
-                <Button variant="outline" onClick={()=> setProposeSlots(arr => [...arr, { start: '', end: '' }])}>+ Aralık Ekle</Button>
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Mesaj</label>
-              <textarea className="w-full border rounded px-2 py-1" rows={3} value={proposeMsg} onChange={(e)=> setProposeMsg(e.target.value)} />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Katılımcılar (virgülle e-postalar)</label>
-              <input className="w-full border rounded px-2 py-1" value={proposeAttendees} onChange={(e)=> setProposeAttendees(e.target.value)} />
-              <div className="text-[11px] text-gray-500 mt-1">Bu adresler .ics ATTENDEE olarak eklenecektir.</div>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 mt-4">
-            <DialogClose asChild>
-              <Button variant="outline">İptal</Button>
-            </DialogClose>
-            <Button onClick={submitPropose}>Adaya Öner</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
       {/* Scorecard Modal kaldırıldı */}
 
       {/* Invite Link Modal */}
@@ -2361,9 +2295,23 @@ export default function JobCandidatesPage() {
                   {cvSummaryLoading ? "Özet çıkarılıyor…" : "CV Analiz Özeti"}
                 </Button>
                                  {cvSummary && (
-                   <div className="mt-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                     {cvSummary}
-                   </div>
+                  <div className="mt-3 text-sm text-gray-700 dark:text-gray-300">
+                    {/* Render minimal markdown: **bold**, *italic*, line breaks */}
+                    <div dangerouslySetInnerHTML={{ __html: (() => {
+                      const esc = (s: string) => s
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;");
+                      let html = esc(cvSummary || "");
+                      // bold **text**
+                      html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                      // italic *text*
+                      html = html.replace(/(^|\s)\*(?!\*)([^*]+?)\*(?=\s|$)/g, '$1<em>$2</em>');
+                      // new lines
+                      html = html.replace(/\n/g, '<br/>');
+                      return html;
+                    })() }} />
+                  </div>
                  )}
               </div>
             </div>
@@ -2385,7 +2333,7 @@ export default function JobCandidatesPage() {
             return (
               <div>
                 {videoSrc ? (
-                  <video id="admin-video-player" controls src={videoSrc} className="w-full max-h-[60vh] rounded" />
+                  <video id="admin-video-player" controls src={videoSrc} className="w-full max-h-[60vh] rounded" preload="auto" />
                 ) : audioSrc ? (
                   <audio id="admin-audio-player" controls src={audioSrc} className="w-full" />
                 ) : (
@@ -2397,6 +2345,7 @@ export default function JobCandidatesPage() {
                     <span id="time-display" className="min-w-[64px] inline-block">00:00</span>
                     <span className="ml-4">Hız:</span>
                     <select
+                      defaultValue={1}
                       onChange={(e) => {
                         const rate = Number(e.target.value);
                         const v = document.getElementById("admin-video-player") as HTMLVideoElement | null;
@@ -2406,8 +2355,8 @@ export default function JobCandidatesPage() {
                       }}
                       className="border rounded px-2 py-1"
                     >
-                      {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
-                        <option key={r} value={r}>{r}x</option>
+                      {[1, 0.5, 0.75, 1.25, 1.5, 2].map((r) => (
+                        <option key={r} value={r}>{r === 1 ? '1×' : `${r}×`}</option>
                       ))}
                     </select>
                   </div>

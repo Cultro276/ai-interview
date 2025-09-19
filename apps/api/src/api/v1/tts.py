@@ -38,7 +38,14 @@ async def tts_speak(req: TTSRequest):
         # Natural Turkish corporate tone with light prosody
         rate = "+4%" if (req.preset or "").lower() == "corporate" else "+7%"
         pitch = "+1%"
-        voice = os.getenv("AZURE_SPEECH_VOICE", "tr-TR-EmelNeural")
+        # Map language to default Azure voice if specific voice env not set
+        _lang = (req.lang or "tr").lower()
+        _default_voice = "tr-TR-EmelNeural"
+        if _lang.startswith("en"):
+            _default_voice = "en-US-JennyNeural"
+        elif _lang.startswith("ar"):
+            _default_voice = "ar-SA-ZariyahNeural"
+        voice = os.getenv("AZURE_SPEECH_VOICE", _default_voice)
         import re as _re
         def _inject_pauses(t: str) -> str:
             t = t.strip()
@@ -57,9 +64,13 @@ async def tts_speak(req: TTSRequest):
 </speak>
 """.strip()
 
+    # Normalize text (avoid empty/whitespace causing 422)
+    if not (req.text or "").strip():
+        raise HTTPException(status_code=422, detail="text_required")
+
     # 1. OPENAI TTS
     if req.provider == "openai" or (
-        not req.provider and settings.openai_api_key
+        not req.provider and bool(settings.openai_api_key)
     ):
         try:
             # Use httpx client to stream audio to avoid type issues in some linters
@@ -100,7 +111,7 @@ async def tts_speak(req: TTSRequest):
 
     # 2. AZURE TTS
     if req.provider == "azure" or (
-        not req.provider and settings.azure_speech_key and settings.azure_speech_region
+        not req.provider and bool(settings.azure_speech_key) and bool(settings.azure_speech_region)
     ):
         try:
             token_url = f"https://{settings.azure_speech_region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"

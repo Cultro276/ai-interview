@@ -196,6 +196,53 @@ class ExternalAPIHealthCheck(BaseHealthCheck):
             }
 
 
+class CacheHealthCheck(BaseHealthCheck):
+    """Health check for Redis (cache) connectivity"""
+
+    def __init__(self):
+        super().__init__("redis", ComponentType.CACHE, timeout=5.0)
+
+    async def _perform_check(self) -> Dict[str, Any]:
+        from src.core.config import settings
+        import asyncio as _asyncio
+
+        if not settings.redis_url:
+            return {
+                "status": HealthStatus.DEGRADED,
+                "message": "REDIS_URL not configured",
+                "details": {"configured": False},
+            }
+
+        try:
+            import redis.asyncio as aioredis  # type: ignore
+        except Exception as e:
+            return {
+                "status": HealthStatus.CRITICAL,
+                "message": "redis-py not installed",
+                "details": {"error": str(e)},
+            }
+
+        client = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+        try:
+            start = time.time()
+            pong = await _asyncio.wait_for(client.ping(), timeout=self.timeout)
+            elapsed = round((time.time() - start) * 1000, 2)
+            details = {"ping": pong, "response_time_ms": elapsed}
+            status = HealthStatus.HEALTHY if pong else HealthStatus.UNHEALTHY
+            message = "Redis healthy" if pong else "Redis did not respond to PING"
+            return {"status": status, "message": message, "details": details}
+        except Exception as e:
+            return {
+                "status": HealthStatus.CRITICAL,
+                "message": f"Redis error: {str(e)}",
+                "details": {},
+            }
+        finally:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
 class SystemResourceHealthCheck(BaseHealthCheck):
     """Health check for system resources (CPU, Memory, Disk)"""
     
@@ -350,6 +397,7 @@ class HealthCheckManager:
         self.checks.append(DatabaseHealthCheck())
         self.checks.append(SystemResourceHealthCheck())
         self.checks.append(ApplicationHealthCheck())
+        self.checks.append(CacheHealthCheck())
         
         # External API checks
         self.checks.append(ExternalAPIHealthCheck(

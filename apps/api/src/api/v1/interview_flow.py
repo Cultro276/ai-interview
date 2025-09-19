@@ -15,8 +15,15 @@ from src.services.stt import transcribe_audio_batch
 import base64
 
 from src.core.gemini import generate_question, generate_question_robust, polish_question
+from src.services.context_builder import build_memory_section
+from src.services.llm_orchestrator import generate_next_question as orchestrated_generate
+from src.services.sanitizer import strip_finished_flag, sanitize_question_text
 from src.services.dialog import extract_keywords
 from src.core.metrics import collector
+from src.services.memory_store import store as session_memory
+from src.services.persistence import persist_user_message, persist_assistant_message
+from src.services.memory_enricher import enrich_session_memory
+from src.services.content_safety import analyze_input, validate_assistant_question
 import asyncio
 
 router = APIRouter(prefix="/interview", tags=["interview"])
@@ -43,7 +50,10 @@ class NextQuestionResponse(BaseModel):
 
 @router.post("/next-question", response_model=NextQuestionResponse)
 async def next_question(req: NextQuestionRequest, session: AsyncSession = Depends(get_session)):
-    # Generate next question (rule-based first; LLM fallback and polish)
+    # Generate next question aligned with structured workflow:
+    # 1) Always start with "Kendinizi tanıtır mısınız?" if history empty.
+    # 2) Use precomputed dialog plan from analysis when available.
+    # 3) Select from pool based on last user answer keywords and job relevance.
     try:
         import re as _re
         job_desc = ""
@@ -127,6 +137,11 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 resume_text = ""
 
         history = [t.dict() for t in req.history]
+        try:
+            for t in history[-10:]:
+                session_memory.record_turn(req.interview_id, t.get("role") or "user", t.get("text") or "")
+        except Exception:
+            pass
         # Sliding window: keep last 20 turns to control token usage
         if len(history) > 20:
             history = history[-20:]
@@ -223,57 +238,12 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         # Ultimate fallback for any position
                         q0 = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucunu kısaca paylaşır mısınız?"
                 
-                # ✅ Store first question in database with correct next sequence number
+                # ✅ Store first question idempotently via persistence service
                 if q0:
                     try:
-                        last_msg = (
-                            await session.execute(
-                                select(ConversationMessage)
-                                .where(ConversationMessage.interview_id == req.interview_id)
-                                .order_by(ConversationMessage.sequence_number.desc())
-                            )
-                        ).scalars().first()
-                        next_seq0 = (last_msg.sequence_number if last_msg else 0) + 1
-                        first_msg = ConversationMessage(
-                            interview_id=req.interview_id,
-                            role=DBMessageRole.ASSISTANT,
-                            content=q0,
-                            sequence_number=next_seq0,
-                        )
-                        session.add(first_msg)
-                        await session.commit()
-                    except Exception as e:
-                        # Handle potential sequence conflicts gracefully
-                        try:
-                            await session.rollback()
-                        except Exception:
-                            pass
-                        try:
-                            # Retry once with refreshed sequence
-                            last_msg = (
-                                await session.execute(
-                                    select(ConversationMessage)
-                                    .where(ConversationMessage.interview_id == req.interview_id)
-                                    .order_by(ConversationMessage.sequence_number.desc())
-                                )
-                            ).scalars().first()
-                            next_seq0 = (last_msg.sequence_number if last_msg else 0) + 1
-                            session.add(
-                                ConversationMessage(
-                                    interview_id=req.interview_id,
-                                    role=DBMessageRole.ASSISTANT,
-                                    content=q0,
-                                    sequence_number=next_seq0,
-                                )
-                            )
-                            await session.commit()
-                        except Exception:
-                            try:
-                                await session.rollback()
-                            except Exception:
-                                pass
-                            # Best-effort: continue without failing the request
-                            print(f"Failed to store first question in DB: {e}")
+                        await persist_assistant_message(session, req.interview_id, q0)
+                    except Exception:
+                        pass
                 # Friendly intro with candidate name and job title
                 intro = None
                 try:
@@ -310,6 +280,10 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     final_q0 = f"{intro} {q0_clean}".strip()
                 else:
                     final_q0 = intro or q0
+                try:
+                    session_memory.record_turn(req.interview_id, "assistant", final_q0 or "")
+                except Exception:
+                    pass
                 return NextQuestionResponse(question=final_q0, done=False, live=None)
             except Exception:
                 return NextQuestionResponse(
@@ -329,6 +303,19 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     combined_ctx += "\n\nRecruiter Extra Questions (ask these if not covered):\n- " + "\n- ".join(extra_list[:6])
             except Exception:
                 pass
+            # Append session memory guidance
+            try:
+                mem_snap = None
+                try:
+                    from src.services.memory_store import store as _mem
+                    mem_snap = _mem.snapshot(req.interview_id)
+                except Exception:
+                    mem_snap = None
+                mem_block = build_memory_section(mem_snap, asked, req.signals)
+                if mem_block:
+                    combined_ctx += "\n\n" + mem_block
+            except Exception:
+                pass
             # Include precomputed dialog plan if exists
             # Load dialog_plan from analysis blob if present
             try:
@@ -342,6 +329,193 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                     blob = _json.loads(ia.technical_assessment)
                     dp = blob.get("dialog_plan")
                     req_spec = blob.get("requirements_spec") or {"items": []}
+                    # Follow-up selection based on STAR gaps for the last question
+                    try:
+                        last_assistant = next((t.get("text", "") for t in reversed(history) if t.get("role") == "assistant"), "").strip()
+                        last_user = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "").strip()
+                        def _find_pool_item_by_question(question_text: str) -> dict | None:
+                            pool_all = []
+                            try:
+                                if isinstance(dp, dict):
+                                    pool_all = (dp.get("question_pool") or []) + (dp.get("closing_pool") or [])
+                            except Exception:
+                                pool_all = []
+                            for it in pool_all:
+                                try:
+                                    q0 = str(it.get("question", "")).strip()
+                                    if not q0:
+                                        continue
+                                    # If scenario was prepended, last question contains original q0 at the end
+                                    if q0 == question_text or (q0 and question_text.endswith(q0)):
+                                        return it
+                                except Exception:
+                                    continue
+                            return None
+                        def _choose_star_follow_up(item: dict, answer: str) -> str | None:
+                            if not isinstance(item, dict):
+                                return None
+                            fups = item.get("follow_ups") or []
+                            if not isinstance(fups, list) or not fups:
+                                return None
+                            txt = (answer or "").lower()
+                            # Heuristic STAR coverage
+                            has_s = any(k in txt for k in ["durum", "bağlam", "context", "müşteri", "production", "projede", "senaryo"])
+                            has_t = any(k in txt for k in ["görev", "sorumlulu", "hedef", "amaç"])
+                            has_a = any(k in txt for k in ["yaptım", "uyguladım", "gerçekleştirdim", "kullandım", "çözdüm", "tasarladım", "inşa ettim", "optimize"])
+                            has_r = any(k in txt for k in ["sonuç", "%", "art", "azal", "süre", "kpi", "metric", "ölç", "gelir", "maliyet"]) or any(ch.isdigit() for ch in txt)
+                            # Pick first missing in S→T→A→R order
+                            need = None
+                            if not has_s:
+                                need = "durum"
+                            elif not has_t:
+                                need = "görev"
+                            elif not has_a:
+                                need = "eylem"
+                            elif not has_r:
+                                need = "sonuç"
+                            if not need:
+                                return None
+                            # Map to a suitable follow-up
+                            for fu in fups:
+                                sfu = str(fu or "").lower()
+                                if (need == "durum" and ("durum" in sfu or "bağlam" in sfu)) or \
+                                   (need == "görev" and ("görev" in sfu or "sorumluluk" in sfu)) or \
+                                   (need == "eylem" and ("adım" in sfu or "eylem" in sfu)) or \
+                                   (need == "sonuç" and ("sonuç" in sfu or "ölç" in sfu)):
+                                    return str(fu)
+                            # Fallback pick the first
+                            try:
+                                return str(fups[0])
+                            except Exception:
+                                return None
+                        if last_assistant and last_user:
+                            it = _find_pool_item_by_question(last_assistant)
+                            if it:
+                                fu_q = _choose_star_follow_up(it, last_user)
+                                if fu_q:
+                                    return NextQuestionResponse(question=fu_q, done=False, live=None)
+                    except Exception:
+                        pass
+                    # Attempt pool-based selection for natural, latency-free next question
+                    selected_from_pool: str | None = None
+                    try:
+                        pool = (dp or {}).get("question_pool") if isinstance(dp, dict) else []
+                        closing_pool = (dp or {}).get("closing_pool") if isinstance(dp, dict) else []
+                        if isinstance(pool, list) and pool:
+                            asked_texts = [t.get("text", "").strip() for t in history if t.get("role") == "assistant"]
+                            # Determine current section based on progress
+                            def _current_section(ac: int) -> str:
+                                if ac <= 0:
+                                    return "Isınma & Tanışma"
+                                if ac <= 3:
+                                    return "Teknik Yeterlilik"
+                                if ac <= 6:
+                                    return "Deneyim & Projeler"
+                                return "Kültürel Uyum & Soft Skills"
+                            cur_section = _current_section(asked)
+                            last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
+                            kws = extract_keywords(last_user_text) if last_user_text else []
+                            # Position weighting by category
+                            job_lower = (job.title or "").lower() if job and getattr(job, "title", None) else ""
+                            def _weights_by_role() -> dict:
+                                w = {"Tanışma": 0.5, "Teknik": 1.0, "Davranışsal": 1.0, "Kültürel": 1.0, "Liderlik": 1.0}
+                                try:
+                                    if any(k in job_lower for k in ["developer", "yazılım", "engineer", "mühendis"]):
+                                        w.update({"Teknik": 1.6, "Davranışsal": 0.8, "Kültürel": 0.8, "Liderlik": 0.9})
+                                    elif any(k in job_lower for k in ["satış", "sales", "ik", "insan kaynakları", "hr"]):
+                                        w.update({"Teknik": 0.7, "Davranışsal": 1.6, "Kültürel": 1.1, "Liderlik": 0.9})
+                                    elif any(k in job_lower for k in ["manager", "yönetici", "müdür", "lead", "director"]):
+                                        w.update({"Teknik": 0.9, "Davranışsal": 1.2, "Kültürel": 1.4, "Liderlik": 1.6})
+                                except Exception:
+                                    pass
+                                return w
+                            role_w = _weights_by_role()
+
+                            def _score(item: dict) -> int:
+                                try:
+                                    if not isinstance(item, dict):
+                                        return -10
+                                    q = str(item.get("question", "")).strip()
+                                    if not q or any(q == a for a in asked_texts):
+                                        return -10
+                                    s = 0
+                                    # section match
+                                    sec = str(item.get("section", "")).strip()
+                                    if sec:
+                                        if sec.lower() == cur_section.lower():
+                                            s += 2
+                                        try:
+                                            cat = sec
+                                            if "tanış" in cat.lower():
+                                                s += int(role_w.get("Tanışma", 1.0) * 1)
+                                            if "tekn" in cat.lower():
+                                                s += int(role_w.get("Teknik", 1.0) * 2)
+                                            if "davran" in cat.lower():
+                                                s += int(role_w.get("Davranışsal", 1.0) * 2)
+                                            if "kültür" in cat.lower():
+                                                s += int(role_w.get("Kültürel", 1.0) * 2)
+                                            if "lider" in cat.lower():
+                                                s += int(role_w.get("Liderlik", 1.0) * 2)
+                                        except Exception:
+                                            pass
+                                    # difficulty bump for strong candidates: prefer higher difficulty later
+                                    try:
+                                        if asked >= 3:
+                                            diff = str(item.get("difficulty", "")).lower()
+                                            if diff == "high":
+                                                s += 2
+                                            elif diff == "medium":
+                                                s += 1
+                                    except Exception:
+                                        pass
+                                    # keyword overlap
+                                    skills = [str(x).lower() for x in (item.get("skills") or []) if str(x).strip()]
+                                    text_match = any(kw.lower() in q.lower() for kw in kws)
+                                    skill_match = any(any(kw.lower() in sk for kw in kws) for sk in skills)
+                                    if text_match or skill_match:
+                                        s += 2
+                                    # requirements/tag bias
+                                    tags = [str(x).lower() for x in (item.get("tags") or []) if str(x).strip()]
+                                    if "requirements" in tags:
+                                        s += 1
+                                    return s
+                                except Exception:
+                                    return 0
+                            ranked = sorted(pool, key=_score, reverse=True)
+                            if ranked and _score(ranked[0]) > 0:
+                                selected_from_pool = str(ranked[0].get("question", "")).strip() or None
+                            # Prefer closing questions if we are late in the flow
+                            if (not selected_from_pool) and isinstance(closing_pool, list) and closing_pool:
+                                # Late = many assistant turns or salary asked/answered previously
+                                late = asked >= 6
+                                if late:
+                                    for it in closing_pool:
+                                        try:
+                                            q = str(it.get("question", "")).strip()
+                                            if q and all(q != a for a in asked_texts):
+                                                selected_from_pool = q
+                                                break
+                                        except Exception:
+                                            continue
+                    except Exception:
+                        selected_from_pool = None
+                    if selected_from_pool:
+                        # Attach scenario prefix if available to reduce abstraction for the candidate
+                        try:
+                            enriched = None
+                            pool_all = ((dp or {}).get("question_pool") or []) + ((dp or {}).get("closing_pool") or [])
+                            for it in pool_all:
+                                try:
+                                    if str(it.get("question", "")).strip() == selected_from_pool:
+                                        scen = str(it.get("scenario", "")).strip()
+                                        if scen:
+                                            enriched = f"Durum: {scen}\n{selected_from_pool}"
+                                        break
+                                except Exception:
+                                    continue
+                            return NextQuestionResponse(question=(enriched or selected_from_pool), done=False, live=None)
+                        except Exception:
+                            return NextQuestionResponse(question=selected_from_pool, done=False, live=None)
                     if dp:
                         topics = dp.get("topics") or []
                         targeted = dp.get("targeted_questions") or []
@@ -412,7 +586,7 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                 result = {"question": pend, "done": False}
             else:
                 result = await asyncio.wait_for(
-                    generate_question_robust(history, combined_ctx, max_questions=50), timeout=18.0
+                    orchestrated_generate(history, combined_ctx, max_questions=50), timeout=18.0
                 )
         except Exception as ai_error:
             # 🚨 AI FAILURE FALLBACK: Emergency question generation
@@ -509,8 +683,8 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
         q_candidate = result.get("question")
         # Sanitize FINISHED from any question text and mark done if nothing remains
         if isinstance(q_candidate, str):
-            cleaned = _strip_finished(q_candidate)
-            if (not cleaned) and ("finished" in q_candidate.lower()):
+            cleaned, is_finished = strip_finished_flag(q_candidate)
+            if not cleaned and is_finished:
                 result["question"] = ""
                 result["done"] = True
             else:
@@ -528,6 +702,20 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         s = "Biraz daha somutlaştırabilir misiniz? Kısa bir örnek ve elde ettiğiniz sonucu paylaşır mısınız?"
                     else:
                         s = GENERIC_OPENING
+                # Adaptive Depth bonus prompts (activate only if last two user msgs not both empty)
+                try:
+                    last_texts = [t.get("text", "").strip() for t in reversed(history) if t.get("role") == "user"]
+                    last_user = (last_texts[0] if len(last_texts) >= 1 else "")
+                    prev_user = (last_texts[1] if len(last_texts) >= 2 else "")
+                    if (last_user or prev_user):
+                        if len(last_user) < 20 or last_user == "...":
+                            s = "Anladım, teşekkürler. Bunu biraz açabilir misiniz? Kullandığınız yöntem ve ölçülebilir sonucu kısaca anlatır mısınız?"
+                        elif len(last_user) > 320:
+                            s = "Anladım, teşekkürler. Paylaştığınız bilgiyi çok kısa özetleyebilir misiniz? Ana sonucu tek cümlede ifade eder misiniz?"
+                        elif len(last_user) > 220:
+                            s = "Anladım, teşekkürler. Bu cevabın en önemli kısmı sizce hangisi? Kısaca netleştirebilir misiniz?"
+                except Exception:
+                    pass
                 # Avoid regression to opening after first turn
                 if asked >= 1 and s.strip() == GENERIC_OPENING:
                     s = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucu kısaca paylaşır mısınız?"
@@ -564,11 +752,8 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
                         s = remaining[0]
                 except Exception:
                     pass
-                # Ensure we return a complete sentence ending with question mark
-                s = (s or "").strip()
-                if s and not s.endswith("?"):
-                    s = s + "?"
-                result["question"] = s
+                # Final sanitize and punctuation
+                result["question"] = sanitize_question_text(s)
             except Exception:
                 if asked >= 1 and isinstance(q_candidate, str) and q_candidate.strip() == GENERIC_OPENING:
                     result["question"] = "Son rolünüzde üstlendiğiniz belirli bir görevi ve ölçülebilir sonucu kısaca paylaşır mısınız?"
@@ -604,6 +789,11 @@ async def next_question(req: NextQuestionRequest, session: AsyncSession = Depend
     question_out: str | None = q_any if isinstance(q_any, str) else None
     d_any = result.get("done")
     done_out: bool = True if isinstance(d_any, bool) and d_any else False
+    try:
+        if question_out:
+            session_memory.record_turn(req.interview_id, "assistant", question_out)
+    except Exception:
+        pass
     return NextQuestionResponse(question=question_out, done=done_out, live=None)
 
 
@@ -649,44 +839,34 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
             text = (text or "").strip()
         except Exception:
             text = ""
+    # Content safety: analyze and mask PII in user text (best-effort)
+    try:
+        if text:
+            _anal = analyze_input(text)
+            # No hard block; could log flags for future use
+    except Exception:
+        pass
 
-    # 3) Persist user message (skip if empty)
-    last = (
-        await session.execute(
-            select(ConversationMessage)
-            .where(ConversationMessage.interview_id == body.interview_id)
-            .order_by(ConversationMessage.sequence_number.desc())
-        )
-    ).scalars().first()
-    next_seq = (last.sequence_number if last else 0) + 1
+    # 3) Persist user message (skip if empty) using persistence service
+    saved_user = None
     if text:
-        # Check for existing message with same sequence number to avoid duplicates
-        existing_msg = (
+        try:
+            saved_user = await persist_user_message(session, body.interview_id, text)
+        except Exception:
+            saved_user = None
+
+    # Determine next sequence number for this turn evidence
+    if saved_user:
+        next_seq = saved_user.sequence_number
+    else:
+        last = (
             await session.execute(
                 select(ConversationMessage)
-                .where(
-                    ConversationMessage.interview_id == body.interview_id,
-                    ConversationMessage.sequence_number == next_seq
-                )
+                .where(ConversationMessage.interview_id == body.interview_id)
+                .order_by(ConversationMessage.sequence_number.desc())
             )
         ).scalars().first()
-        
-        if not existing_msg:
-            msg = ConversationMessage(
-                interview_id=body.interview_id,
-                role=DBMessageRole.USER,
-                content=text,
-                sequence_number=next_seq,
-            )
-            session.add(msg)
-            try:
-                await session.commit()
-            except Exception:
-                # If conflict occurs, rollback and continue
-                await session.rollback()
-    else:
-        # Reserve the sequence but do not persist empty content
-        pass
+        next_seq = (last.sequence_number if last else 0) + 1
 
     # 4) Build history from DB to drive next question
     msgs = (
@@ -704,6 +884,12 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
     # Include the current text if we skipped persisting (empty earlier)
     if text and (not any(t for t in history if t.get("role") == "user" and t.get("text") == text)):
         history.append({"role": "user", "text": text})
+
+    # Enrich in-memory session memory with latest history (best-effort)
+    try:
+        await enrich_session_memory(body.interview_id, history)
+    except Exception:
+        pass
 
     # 5) Check if salary question has been asked and answered (but only after sufficient questions)
     salary_asked = False
@@ -742,6 +928,20 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
             analysis = await generate_llm_full_analysis(session, body.interview_id)
         # Build turn evidence snippet from the last user message
         last_user_text = next((t.get("text", "") for t in reversed(history) if t.get("role") == "user"), "")
+        # Per-answer quick note: summary (1–2 sentences) + fit label
+        quick_note = None
+        fit_label = None
+        try:
+            # Derive short summary using simple heuristic; rely on LLM analysis if present
+            summary_src = (analysis.summary or "") if getattr(analysis, "summary", None) else ""
+            quick_note = (summary_src or last_user_text).strip()[:200]
+            # Fit label from overall score
+            ov = float(analysis.overall_score or 0)
+            fit_label = "uyumlu" if ov >= 80 else ("kısmen uyumlu" if ov >= 60 else "uyumsuz")
+        except Exception:
+            quick_note = last_user_text[:160]
+            fit_label = None
+
         turn_ev = {
             "seq": next_seq,
             "text": last_user_text[:500],
@@ -750,6 +950,8 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
             "tech": analysis.technical_score,
             "culture": analysis.cultural_fit_score,
             "overall": analysis.overall_score,
+            "quick_note": quick_note,
+            "fit_label": fit_label,
         }
         await merge_enrichment_into_analysis(session, body.interview_id, {"turn_evidence": turn_ev})
         # Prepare live insights for recruiter dashboard (not exposed to candidate UI)
@@ -808,12 +1010,64 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 ov = float(live["overall"]) if live and isinstance(live.get("overall"), (int, float)) else None
                 # Positive: all critical requirements met → finish if minimum interaction achieved
                 if asked_count >= _settings2.interview_min_questions_positive and must_yes:
+                    # Ensure at least one closing question before finish
+                    try:
+                        from sqlalchemy import select as __select
+                        from src.db.models.conversation import InterviewAnalysis as __IA
+                        ia2 = (
+                            await session.execute(__select(__IA).where(__IA.interview_id == body.interview_id))
+                        ).scalar_one_or_none()
+                        if ia2 and ia2.technical_assessment:
+                            import json as __json
+                            blob2 = __json.loads(ia2.technical_assessment)
+                            closing = (blob2.get("dialog_plan") or {}).get("closing_pool") or []
+                            asked_texts2 = [t.get("text", "").strip() for t in history if t.get("role") == "assistant"]
+                            for it in closing:
+                                q = str(it.get("question", "")).strip()
+                                if q and all(q != a for a in asked_texts2):
+                                    return NextQuestionResponse(question=q, done=False, live=live)
+                    except Exception:
+                        pass
                     return NextQuestionResponse(question=None, done=True, live=live)
                 # Negative: any critical requirement explicitly not met and enough exchange → finish
                 if asked_count >= _settings2.interview_min_questions_negative and must_no:
+                    try:
+                        from sqlalchemy import select as __select
+                        from src.db.models.conversation import InterviewAnalysis as __IA
+                        ia2 = (
+                            await session.execute(__select(__IA).where(__IA.interview_id == body.interview_id))
+                        ).scalar_one_or_none()
+                        if ia2 and ia2.technical_assessment:
+                            import json as __json
+                            blob2 = __json.loads(ia2.technical_assessment)
+                            closing = (blob2.get("dialog_plan") or {}).get("closing_pool") or []
+                            asked_texts2 = [t.get("text", "").strip() for t in history if t.get("role") == "assistant"]
+                            for it in closing:
+                                q = str(it.get("question", "")).strip()
+                                if q and all(q != a for a in asked_texts2):
+                                    return NextQuestionResponse(question=q, done=False, live=live)
+                    except Exception:
+                        pass
                     return NextQuestionResponse(question=None, done=True, live=live)
                 # Mixed: many partials and low overall → finish to avoid dragging
                 if asked_count >= _settings2.interview_min_questions_mixed and must_partial_count >= 2 and (ov is not None and ov <= _settings2.interview_low_score_threshold):
+                    try:
+                        from sqlalchemy import select as __select
+                        from src.db.models.conversation import InterviewAnalysis as __IA
+                        ia2 = (
+                            await session.execute(__select(__IA).where(__IA.interview_id == body.interview_id))
+                        ).scalar_one_or_none()
+                        if ia2 and ia2.technical_assessment:
+                            import json as __json
+                            blob2 = __json.loads(ia2.technical_assessment)
+                            closing = (blob2.get("dialog_plan") or {}).get("closing_pool") or []
+                            asked_texts2 = [t.get("text", "").strip() for t in history if t.get("role") == "assistant"]
+                            for it in closing:
+                                q = str(it.get("question", "")).strip()
+                                if q and all(q != a for a in asked_texts2):
+                                    return NextQuestionResponse(question=q, done=False, live=live)
+                    except Exception:
+                        pass
                     return NextQuestionResponse(question=None, done=True, live=live)
     except Exception:
         pass
@@ -846,53 +1100,10 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
                 
                 if targeted_question:
                     # Return adaptive question directly
-                    last_adapt = (
-                        await session.execute(
-                            select(ConversationMessage)
-                            .where(ConversationMessage.interview_id == body.interview_id)
-                            .order_by(ConversationMessage.sequence_number.desc())
-                        )
-                    ).scalars().first()
-                    next_seq2 = (last_adapt.sequence_number if last_adapt else 0) + 1
                     try:
-                        session.add(
-                            ConversationMessage(
-                                interview_id=body.interview_id,
-                                role=DBMessageRole.ASSISTANT,
-                                content=targeted_question,
-                                sequence_number=next_seq2,
-                            )
-                        )
-                        await session.commit()
+                        await persist_assistant_message(session, body.interview_id, targeted_question)
                     except Exception:
-                        # On conflict, rollback and retry once with refreshed sequence
-                        try:
-                            await session.rollback()
-                        except Exception:
-                            pass
-                        last_retry = (
-                            await session.execute(
-                                select(ConversationMessage)
-                                .where(ConversationMessage.interview_id == body.interview_id)
-                                .order_by(ConversationMessage.sequence_number.desc())
-                            )
-                        ).scalars().first()
-                        next_seq_retry = (last_retry.sequence_number if last_retry else 0) + 1
-                        try:
-                            session.add(
-                                ConversationMessage(
-                                    interview_id=body.interview_id,
-                                    role=DBMessageRole.ASSISTANT,
-                                    content=targeted_question,
-                                    sequence_number=next_seq_retry,
-                                )
-                            )
-                            await session.commit()
-                        except Exception:
-                            try:
-                                await session.rollback()
-                            except Exception:
-                                pass
+                        pass
                     return NextQuestionResponse(question=targeted_question, done=False, live=live)
     except Exception as e:
         # Fall back to standard question generation
@@ -910,95 +1121,12 @@ async def next_turn(body: NextTurnIn, session: AsyncSession = Depends(get_sessio
 
     # 6) Persist assistant question if any
     if result.question:
-        last2 = (
-            await session.execute(
-                select(ConversationMessage)
-                .where(ConversationMessage.interview_id == body.interview_id)
-                .order_by(ConversationMessage.sequence_number.desc())
-            )
-        ).scalars().first()
-        # Skip insert if identical assistant question was just saved
         try:
-            if last2 and getattr(last2.role, "value", str(last2.role)) == "assistant" and (last2.content or "").strip() == (result.question or "").strip():
-                pass
-            else:
-                # Check for existing message with same content (due to unique constraint)
-                existing_msg = (
-                    await session.execute(
-                        select(ConversationMessage)
-                        .where(
-                            ConversationMessage.interview_id == body.interview_id,
-                            ConversationMessage.role == DBMessageRole.ASSISTANT,
-                            ConversationMessage.content == result.question
-                        )
-                    )
-                ).scalars().first()
-                
-                if not existing_msg:
-                    # Re-fetch latest last to avoid race with parallel inserts
-                    latest_last = (
-                        await session.execute(
-                            select(ConversationMessage)
-                            .where(ConversationMessage.interview_id == body.interview_id)
-                            .order_by(ConversationMessage.sequence_number.desc())
-                        )
-                    ).scalars().first()
-                    next_seq2 = (latest_last.sequence_number if latest_last else 0) + 1
-
-                    # Double-check for sequence conflicts before inserting
-                    seq_conflict = (
-                        await session.execute(
-                            select(ConversationMessage)
-                            .where(
-                                ConversationMessage.interview_id == body.interview_id,
-                                ConversationMessage.sequence_number == next_seq2
-                            )
-                        )
-                    ).scalars().first()
-
-                    try:
-                        if not seq_conflict:
-                            session.add(
-                                ConversationMessage(
-                                    interview_id=body.interview_id,
-                                    role=DBMessageRole.ASSISTANT,
-                                    content=result.question,
-                                    sequence_number=next_seq2,
-                                )
-                            )
-                            await session.commit()
-                        else:
-                            # If conflict, retry once with refreshed sequence number
-                            await session.rollback()
-                            latest_last = (
-                                await session.execute(
-                                    select(ConversationMessage)
-                                    .where(ConversationMessage.interview_id == body.interview_id)
-                                    .order_by(ConversationMessage.sequence_number.desc())
-                                )
-                            ).scalars().first()
-                            retry_seq = (latest_last.sequence_number if latest_last else 0) + 1
-                            session.add(
-                                ConversationMessage(
-                                    interview_id=body.interview_id,
-                                    role=DBMessageRole.ASSISTANT,
-                                    content=result.question,
-                                    sequence_number=retry_seq,
-                                )
-                            )
-                            await session.commit()
-                    except Exception:
-                        # If there's still a conflict, rollback and continue
-                        try:
-                            await session.rollback()
-                        except Exception:
-                            pass
+            ok, safe_q = validate_assistant_question(result.question)
+            await persist_assistant_message(session, body.interview_id, safe_q)
+            result.question = safe_q  # type: ignore[assignment]
         except Exception:
-            # Best-effort: do not fail the turn if persistence has a conflict
-            try:
-                await session.rollback()
-            except Exception:
-                pass
+            pass
 
     return result
 

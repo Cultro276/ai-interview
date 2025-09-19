@@ -23,7 +23,15 @@ class EncryptionManager:
     
     def __init__(self, master_key: Optional[str] = None):
         # Prefer explicit arg, then env var, then app settings (which provides a stable dev default)
-        self.master_key = master_key or os.getenv("ENCRYPTION_MASTER_KEY") or settings.encryption_master_key
+        file_key = None
+        try:
+            key_path = os.getenv("ENCRYPTION_MASTER_KEY_FILE")
+            if key_path and os.path.exists(key_path):
+                with open(key_path, "r", encoding="utf-8") as f:
+                    file_key = f.read().strip()
+        except Exception:
+            file_key = None
+        self.master_key = master_key or file_key or os.getenv("ENCRYPTION_MASTER_KEY") or settings.encryption_master_key
         
         self._cipher = None
     
@@ -55,33 +63,15 @@ class EncryptionManager:
         """
         Encrypt plaintext string
         """
-        if not plaintext:
-            return plaintext
-        
-        try:
-            cipher = self._get_cipher()
-            encrypted = cipher.encrypt(plaintext.encode('utf-8'))
-            return base64.urlsafe_b64encode(encrypted).decode('utf-8')
-        except Exception as e:
-            logging.error(f"Encryption failed: {e}")
-            raise ValueError("Encryption failed")
-    
+        cipher = self._get_cipher()
+        return cipher.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
     def decrypt(self, ciphertext: str) -> str:
         """
         Decrypt ciphertext string
         """
-        if not ciphertext:
-            return ciphertext
-        
-        try:
-            cipher = self._get_cipher()
-            encrypted_data = base64.urlsafe_b64decode(ciphertext.encode('utf-8'))
-            decrypted = cipher.decrypt(encrypted_data)
-            return decrypted.decode('utf-8')
-        except Exception as e:
-            # Soft-fail: log and return original value so upstream can sanitize/fallback
-            logging.error(f"Decryption failed: {e}")
-            return ciphertext
+        cipher = self._get_cipher()
+        return cipher.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
 
 
 # Global encryption manager instance

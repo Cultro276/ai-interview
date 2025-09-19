@@ -20,10 +20,20 @@ services:
       - ./apps/api/.env
     environment:
       - OPENAI_TTS_VOICE=${OPENAI_TTS_VOICE:-coral}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-interview-api}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-development}
+      - STT_PROVIDER=${STT_PROVIDER:-auto}
+      - ENABLE_SERVERLESS_WHISPER=${ENABLE_SERVERLESS_WHISPER:-false}
+      - LOCAL_STT_QUEUE=${LOCAL_STT_QUEUE:-true}
+      - STT_QUEUE_NAME=${STT_QUEUE_NAME:-stt:jobs}
     volumes:
       - ./apps/api:/app
     depends_on:
       - postgres
+      - redis
     ports:
       - "8000:8000"
 
@@ -40,10 +50,34 @@ services:
     volumes:
       - ./apps/web:/usr/src/app
       - /usr/src/app/node_modules
-    depends_on:
-      - api
     ports:
       - "3000:3000"
+    depends_on:
+      - api
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  stt-worker:
+    build:
+      context: ./apps/api
+    command: python -m src.services.stt_worker
+    env_file:
+      - ./apps/api/.env
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - STT_PROVIDER=${STT_PROVIDER:-auto}
+      - ENABLE_SERVERLESS_WHISPER=${ENABLE_SERVERLESS_WHISPER:-false}
+      - LOCAL_STT_QUEUE=true
+      - STT_QUEUE_NAME=${STT_QUEUE_NAME:-stt:jobs}
+    depends_on:
+      - redis
 
 volumes:
   postgres_data: 
+  redis_data:

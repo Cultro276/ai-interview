@@ -228,8 +228,23 @@ class ComprehensiveAnalyzer:
             return {"problem": 0.30, "technical": 0.20, "communication": 0.25, "culture": 0.25}
         return {"problem": 0.25, "technical": 0.35, "communication": 0.20, "culture": 0.20}
 
-    def _compute_rubric(self, job_title: str, hr_data: Dict[str, Any] | None, job_fit: Dict[str, Any] | None, hiring_decision: Dict[str, Any] | None) -> Dict[str, Any]:
-        weights = self._infer_rubric_weights(job_title)
+    def _compute_rubric(
+        self,
+        job_title: str,
+        hr_data: Dict[str, Any] | None,
+        job_fit: Dict[str, Any] | None,
+        hiring_decision: Dict[str, Any] | None,
+        *,
+        weights_override: Dict[str, float] | None = None,
+    ) -> Dict[str, Any]:
+        weights = (weights_override or self._infer_rubric_weights(job_title)).copy()
+        # Normalize if override is not exactly 1.0
+        try:
+            total_w = sum(float(v) for v in weights.values()) or 1.0
+            for k in list(weights.keys()):
+                weights[k] = float(weights[k]) / total_w
+        except Exception:
+            pass
         # Map sources to rubric criteria
         # problem -> HR "Problem Çözme"
         # technical -> avg(job_fit.overall_fit_score*100, hiring_decision.skill_match.technical_fit*100)

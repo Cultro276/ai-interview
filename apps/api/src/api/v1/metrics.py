@@ -13,6 +13,7 @@ from src.db.models.candidate import Candidate
 from src.db.models.job import Job
 from src.core.s3 import upsert_lifecycle_rule
 from src.core.config import settings
+import json as _json
 
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -80,6 +81,34 @@ async def time_to_hire(job_id: int, session: AsyncSession = Depends(get_session)
             pass
     avg_s = (sum(diffs) / len(diffs)) if diffs else 0.0
     return {"job_id": job_id, "avg_completed_seconds": round(avg_s, 2)}
+
+
+@router.get("/rubric/{job_id}")
+async def rubric_breakdown(job_id: int, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+    """Return rubric weights for a job from rubric_json or inferred defaults."""
+    owner_id = get_effective_owner_id(current_user)
+    job = (
+        await session.execute(select(Job).where(Job.id == job_id, Job.user_id == owner_id))
+    ).scalar_one_or_none()
+    if not job:
+        return {"job_id": job_id, "criteria": []}
+    try:
+        if job.rubric_json:
+            cfg = _json.loads(job.rubric_json)
+            arr = cfg.get("criteria") if isinstance(cfg, dict) else []
+            if isinstance(arr, list):
+                return {"job_id": job_id, "criteria": arr}
+    except Exception:
+        pass
+    # fallback to inferred defaults
+    from src.services.comprehensive_analyzer import ComprehensiveAnalyzer
+    weights = ComprehensiveAnalyzer()._infer_rubric_weights(job.title or "")
+    return {"job_id": job_id, "criteria": [
+        {"label": "Problem Çözme", "weight": weights.get("problem", 0.25)},
+        {"label": "Teknik Yeterlilik", "weight": weights.get("technical", 0.35)},
+        {"label": "İletişim", "weight": weights.get("communication", 0.2)},
+        {"label": "Kültür/İş Uygunluğu", "weight": weights.get("culture", 0.2)},
+    ]}
 
 
 @router.post("/lifecycle/media")

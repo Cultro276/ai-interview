@@ -7,6 +7,9 @@ import httpx
 
 from src.core.config import settings
 from anyio import to_thread
+import base64
+import asyncio
+import os
 
 
 async def transcribe_with_whisper(audio_bytes: bytes, content_type: str = "audio/webm") -> str:
@@ -132,11 +135,51 @@ async def transcribe_with_azure(audio_bytes: bytes, content_type: str = "audio/w
 
 
 async def transcribe_audio_batch(audio_bytes: bytes, content_type: str = "audio/webm") -> tuple[str, str]:
-    """Use Azure batch STT only (as requested). No Whisper fallback.
+    """Provider selection with fallback chain.
+
+    Order:
+    - If STT_PROVIDER=azure → Azure
+    - If STT_PROVIDER=whisper or ENABLE_SERVERLESS_WHISPER=true → Whisper
+    - auto (default): Azure → Whisper
 
     Returns (text, provider). Empty string means provider returned nothing.
     """
+    prov = settings.stt_provider
+    # Local queue worker path: enqueue job and blockingly wait for quick result if configured
+    # This is a lightweight dev/local fallback; production should use a dedicated worker process.
+    if settings.local_stt_queue:
+        try:
+            import redis.asyncio as aioredis  # type: ignore
+            r = aioredis.from_url(settings.redis_url or "redis://localhost:6379", encoding="utf-8", decode_responses=True)
+            job_key = f"stt:job:{base64.urlsafe_b64encode(os.urandom(8)).decode('ascii')}"
+            # Store payload as hash to avoid huge messages in lists
+            await r.hset(job_key, mapping={
+                "content_type": content_type,
+                "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+            })
+            await r.rpush(settings.stt_queue_name, job_key)
+            # Wait briefly for a result (best-effort)
+            # Worker should write result to job_key:result
+            for _ in range(30):  # ~3s
+                res = await r.get(job_key + ":result")
+                if res is not None:
+                    await r.delete(job_key)
+                    return (res or "").strip(), "local-queue"
+                await asyncio.sleep(0.1)
+        except Exception:
+            pass
+    if prov == "azure":
+        text = await transcribe_with_azure(audio_bytes, content_type)
+        return (text, "azure") if text else ("", "azure")
+    if prov == "whisper" or settings.enable_serverless_whisper:
+        text = await transcribe_with_whisper(audio_bytes, content_type)
+        return (text, "whisper") if text else ("", "whisper")
+
+    # auto: try Azure then Whisper
     text = await transcribe_with_azure(audio_bytes, content_type)
     if text:
         return text, "azure"
-    return "", "azure"
+    text = await transcribe_with_whisper(audio_bytes, content_type)
+    if text:
+        return text, "whisper"
+    return "", "auto"

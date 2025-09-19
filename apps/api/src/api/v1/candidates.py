@@ -79,11 +79,63 @@ async def list_candidates(
         )
         rows: List[Candidate] = list(result.scalars().all())
     except Exception as e:
-        # Handle encryption/decryption errors gracefully
+        # Row-level fallback for legacy/plaintext records that break decryption
         import logging
         logging.error(f"Database query failed: {e}")
-        # Return empty list for now to prevent crashes
-        return []
+        try:
+            from sqlalchemy import text as _text
+            from src.core.encryption import encryption_manager
+            # Use raw SQL to fetch ciphertext and attempt best-effort decryption per row
+            raw = await session.execute(
+                _text(
+                    """
+                    SELECT DISTINCT c.id, c.user_id, c.name, c.email, c.resume_url, c.created_at
+                    FROM candidates c
+                    JOIN interviews i ON i.candidate_id = c.id
+                    JOIN jobs j ON j.id = i.job_id
+                    WHERE c.user_id = :oid AND j.user_id = :oid
+                    """
+                ),
+                {"oid": owner_id},
+            )
+            rows = []
+            for r in raw.fetchall():
+                try:
+                    name = None
+                    email = None
+                    resume_url = None
+                    try:
+                        name = encryption_manager.decrypt(r.name) if isinstance(r.name, str) else None
+                    except Exception:
+                        name = None
+                    try:
+                        email = encryption_manager.decrypt(r.email) if isinstance(r.email, str) else None
+                    except Exception:
+                        email = None
+                    try:
+                        resume_url = encryption_manager.decrypt(r.resume_url) if isinstance(r.resume_url, str) else r.resume_url
+                    except Exception:
+                        resume_url = r.resume_url
+                    # Build a lightweight Candidate-like object
+                    c = Candidate(
+                        id=r.id,  # type: ignore[arg-type]
+                        user_id=r.user_id,  # type: ignore[arg-type]
+                        name=name or "Aday",
+                        email=(email or f"geçersiz+{r.id}@example.com"),
+                        resume_url=resume_url,
+                    )
+                    # Attach created_at if present
+                    try:
+                        setattr(c, "created_at", r.created_at)
+                    except Exception:
+                        pass
+                    rows.append(c)
+                except Exception:
+                    # Skip badly corrupted row
+                    continue
+        except Exception:
+            # As a last resort, return empty list
+            return []
     # Sanitize potentially invalid emails to avoid 500 due to response model validation
     safe_list: List[CandidateRead] = []
     for cand in rows:
@@ -353,8 +405,13 @@ async def delete_candidate(
     cand = (await session.execute(select(Candidate).where(Candidate.id == cand_id, Candidate.user_id == owner_id))).scalar_one_or_none()
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    await session.delete(cand)
-    await session.commit() 
+    try:
+        # Delete candidate and cascade interviews/conversations via FK ondelete=CASCADE
+        await session.delete(cand)
+        await session.commit()
+    except Exception as e:
+        # Return a clearer message for UI when deletion fails (e.g., DB constraints)
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
 
 
 # --- Parse/Backfill resume text for existing candidate ---

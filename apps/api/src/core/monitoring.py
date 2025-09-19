@@ -1,3 +1,106 @@
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+import importlib
+import os
+
+from src.core.config import settings
+
+
+def setup_opentelemetry() -> None:
+    """Initialize OpenTelemetry SDK with OTLP exporter if configured.
+
+    Controlled by env:
+    - OTEL_EXPORTER_OTLP_ENDPOINT (e.g., http://otel-collector:4317)
+    - OTEL_SERVICE_NAME (defaults to interview-api)
+    """
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return
+    try:
+        trace = importlib.import_module("opentelemetry.trace")
+        resources_mod = importlib.import_module("opentelemetry.sdk.resources")
+        sdk_trace = importlib.import_module("opentelemetry.sdk.trace")
+        sdk_export = importlib.import_module("opentelemetry.sdk.trace.export")
+        otlp_export = importlib.import_module("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
+
+        SERVICE_NAME = getattr(resources_mod, "SERVICE_NAME")
+        Resource = getattr(resources_mod, "Resource")
+        TracerProvider = getattr(sdk_trace, "TracerProvider")
+        BatchSpanProcessor = getattr(sdk_export, "BatchSpanProcessor")
+        OTLPSpanExporter = getattr(otlp_export, "OTLPSpanExporter")
+
+        service_name = os.getenv("OTEL_SERVICE_NAME", "interview-api")
+        resource = Resource.create({SERVICE_NAME: service_name})
+        provider = TracerProvider(resource=resource)
+        # set_tracer_provider is located in opentelemetry.trace API
+        getattr(trace, "set_tracer_provider")(provider)
+        span_exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+        span_processor = BatchSpanProcessor(span_exporter)
+        provider.add_span_processor(span_processor)
+    except Exception:
+        return
+
+
+def instrument_frameworks(app) -> None:
+    """Instrument FastAPI/HTTPX/SQLAlchemy/Redis if OTel is enabled."""
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return
+    try:
+        fastapi_inst = importlib.import_module("opentelemetry.instrumentation.fastapi")
+        starlette_inst = importlib.import_module("opentelemetry.instrumentation.starlette")
+        httpx_inst = importlib.import_module("opentelemetry.instrumentation.httpx")
+        sa_inst = importlib.import_module("opentelemetry.instrumentation.sqlalchemy")
+        redis_inst = importlib.import_module("opentelemetry.instrumentation.redis")
+        from src.db.session import engine
+
+        fastapi_inst.FastAPIInstrumentor().instrument_app(app)
+        starlette_inst.StarletteInstrumentor().instrument()
+        httpx_inst.HTTPXClientInstrumentor().instrument()
+        try:
+            sa_inst.SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+        except Exception:
+            sa_inst.SQLAlchemyInstrumentor().instrument()
+        redis_inst.RedisInstrumentor().instrument()
+    except Exception:
+        return
+
+
+def setup_sentry() -> None:
+    """Initialize Sentry if SENTRY_DSN is provided.
+
+    Env:
+    - SENTRY_DSN
+    - SENTRY_ENVIRONMENT (defaults to settings.environment)
+    - SENTRY_TRACES_SAMPLE_RATE (defaults to 0.1)
+    - SENTRY_PROFILES_SAMPLE_RATE (defaults to 0.1)
+    """
+    dsn = os.getenv("SENTRY_DSN", "").strip()
+    if not dsn:
+        return
+    try:
+        import sentry_sdk  # type: ignore
+        env = os.getenv("SENTRY_ENVIRONMENT", settings.environment)
+        try:
+            traces_rate = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+        except Exception:
+            traces_rate = 0.1
+        try:
+            profiles_rate = float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.1"))
+        except Exception:
+            profiles_rate = 0.1
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=env,
+            traces_sample_rate=traces_rate,
+            profiles_sample_rate=profiles_rate,
+        )
+    except Exception:
+        return
+
 """
 Interview System Monitoring
 Tracks LLM usage, performance, and system health

@@ -18,7 +18,7 @@ interface UserProfile {
 interface AuthContextValue {
   token: string | null;
   user: UserProfile | null;
-  login: (token: string) => void;
+  login: (token: string, remember?: boolean) => void;
   logout: () => void;
 }
 
@@ -29,9 +29,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const router = useRouter();
 
+  // Helper to read token from sessionStorage first (if not remembered), then localStorage
+  const readStoredToken = (): string | null => {
+    try {
+      const sess = typeof window !== "undefined" ? sessionStorage.getItem("token") : null;
+      if (sess) return sess;
+    } catch {}
+    try {
+      return typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    } catch {}
+    return null;
+  };
+
   // On first mount, check if a JWT is stored and still valid
   useEffect(() => {
-    const stored = localStorage.getItem("token");
+    const stored = readStoredToken();
     if (!stored) return; // nothing to verify
 
     // Simply trust the stored token (will be validated on first API call)
@@ -52,8 +64,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
-  const login = (t: string) => {
-    localStorage.setItem("token", t);
+  const login = (t: string, remember: boolean = true) => {
+    // Persist to chosen storage
+    try {
+      // Clear both first to avoid ambiguity
+      localStorage.removeItem("token");
+      sessionStorage.removeItem("token");
+    } catch {}
+    try {
+      if (remember) {
+        localStorage.setItem("token", t);
+      } else {
+        sessionStorage.setItem("token", t);
+      }
+    } catch {}
     try { sessionStorage.removeItem("dashboardData"); } catch {}
     setToken(t);
     // Load profile then route
@@ -63,7 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   };
   const logout = () => {
-    localStorage.removeItem("token");
+    try { localStorage.removeItem("token"); } catch {}
+    try { sessionStorage.removeItem("token"); } catch {}
     try { sessionStorage.removeItem("dashboardData"); } catch {}
     setToken(null);
     setUser(null);

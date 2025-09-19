@@ -2,39 +2,10 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import type { Candidate, Job, Interview } from "@/types/api";
+import { useQuery } from "@tanstack/react-query";
+import { useDashboardStore } from "@/lib/hooks/useDashboardStore";
 
-interface Job {
-  id: number;
-  title: string;
-  description: string;
-  created_at: string;
-}
-
-interface Candidate {
-  id: number;
-  name: string;
-  email: string;
-  phone?: string;
-  linkedin_url?: string;
-  resume_url?: string;
-  job_id?: number;
-  token: string;
-  expires_at: string;
-  created_at: string;
-}
-
-interface Interview {
-  id: number;
-  job_id: number;
-  candidate_id: number;
-  status: string;
-  created_at: string;
-  completed_at?: string;
-  audio_url?: string;
-  video_url?: string;
-  candidate?: Candidate;
-  job?: Job;
-}
 
 interface DashboardContextType {
   candidates: Candidate[];
@@ -55,12 +26,53 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [dataLoaded, setDataLoaded] = useState(false);
   const { user, token } = useAuth();
 
+  // Zustand store setters for hydration (avoid Context-driven re-renders in consumers)
+  const setStoreCandidates = useDashboardStore(s => s.setCandidates);
+  const setStoreJobs = useDashboardStore(s => s.setJobs);
+  const setStoreInterviews = useDashboardStore(s => s.setInterviews);
+  const setStoreLoading = useDashboardStore(s => s.setLoading);
+  const setStoreDataLoaded = useDashboardStore(s => s.setDataLoaded);
+  const resetStore = useDashboardStore(s => s.reset);
+
   const cacheKey = typeof window !== 'undefined' && user ? `dashboardData:${user.id}` : null;
   const notifiedKey = typeof window !== 'undefined' && user ? `notifiedAnalyses:${user.id}` : null;
   const viewedKey = typeof window !== 'undefined' && user ? `viewedAnalyses:${user.id}` : null;
   const notifiedRef = useRef<Set<number>>(new Set());
   const viewedRef = useRef<Set<number>>(new Set());
   const [notificationStateLoaded, setNotificationStateLoaded] = useState(false);
+
+  const canLoad = typeof window !== 'undefined' ? Boolean(localStorage.getItem('token')) : false;
+
+  const {
+    data: candData,
+    isFetching: fetchingCand,
+    refetch: refetchCandidates,
+  } = useQuery({
+    queryKey: ["candidates"],
+    queryFn: () => apiFetch<Candidate[]>("/api/v1/candidates/"),
+    enabled: false,
+    staleTime: 30_000,
+  });
+  const {
+    data: jobsData,
+    isFetching: fetchingJobs,
+    refetch: refetchJobs,
+  } = useQuery({
+    queryKey: ["jobs"],
+    queryFn: () => apiFetch<Job[]>("/api/v1/jobs/"),
+    enabled: false,
+    staleTime: 30_000,
+  });
+  const {
+    data: ivData,
+    isFetching: fetchingIv,
+    refetch: refetchInterviews,
+  } = useQuery({
+    queryKey: ["interviews"],
+    queryFn: () => apiFetch<Interview[]>("/api/v1/interviews/"),
+    enabled: false,
+    staleTime: 30_000,
+  });
 
   const loadData = async () => {
     try {
@@ -70,35 +82,28 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         console.warn("No authentication token found - skipping API calls");
         setDataLoaded(true);
         setLoading(false);
+        setStoreDataLoaded(true);
+        setStoreLoading(false);
         return;
       }
-      
-      console.log("Loading dashboard data with token:", token.substring(0, 10) + "...");
-      
-      const [candidatesRes, jobsRes, interviewsRes] = await Promise.allSettled([
-        apiFetch<Candidate[]>("/api/v1/candidates/"),
-        apiFetch<Job[]>("/api/v1/jobs/"),
-        apiFetch<Interview[]>("/api/v1/interviews/"),
+      // Use React Query to fetch fresh data
+      const [rc, rj, ri] = await Promise.allSettled([
+        refetchCandidates(),
+        refetchJobs(),
+        refetchInterviews(),
       ]);
 
-      // Enhanced error handling for debugging
-      if (candidatesRes.status === "rejected") {
-        console.error("Failed to load candidates:", candidatesRes.reason);
-      }
-      if (jobsRes.status === "rejected") {
-        console.error("Failed to load jobs:", jobsRes.reason);
-      }
-      if (interviewsRes.status === "rejected") {
-        console.error("Failed to load interviews:", interviewsRes.reason);
-      }
-
-      const nextCandidates = candidatesRes.status === "fulfilled" ? (candidatesRes.value || []) : [];
-      const nextJobs = jobsRes.status === "fulfilled" ? (jobsRes.value || []) : [];
-      const nextInterviews = interviewsRes.status === "fulfilled" ? (interviewsRes.value || []) : [];
+      const nextCandidates = rc.status === "fulfilled" ? (rc.value.data || []) : (candData || []);
+      const nextJobs = rj.status === "fulfilled" ? (rj.value.data || []) : (jobsData || []);
+      const nextInterviews = ri.status === "fulfilled" ? (ri.value.data || []) : (ivData || []);
 
       setCandidates(nextCandidates);
       setJobs(nextJobs);
       setInterviews(nextInterviews);
+      // Hydrate Zustand store (single state source for consumers)
+      setStoreCandidates(nextCandidates);
+      setStoreJobs(nextJobs);
+      setStoreInterviews(nextInterviews);
 
       // Save per-user backup cache
       if (typeof window !== 'undefined' && cacheKey) {
@@ -110,6 +115,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
 
       setDataLoaded(true);
+      setStoreDataLoaded(true);
     } catch (error) {
       console.error("Failed to load data:", error);
 
@@ -122,6 +128,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             setCandidates(savedCandidates || []);
             setJobs(savedJobs || []);
             setInterviews(savedInterviews || []);
+            setStoreCandidates(savedCandidates || []);
+            setStoreJobs(savedJobs || []);
+            setStoreInterviews(savedInterviews || []);
           } catch (e) {
             // ignore JSON parse error
           }
@@ -129,8 +138,10 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
 
       setDataLoaded(true);
+      setStoreDataLoaded(true);
     } finally {
       setLoading(false);
+      setStoreLoading(false);
     }
   };
 
@@ -142,13 +153,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!dataLoaded) {
       // If no token, don't attempt initial load
-      if (typeof window !== 'undefined') {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          setDataLoaded(true);
-          setLoading(false);
-          return;
-        }
+      if (!canLoad) {
+        setDataLoaded(true);
+        setLoading(false);
+        setStoreDataLoaded(true);
+        setStoreLoading(false);
+        return;
       }
       // Try to load from session storage first
       if (typeof window !== 'undefined' && cacheKey) {
@@ -159,22 +169,26 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             setCandidates(savedCandidates || []);
             setJobs(savedJobs || []);
             setInterviews(savedInterviews || []);
+            setStoreCandidates(savedCandidates || []);
+            setStoreJobs(savedJobs || []);
+            setStoreInterviews(savedInterviews || []);
             // Do not return early; kick off a background refresh to avoid stale cache
             setDataLoaded(true);
             setLoading(false);
+            setStoreDataLoaded(true);
+            setStoreLoading(false);
             // Reconcile with server in background
             loadData();
             return;
           } catch (e) {
-            //
+            // ignore
           }
         }
       }
-      
-      // If no saved data, load from API
+      // If no saved data, load from API via React Query
       loadData();
     }
-  }, [dataLoaded, cacheKey]);
+  }, [dataLoaded, cacheKey, canLoad]);
 
   // On user or token change, reset data to avoid cross-tenant leakage
   useEffect(() => {
@@ -186,6 +200,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     setJobs([]);
     setInterviews([]);
     setDataLoaded(false);
+    resetStore();
   }, [user?.id, token]);
 
   // Load previously notified/viewed analysis ids (persist across sessions using localStorage)

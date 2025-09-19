@@ -7,7 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 import hashlib
 import secrets
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import re
 from pydantic import BaseModel
 
@@ -26,7 +26,7 @@ class SecurityHeaders(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data: blob: https:; "
-            "connect-src 'self' https://api.openai.com https://generativelanguage.googleapis.com; "
+            "connect-src 'self' http://localhost:3000 http://127.0.0.1:3000 https://api.openai.com https://generativelanguage.googleapis.com ws: wss:; "
             "media-src 'self' blob:; "
             "frame-ancestors 'none'; "
             "base-uri 'self'"
@@ -43,13 +43,25 @@ class SecurityHeaders(BaseHTTPMiddleware):
             "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
             "Content-Security-Policy": self.csp_policy,
             "Referrer-Policy": "strict-origin-when-cross-origin",
-            "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+            # Permissions-Policy only for HTML to avoid impacting API/SSE/WebSocket
+            # Will be conditionally applied below based on content type
             "X-Permitted-Cross-Domain-Policies": "none",
             "X-Download-Options": "noopen"
         }
         
         for header, value in security_headers.items():
             response.headers[header] = value
+        try:
+            ct = (response.headers.get("content-type") or "").lower()
+            if ct.startswith("text/html"):
+                response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+            else:
+                # Ensure it's absent for JSON/SSE/etc.
+                if "Permissions-Policy" in response.headers:
+                    del response.headers["Permissions-Policy"]
+        except Exception:
+            # Best-effort only
+            pass
         
         # Remove server information leakage
         if "server" in response.headers:
@@ -277,6 +289,42 @@ class RateLimitStore:
         
         self._last_cleanup = now
 
+    async def is_allowed_async(self, key: str, limit: int, window: int) -> bool:
+        # Synchronous in-memory path wrapped for async interface
+        return self.is_allowed(key, limit, window)
+
+
+class RedisRateLimitStore:
+    """
+    Redis-backed rate limiting store (fixed window).
+    Uses one key per (client,path,bucket) with EXPIRE.
+    """
+    def __init__(self, redis_url: str):
+        try:
+            import redis.asyncio as aioredis  # type: ignore
+        except Exception as e:
+            raise RuntimeError("redis-py not installed") from e
+        self._aioredis = aioredis
+        self._client = aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+    
+    @staticmethod
+    def _bucket_key(base_key: str, window: int) -> str:
+        now = int(time.time())
+        bucket = now // max(1, window)
+        return f"rl:{base_key}:{bucket}"
+    
+    async def is_allowed_async(self, key: str, limit: int, window: int) -> bool:
+        k = self._bucket_key(key, window)
+        try:
+            # INCR and set expiry if newly created
+            val = await self._client.incr(k)
+            if val == 1:
+                await self._client.expire(k, window)
+            return val <= limit
+        except Exception:
+            # On Redis failure, fail-open to avoid blocking traffic
+            return True
+
 
 class EnterpriseRateLimiter(BaseHTTPMiddleware):
     """
@@ -285,32 +333,60 @@ class EnterpriseRateLimiter(BaseHTTPMiddleware):
     
     def __init__(self, app, default_limit: int = 100, default_window: int = 3600):
         super().__init__(app)
-        self.store = RateLimitStore()
+        # Prefer Redis store if configured
+        self.store: Any
+        try:
+            from src.core.config import settings
+            if settings.redis_url:
+                self.store = RedisRateLimitStore(settings.redis_url)
+            else:
+                self.store = RateLimitStore()
+        except Exception:
+            self.store = RateLimitStore()
         self.default_limit = default_limit
         self.default_window = default_window
         
-        # Different limits for different endpoints
-        self.endpoint_limits = {
-            "/api/v1/auth/login": (10, 300),  # 10 attempts per 5 minutes (increased)
-            "/api/v1/auth/register": (5, 3600),  # 5 per hour (increased)
-            "/api/v1/interviews/": (100, 300),  # 100 per 5 minutes (much more for dashboard)
-            "/api/v1/candidates/": (100, 300),  # 100 per 5 minutes for dashboard
-            "/api/v1/jobs/": (100, 300),  # 100 per 5 minutes for dashboard
-        }
+        # Prefix-based limits (path startswith). Order matters: first match wins.
+        # Tuples: (prefix, (limit, window_seconds))
+        self.endpoint_limits: list[tuple[str, tuple[int, int]]] = [
+            ("/api/v1/auth/login", (10, 300)),
+            ("/api/v1/auth/register", (5, 3600)),
+            ("/api/v1/realtime/ephemeral", (30, 300)),
+            ("/api/v1/realtime/interview/stream", (60, 60)),  # SSE requests
+            ("/api/v1/realtime/interview/subscribe", (120, 60)),  # fanout subscribers
+            ("/api/v1/stt/stream", (120, 60)),
+            ("/api/v1/conversations/messages-public", (10, 10)),  # public candidate posts
+            ("/api/v1/interviews/", (100, 300)),
+            ("/api/v1/candidates/", (100, 300)),
+            ("/api/v1/jobs/", (100, 300)),
+        ]
     
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Get client IP
         client_ip = self._get_client_ip(request)
         
-        # Get rate limit for this endpoint
+        # Get rate limit for this endpoint (first prefix match)
         path = request.url.path
-        limit, window = self.endpoint_limits.get(path, (self.default_limit, self.default_window))
+        limit, window = (self.default_limit, self.default_window)
+        try:
+            for prefix, lw in self.endpoint_limits:
+                if path.startswith(prefix):
+                    limit, window = lw
+                    break
+        except Exception:
+            pass
         
         # Create rate limit key
         rate_key = f"{client_ip}:{path}"
         
         # Check rate limit
-        if not self.store.is_allowed(rate_key, limit, window):
+        is_allowed = True
+        try:
+            # Async interface (works for both Redis and in-memory)
+            is_allowed = await self.store.is_allowed_async(rate_key, limit, window)
+        except Exception:
+            is_allowed = True
+        if not is_allowed:
             # Minimal security logging for rate limit events
             try:
                 SecurityAuditLogger.log_security_event(

@@ -23,7 +23,7 @@ from src.services.reporting import InterviewReportGenerator, export_to_markdown,
 from src.core.metrics import collector, Timer
 from src.core.mail import send_email_resend
 from fastapi import Request
-from slowapi import Limiter
+from src.services.conversations_service import ConversationsService
 from src.core.config import settings
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
@@ -76,126 +76,15 @@ async def create_message_public(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    # Simple IP/token rate-limit: 10 requests per 10 seconds
-    try:
-        from fastapi import Request as _FReq
-        req: _FReq = request  # type: ignore[assignment]
-        limiter: Limiter = req.app.state.limiter  # type: ignore[attr-defined]
-        await limiter.limit("10/10seconds")(lambda: None)(req)
-    except Exception:
-        pass
-    # Verify candidate token is valid and belongs to the interview's candidate
-    cand = (
-        await session.execute(select(Candidate).where(Candidate.token == message_in.token))
-    ).scalar_one_or_none()
-    now_utc = datetime.now(timezone.utc)
-    # Guard against None expires_at to satisfy static type checking and runtime safety
-    if not cand or (cand.expires_at is None) or (cand.expires_at <= now_utc):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired token")
-    # Block public messages if any interview for candidate is already completed
-    from src.db.models.interview import Interview
-    from sqlalchemy import select as _select
-    completed = (
-        await session.execute(
-            _select(Interview).where(Interview.candidate_id == cand.id, Interview.status == "completed")
-        )
-    ).first()
-    if completed is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Interview already completed")
-
-    interview = (
-        await session.execute(select(Interview).where(Interview.id == message_in.interview_id))
-    ).scalar_one_or_none()
-    if not interview or interview.candidate_id != cand.id:
-        raise HTTPException(status_code=404, detail="Interview not found")
-
-    # Deduplicate by (interview_id, sequence_number) to avoid StrictMode double posts
-    existing = (
-        await session.execute(
-            select(ConversationMessage)
-            .where(
-                ConversationMessage.interview_id == message_in.interview_id,
-                ConversationMessage.sequence_number == message_in.sequence_number,
-            )
-        )
-    ).scalars().first()
-    if existing:
-        return existing
-
-    # Prevent duplicate consecutive assistant questions in case of front-end replays
-    try:
-        from sqlalchemy import desc as _desc
-        last = (
-            await session.execute(
-                select(ConversationMessage)
-                .where(ConversationMessage.interview_id == message_in.interview_id)
-                .order_by(ConversationMessage.sequence_number.desc())
-            )
-        ).scalars().first()
-        # Compare enum value to incoming string to avoid false mismatches
-        if last and getattr(last.role, "value", str(last.role)) == message_in.role and last.content.strip() == message_in.content.strip():
-            return last
-    except Exception:
-        pass
-
-    payload = {
-        "interview_id": message_in.interview_id,
-        "role": message_in.role,
-        "content": (message_in.content or "").strip(),
-        "sequence_number": message_in.sequence_number,
-    }
-    # Drop empty user messages (often STT artifacts like "..."), but keep assistant/system
-    from src.db.models.conversation import MessageRole as _Role
-    try:
-        if payload["role"] == _Role.USER.value and len(payload["content"]) < 2:
-            # Return a synthetic no-op response to keep client stable
-            return ConversationMessage(
-                id=0,
-                interview_id=message_in.interview_id,
-                role=_Role.USER,
-                content="",
-                timestamp=None,  # type: ignore[arg-type]
-                sequence_number=message_in.sequence_number,
-            )
-    except Exception:
-        pass
-    message = ConversationMessage(**payload)
-    session.add(message)
-    try:
-        await session.commit()
-        await session.refresh(message)
-        return message
-    except IntegrityError:
-        # Dedup both by (interview_id, sequence_number) and (interview_id, content, assistant-role)
-        await session.rollback()
-        existing_after = (
-            await session.execute(
-                select(ConversationMessage)
-                .where(
-                    ConversationMessage.interview_id == message_in.interview_id,
-                    ConversationMessage.sequence_number == message_in.sequence_number,
-                )
-            )
-        ).scalars().first()
-        if existing_after:
-            return existing_after
-        # Assistant content unique check (partial index path)
-        try:
-            if payload["role"] == ConversationMessage.role.type.python_type.ASSISTANT:  # type: ignore[attr-defined]
-                dup = (
-                    await session.execute(
-                        select(ConversationMessage)
-                        .where(
-                            ConversationMessage.interview_id == message_in.interview_id,
-                            ConversationMessage.content == payload["content"],
-                        )
-                    )
-                ).scalars().first()
-                if dup:
-                    return dup
-        except Exception:
-            pass
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate message")
+    # Rate limiting handled by EnterpriseRateLimiter middleware (prefix-based)
+    svc = ConversationsService(session)
+    return await svc.create_public_message(
+        interview_id=message_in.interview_id,
+        token=message_in.token,
+        role=message_in.role,
+        content=message_in.content or "",
+        sequence_number=message_in.sequence_number,
+    )
 
 
 @router.get("/messages/{interview_id}", response_model=List[ConversationMessageRead])
@@ -430,6 +319,78 @@ async def create_google_calendar_event(
     if not cred or not cred.access_token:
         raise HTTPException(status_code=400, detail="Google OAuth yetkilendirmesi gerekli")
     # Create skeleton response; actual creation is appended later toward file end to avoid patch ordering issues
+    return {"ok": True}
+
+# ---- Simple final interview mail: draft + send ----
+
+class FinalEmailDraft(BaseModel):
+    subject: str
+    body: str
+
+
+@router.post("/analysis/{interview_id}/final-email-draft", response_model=FinalEmailDraft)
+async def final_email_draft(
+    interview_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    iv = (
+        await session.execute(
+            select(Interview).join(Job, Interview.job_id == Job.id).where(Interview.id == interview_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    job = (await session.execute(select(Job).where(Job.id == iv.job_id))).scalar_one_or_none()
+    cand = (await session.execute(select(Candidate).where(Candidate.id == iv.candidate_id))).scalar_one_or_none()
+    company = None
+    try:
+        owner = (await session.execute(select(User).where(User.id == job.user_id))).scalar_one_or_none() if job else None
+        company = getattr(owner, "company_name", None)
+    except Exception:
+        company = None
+    # Try to personalize from analysis summary
+    ana = (await session.execute(select(InterviewAnalysis).where(InterviewAnalysis.interview_id == interview_id))).scalar_one_or_none()
+    summary = getattr(ana, "summary", None) if ana else None
+    subject = f"{company or 'Şirketimiz'} - Son Görüşme Daveti"
+    body = (
+        f"Merhaba {getattr(cand, 'name', 'Aday')},\n\n"
+        f"{company or 'Şirketimiz'} olarak sizinle bir son görüşme yapmak istiyoruz. "
+        f"Görüşmede ekibimizle tanışacak ve süreçle ilgili detayları konuşacağız.\n\n"
+        + (f"Ön değerlendirme özeti: {summary}\n\n" if summary else "")
+        + "Uygun olduğunuz zaman aralığını paylaşabilir misiniz? Yanıtınıza göre davet bağlantısını ileteceğiz.\n\n"
+          "Saygılarımızla,\nİK Ekibi"
+    )
+    return FinalEmailDraft(subject=subject, body=body)
+
+
+class FinalEmailSendIn(BaseModel):
+    subject: str
+    body: str
+
+
+@router.post("/analysis/{interview_id}/final-email-send")
+async def final_email_send(
+    interview_id: int,
+    payload: FinalEmailSendIn,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(current_active_user),
+):
+    ensure_permission(current_user, view_interviews=True)
+    owner_id = get_effective_owner_id(current_user)
+    iv = (
+        await session.execute(
+            select(Interview).join(Job, Interview.job_id == Job.id).where(Interview.id == interview_id, Job.user_id == owner_id)
+        )
+    ).scalar_one_or_none()
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    cand = (await session.execute(select(Candidate).where(Candidate.id == iv.candidate_id))).scalar_one_or_none()
+    if not cand or not getattr(cand, "email", None):
+        raise HTTPException(status_code=400, detail="Candidate email unavailable")
+    await send_email_resend(getattr(cand, "email"), payload.subject, payload.body)
     return {"ok": True}
 
 # ---- Final Interview Availability Flow ----
@@ -1137,12 +1098,44 @@ async def get_comprehensive_report(
         
         cand = await session.execute(select(Candidate).where(Candidate.id == interview.candidate_id))
         cand = cand.scalar_one_or_none()
+        # Enrich with profile-derived fields when possible
+        exp_level = "Unknown"
+        edu_level = "Unknown"
+        try:
+            from src.db.models.candidate_profile import CandidateProfile as _CandProf
+            prof = (
+                await session.execute(select(_CandProf).where(_CandProf.candidate_id == getattr(cand, "id", 0)))
+            ).scalar_one_or_none() if cand else None
+            if prof:
+                # Try parsed_json first
+                import json as _json
+                try:
+                    if prof.parsed_json:
+                        pj = _json.loads(prof.parsed_json)
+                        exp_level = str(pj.get("experience_level", exp_level)) if isinstance(pj, dict) else exp_level
+                        edu_level = str(pj.get("education_level", edu_level)) if isinstance(pj, dict) else edu_level
+                except Exception:
+                    pass
+                # If still unknown, heuristically extract from resume_text
+                if (exp_level == "Unknown" or edu_level == "Unknown") and prof.resume_text:
+                    try:
+                        from src.services.nlp import extract_cv_facts as _extract_cv_facts
+                        facts = await _extract_cv_facts(prof.resume_text)
+                        if isinstance(facts, dict):
+                            exp_level = str(facts.get("experience_level", exp_level))
+                            edu_level = str(facts.get("education_level", edu_level))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         
         interview_data = {
             "id": interview_id,
             "candidate_name": getattr(cand, "name", "Unknown") if cand else "Unknown",
             "job_title": getattr(job, "title", "Unknown") if job else "Unknown",
-            "created_at": interview.created_at.isoformat() if interview.created_at else ""
+            "created_at": interview.created_at.isoformat() if interview.created_at else "",
+            "experience_level": exp_level,
+            "education_level": edu_level,
         }
         
         # Generate comprehensive report
@@ -1354,12 +1347,13 @@ async def oauth_zoom_authorize(current_user: User = Depends(current_active_user)
         "https://zoom.us/oauth/authorize"
         f"?response_type=code&client_id={settings.zoom_client_id}"
         f"&redirect_uri={settings.zoom_redirect_uri}"
+        f"&state={current_user.id}"
     )
     return {"url": url}
 
 
 @router.get("/oauth/zoom/callback")
-async def oauth_zoom_callback(code: str, session: AsyncSession = Depends(get_session), current_user: User = Depends(current_active_user)):
+async def oauth_zoom_callback(code: str, state: str | None = None, session: AsyncSession = Depends(get_session)):
     if not (settings.zoom_client_id and settings.zoom_client_secret and settings.zoom_redirect_uri):
         raise HTTPException(status_code=400, detail="Zoom OAuth yapılandırması eksik")
     basic = httpx.BasicAuth(settings.zoom_client_id, settings.zoom_client_secret)
@@ -1379,11 +1373,29 @@ async def oauth_zoom_callback(code: str, session: AsyncSession = Depends(get_ses
     refresh = tok.get("refresh_token")
     expires_in = int(tok.get("expires_in", 3600))
     exp_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, expires_in - 60))
+    # Resolve user from state (user_id sent in authorize step)
+    user_id_for_token: int | None = None
+    try:
+        if state:
+            user_id_for_token = int(str(state).split(":")[0])
+    except Exception:
+        user_id_for_token = None
+    if not user_id_for_token:
+        # Fallback: choose the first admin/owner user
+        try:
+            from src.db.models.user import User as _User
+            u = (await session.execute(select(_User).order_by(_User.id.asc()))).scalars().first()
+            user_id_for_token = getattr(u, "id", None)
+        except Exception:
+            user_id_for_token = None
+    if not user_id_for_token:
+        raise HTTPException(status_code=400, detail="Kullanıcı belirlenemedi (state)")
+
     cred = (
-        await session.execute(select(OAuthCredential).where(OAuthCredential.user_id == current_user.id, OAuthCredential.provider == "zoom"))
+        await session.execute(select(OAuthCredential).where(OAuthCredential.user_id == user_id_for_token, OAuthCredential.provider == "zoom"))
     ).scalar_one_or_none()
     if not cred:
-        cred = OAuthCredential(user_id=current_user.id, provider="zoom", access_token=access, refresh_token=refresh, expires_at=exp_at)
+        cred = OAuthCredential(user_id=user_id_for_token, provider="zoom", access_token=access, refresh_token=refresh, expires_at=exp_at)
     else:
         cred.access_token = access or cred.access_token
         if refresh:

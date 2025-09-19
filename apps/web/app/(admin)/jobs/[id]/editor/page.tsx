@@ -12,6 +12,7 @@ export default function JobEditorPage(){
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [rubricItems, setRubricItems] = useState<Array<{ label: string; weight: number }>>([]);
+  const [rubricInfo, setRubricInfo] = useState<Array<{ label: string; weight: number }>>([]);
 
   useEffect(()=>{
     let mounted = true;
@@ -30,6 +31,10 @@ export default function JobEditorPage(){
             setRubricItems(arr.map((c:any)=> ({ label: String(c.label||""), weight: Number(c.weight)||0 })));
           } catch { setRubricItems([]); }
         }
+        try{
+          const rub = await apiFetch<any>(`/api/v1/metrics/rubric/${jobId}`);
+          if (Array.isArray(rub?.criteria)) setRubricInfo(rub.criteria);
+        }catch{}
       } catch (e:any) {
         setError(e.message || "Load failed");
       } finally {
@@ -59,6 +64,9 @@ export default function JobEditorPage(){
             <Label className="block text-sm font-medium text-gray-700">Rubrik (toplam=1.0)</Label>
             <span className="text-xs text-gray-500">Toplam: {total.toFixed(2)}</span>
           </div>
+          {rubricInfo.length > 0 && (
+            <div className="text-xs text-gray-500 mb-2">Mevcut ağırlıklar: {rubricInfo.map(r=> `${r.label}: ${Number(r.weight).toFixed(2)}`).join(" · ")}</div>
+          )}
           <div className="space-y-2">
             {rubricItems.map((it, idx)=> (
               <div key={idx} className="grid grid-cols-5 gap-2 items-center">

@@ -1,3 +1,8 @@
+### Architecture Decisions (Summary)
+
+- Centralized rate limiting and CORS; CSP updated for WS/SSE.
+- Service + repository layers introduced for conversations.
+- Frontend config centralized; React Query for dashboard data.
 # Premium Interview System - Usage Guide
 
 ## 🎯 Overview

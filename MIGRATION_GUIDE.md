@@ -1,3 +1,17 @@
+## Observability
+
+- OpenTelemetry: Set `OTEL_EXPORTER_OTLP_ENDPOINT` (e.g., `http://otel-collector:4318`) and `OTEL_SERVICE_NAME=interview-api`.
+- Prometheus: `/metrics` endpoint mevcut. Grafana için Prometheus datasource ekleyin ve dashboard’u bağlayın.
+  - Örnek `docker-compose` servisi (ops):
+    - Prometheus config’de target: `api:8000` path `/metrics`
+    - Grafana: Prometheus datasource `http://prometheus:9090`
+
+## ADR (Architecture Decisions)
+
+- Rate limiting tek `EnterpriseRateLimiter` ile. Redis URL `REDIS_URL`.
+- CORS sadece `CORSMiddleware`. Ek origin’ler `ALLOWED_ORIGINS` virgül ile ayrılmış.
+- CSP `connect-src` içine `ws:`/`wss:` dahil.
+- Realtime: WebRTC anahtarları backend `/api/v1/realtime/ephemeral`.
 # Mülakat Sistemi Refactoring - Migration Guide
 
 ## Özet

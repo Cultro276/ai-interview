@@ -18,7 +18,9 @@ class InterviewReportGenerator:
             "executive_summary": self._executive_summary_template,
             "detailed_technical": self._detailed_technical_template,
             "behavioral_focus": self._behavioral_focus_template,
-            "hiring_decision": self._hiring_decision_template
+            "hiring_decision": self._hiring_decision_template,
+            # Turkish HR detailed structure per product spec
+            "turkish_hr": self._turkish_hr_template,
         }
     
     def generate_comprehensive_report(self, 
@@ -51,6 +53,108 @@ class InterviewReportGenerator:
         }
         
         return report
+
+    def _turkish_hr_template(self, interview_data: Dict, analysis: Dict) -> Dict[str, Any]:
+        """Detailed Turkish HR report matching requested headings"""
+        # Gather inputs
+        job_fit = analysis.get("job_fit", {})
+        ai_opinion = analysis.get("ai_opinion", {})
+        multipass = analysis.get("multipass_analysis", {})
+        hr_criteria = analysis.get("hr_criteria", {})
+
+        overall_score_0_100 = None
+        try:
+            meta = analysis.get("meta", {})
+            ov = meta.get("overall_score")
+            if isinstance(ov, (int, float)):
+                overall_score_0_100 = round(float(ov), 2)
+        except Exception:
+            overall_score_0_100 = None
+
+        # Summaries
+        intro_summary = (
+            analysis.get("hiring_decision", {}).get("overall_assessment")
+            or job_fit.get("job_fit_summary")
+            or ""
+        )
+
+        # Strengths / Weaknesses
+        strengths = (ai_opinion.get("key_strengths") or [])[:5]
+        weaknesses = (job_fit.get("clear_gaps") or [])[:5]
+
+        # Technical assessment mapping
+        requirements_matrix = job_fit.get("requirements_matrix", [])
+        tech_strengths = []
+        tech_weak = []
+        try:
+            for r in requirements_matrix:
+                meets = str(r.get("meets", "")).lower()
+                label = r.get("label", "")
+                if meets == "yes":
+                    tech_strengths.append(label)
+                elif meets in ("partial", "no"):
+                    tech_weak.append(label)
+        except Exception:
+            pass
+
+        # Cultural / behavioral
+        cultural = multipass.get("overall_scores", {}).get("cultural", 0.5)
+        behavioral_avg = self._calculate_behavioral_average(hr_criteria)
+
+        # Communication score approximation
+        comm_0_100 = hr_criteria.get("overall_score", 50)
+
+        # Fit score 0–100
+        fit_score = None
+        try:
+            fit_score = round(float(job_fit.get("overall_fit_score", 0.5)) * 100, 2)
+        except Exception:
+            fit_score = None
+
+        # Final recommendation
+        decision = ai_opinion.get("hire_recommendation", "Hold")
+        decision_tr = self._translate_recommendation(decision)
+        recommendation_reason = ai_opinion.get("overall_assessment", "")
+
+        # Determine recommended next interview types
+        next_types = self._compute_next_interview_types(analysis)
+
+        return {
+            "genel_aday_ozeti": {
+                "pozisyon": interview_data.get("job_title"),
+                "deneyim_seviyesi": interview_data.get("experience_level"),
+                "egitim": interview_data.get("education_level"),
+                "tanitim_ozeti": (intro_summary or "").strip()[:400],
+            },
+            "guclu_yonler": strengths or tech_strengths,
+            "gelisim_alanlari": weaknesses or tech_weak,
+            "teknik_yeterlilik": {
+                "guc": tech_strengths[:8],
+                "zayif": tech_weak[:8],
+                "orneksel_not": "Örnek: Finansal raporlama güçlü, IFRS bilgisi yüzeysel" if tech_weak else "",
+            },
+            "davranissal_kulturel_uyum": {
+                "ekip_uyumu": behavioral_avg,
+                "kultur_uyumu": cultural,
+                "turkiye_piyasa_beklentisi": "Esneklik ve iş disiplini açısından genel uyum değerlendirildi",
+            },
+            "iletisim_becerileri": {
+                "netlik": comm_0_100 / 100,
+                "tutarlilik": behavioral_avg,
+                "not": "Analiz sadece içerik üzerinden yapılmıştır; aksan/fiziksel özellikler raporlanmaz.",
+            },
+            "tutarlilik_analizi": {
+                "cv_mulkakat_uyumu": requirements_matrix,
+                "cakisiyor_gorunen": weaknesses[:3] if isinstance(weaknesses, list) else [],
+            },
+            "onerilen_sonraki_adimlar": next_types,
+            "uygunluk_skoru": fit_score if fit_score is not None else overall_score_0_100,
+            "nihai_oneri": {
+                "onerilen_aksiyon": decision_tr,
+                "gerekce": (recommendation_reason or "")[:200],
+                "onerilen_sonraki_adimlar": next_types,
+            },
+        }
     
     def _executive_summary_template(self, interview_data: Dict, analysis: Dict) -> Dict[str, Any]:
         """Executive summary template for senior leadership"""
@@ -568,15 +672,21 @@ class InterviewReportGenerator:
     
     def _generate_competency_visual_data(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Generate competency breakdown for visual display"""
-        
+        # Use Turkish-labeled keys produced by _extract_scoring_summary
         scoring = self._extract_scoring_summary(analysis)
-        
+        def _val(key: str, default: float) -> float:
+            try:
+                v = float(scoring.get(key, default))
+                # If value seems to be 0..1 ratio, convert to 0..100
+                return v * 100.0 if v <= 1.0 else v
+            except Exception:
+                return default * 100.0
         return {
-            "technical_skills": scoring.get("technical_fit", 0.7) * 100,
-            "communication": scoring.get("communication_effectiveness", 0.8) * 100,
-            "problem_solving": scoring.get("problem_solving_approach", 0.75) * 100,
-            "leadership": scoring.get("leadership_indicators", 0.6) * 100,
-            "cultural_fit": scoring.get("cultural_alignment", 0.85) * 100
+            "Teknik Yetkinlik": _val("Teknik Yetkinlik", 0.7),
+            "İletişim Etkinliği": _val("İletişim Etkinliği", 0.8),
+            "Davranışsal Yetkinlik": _val("Davranışsal Yetkinlik", 0.75),
+            "Kültürel Uyum": _val("Kültürel Uyum", 0.85),
+            "Büyüme Potansiyeli": _val("Büyüme Potansiyeli", 0.6),
         }
 
     def generate_hiring_decision_data(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -627,6 +737,8 @@ class InterviewReportGenerator:
         else:
             onboarding_plan["30_90_days"].insert(0, "Küçük projelerde sorumluluk alma")
         
+        next_types = self._compute_next_interview_types(analysis)
+
         return {
             "hiring_recommendation": {
                 "decision": hiring_recommendation,
@@ -641,6 +753,7 @@ class InterviewReportGenerator:
             "risk_factors": risk_factors,
             "timeline_recommendation": ai_opinion.get("timeline_recommendation", "reassess"),
             "salary_analysis": ai_opinion.get("salary_analysis", {}),
+            "recommended_next_interview_types": next_types,
             "should_display": bool(hiring_recommendation or key_strengths or key_concerns)
         }
     
@@ -653,6 +766,77 @@ class InterviewReportGenerator:
             "No Hire": "İşe Alma"
         }
         return translations.get(recommendation, recommendation)
+
+    def _compute_next_interview_types(self, analysis: Dict[str, Any]) -> List[str]:
+        """Infer recommended next interview types from analysis signals.
+        Returns a prioritized list with zero or more of:
+        - "Teknik görüşme"
+        - "Yönetici görüşmesi"
+        - "İnsan kaynakları kültür uyum görüşmesi"
+        """
+        try:
+            ta = analysis.get("technical_assessment", {})
+            if isinstance(ta, str):
+                try:
+                    ta = json.loads(ta)
+                except Exception:
+                    ta = {}
+            job_fit = analysis.get("job_fit", {}) if isinstance(analysis, dict) else {}
+            if isinstance(ta, dict) and not job_fit:
+                job_fit = ta.get("job_fit", {})
+            multipass = analysis.get("multipass_analysis", {})
+            hr_criteria = analysis.get("hr_criteria", {})
+
+            # Scores and matrices
+            tech_score = multipass.get("technical", {}).get("technical_score", 0.5) if isinstance(multipass, dict) else 0.5
+            cultural_score = multipass.get("overall_scores", {}).get("cultural", 0.5) if isinstance(multipass, dict) else 0.5
+            behavioral_score = multipass.get("overall_scores", {}).get("behavioral", 0.5) if isinstance(multipass, dict) else 0.5
+            overall_fit = job_fit.get("overall_fit_score", 0.5) if isinstance(job_fit, dict) else 0.5
+            comm_norm = (hr_criteria.get("overall_score", 50) / 100.0) if isinstance(hr_criteria, dict) else 0.5
+            reqs = job_fit.get("requirements_matrix", []) if isinstance(job_fit, dict) else []
+
+            # Count high-importance issues
+            high_issues = 0
+            try:
+                for r in reqs or []:
+                    meets = str(r.get("meets", "")).lower()
+                    importance = str(r.get("importance", "medium")).lower()
+                    weight = float(r.get("weight", 0.0) or 0.0)
+                    is_high = (importance == "high") or (weight > 0.5)
+                    if is_high and meets in ("partial", "no"):
+                        high_issues += 1
+            except Exception:
+                high_issues = 0
+
+            recommendations: List[str] = []
+
+            # Technical interview when technical signals are weak/uncertain
+            if tech_score < 0.7 or overall_fit < 0.65 or high_issues >= 1:
+                recommendations.append("Teknik görüşme")
+
+            # HR/culture interview when cultural/communication is weak
+            if cultural_score < 0.65 or comm_norm < 0.6:
+                recommendations.append("İnsan kaynakları kültür uyum görüşmesi")
+
+            # Manager interview for team/leadership alignment or when decision is hold
+            try:
+                ai_opinion = ta.get("ai_opinion", {}) if isinstance(ta, dict) else {}
+                decision = ai_opinion.get("hire_recommendation")
+            except Exception:
+                decision = None
+            if (behavioral_score < 0.7) or (decision == "Hold"):
+                recommendations.append("Yönetici görüşmesi")
+
+            # Deduplicate while preserving order
+            seen = set()
+            ordered = []
+            for it in recommendations:
+                if it not in seen:
+                    seen.add(it)
+                    ordered.append(it)
+            return ordered
+        except Exception:
+            return []
     
 
 
